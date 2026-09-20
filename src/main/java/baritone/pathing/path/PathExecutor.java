@@ -75,6 +75,11 @@ public class PathExecutor implements IPathExecutor, Helper {
     private final IPlayerContext ctx;
 
     private boolean sprintNextTick;
+    private boolean wasSprintingLastSegment = false;
+    private int segmentTransitionCooldown = 0;
+    // GrimAC Simulation bypass: 1-tick damper so sprint→stop velocity delta
+    // never exceeds what MC physics allows in a single tick.
+    private int sprintStopCooldown = 0;
 
     public PathExecutor(PathingBehavior behavior, IPath path) {
         this.behavior = behavior;
@@ -90,6 +95,14 @@ public class PathExecutor implements IPathExecutor, Helper {
      * not sneaking out over lava), false otherwise
      */
     public boolean onTick() {
+        if (segmentTransitionCooldown > 0) {
+            segmentTransitionCooldown--;
+        }
+        if (sprintStopCooldown > 0) {
+            sprintStopCooldown--;
+            // Keep sprint off during damper period so velocity bleeds down naturally
+            ctx.player().setSprinting(false);
+        }
         if (pathPosition == path.length() - 1) {
             pathPosition++;
         }
@@ -228,15 +241,25 @@ public class PathExecutor implements IPathExecutor, Helper {
             return true;
         }
         if (movementStatus == SUCCESS) {
-            //System.out.println("Movement done, next path");
+            wasSprintingLastSegment = isSprinting();
+            // GrimAC fix: do NOT recursively call onTick() here.
+            // Chaining multiple movement steps in a single server tick produces
+            // a position delta that GrimAC's simulation rejects as impossible physics.
+            // Let the next game tick handle the new pathPosition naturally.
+            segmentTransitionCooldown = 2; // 2-tick freeze before next sprint decision
             pathPosition++;
             onChangeInPathPosition();
-            onTick();
             return true;
         } else {
             sprintNextTick = shouldSprintNextTick();
             if (!sprintNextTick) {
-                ctx.player().setSprinting(false); // letting go of control doesn't make you stop sprinting actually
+                // GrimAC Simulation fix: instead of instant setSprinting(false),
+                // schedule a 1-tick cooldown so the velocity change matches MC physics.
+                if (ctx.player().isSprinting() && sprintStopCooldown == 0) {
+                    sprintStopCooldown = 1;
+                } else if (sprintStopCooldown == 0) {
+                    ctx.player().setSprinting(false);
+                }
             }
             ticksOnCurrent++;
             if (ticksOnCurrent > currentMovementOriginalCostEstimate + Baritone.settings().movementTimeoutTicks.value) {
@@ -666,6 +689,9 @@ public class PathExecutor implements IPathExecutor, Helper {
     }
 
     public boolean isSprinting() {
+        if (segmentTransitionCooldown > 0) {
+            return wasSprintingLastSegment;
+        }
         return sprintNextTick;
     }
 }

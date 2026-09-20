@@ -25,11 +25,30 @@ public final class SprintStateEvent {
 
     private Boolean state;
 
+    public SprintStateEvent() {
+    }
+
+    public SprintStateEvent(boolean currentSprinting) {
+        this.state = currentSprinting;
+    }
+
     public final void setState(boolean state) {
         this.state = state;
     }
 
     public final Boolean getState() {
         return this.state;
+    }
+
+    public boolean isSprinting() {
+        return this.state != null && this.state;
+    }
+
+    public boolean isModified() {
+        return this.state != null;
+    }
+
+    public void setSprinting(boolean sprinting) {
+        this.state = sprinting;
     }
 }

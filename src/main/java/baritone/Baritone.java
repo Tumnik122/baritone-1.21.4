@@ -260,6 +260,43 @@ public class Baritone implements IBaritone {
         return this.directory;
     }
 
+    public static boolean isPrimaryActive() {
+        IBaritone primary = BaritoneAPI.getProvider().getPrimaryBaritone();
+        if (primary == null) {
+            return false;
+        }
+        if (primary.getPathingBehavior().isPathing()) {
+            return true;
+        }
+        if (primary.getPathingControlManager() != null) {
+            if (primary.getPathingControlManager().mostRecentInControl().map(IBaritoneProcess::isActive).orElse(false)) {
+                return true;
+            }
+        }
+        if (primary.getMineProcess() != null && primary.getMineProcess().isActive()) {
+            return true;
+        }
+        if (primary.getCustomGoalProcess() != null && primary.getCustomGoalProcess().isActive()) {
+            return true;
+        }
+        if (primary.getFollowProcess() != null && primary.getFollowProcess().isActive()) {
+            return true;
+        }
+        if (primary.getBuilderProcess() != null && primary.getBuilderProcess().isActive()) {
+            return true;
+        }
+        if (primary.getExploreProcess() != null && primary.getExploreProcess().isActive()) {
+            return true;
+        }
+        if (primary.getFarmProcess() != null && primary.getFarmProcess().isActive()) {
+            return true;
+        }
+        if (primary.getGetToBlockProcess() != null && primary.getGetToBlockProcess().isActive()) {
+            return true;
+        }
+        return false;
+    }
+
     public static Settings settings() {
         return BaritoneAPI.getSettings();
     }

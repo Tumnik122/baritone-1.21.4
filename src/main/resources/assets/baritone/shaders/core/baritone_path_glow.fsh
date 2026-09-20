@@ -15,13 +15,17 @@ in vec4 vertexColor;
 out vec4 fragColor;
 
 void main() {
-    float pulse = 0.5 + 0.5 * sin(GameTime * 18.849556 + pathPhase * 5.0);
+    float t = GameTime * 24000.0;
+    float pulse = 0.5 + 0.5 * sin(t * 6.28318 * 0.35 + pathPhase * 6.5);
+    float scan = exp(-abs(fract(pathPhase * 0.35 - t * 0.45) - 0.5) * 10.0);
     vec4 color = vertexColor * ColorModulator;
 
-    // Keep the source color while adding a restrained emissive highlight.
-    color.rgb = mix(color.rgb, vec3(0.92, 0.98, 1.0), 0.22 * pulse);
-    color.rgb *= 1.08 + 0.22 * pulse;
-    color.a *= 0.82 + 0.18 * pulse;
+    vec3 hot = vec3(0.55, 0.95, 1.0);
+    vec3 fringe = vec3(1.0, 0.45, 0.95);
+    color.rgb = mix(color.rgb, hot, 0.28 * pulse);
+    color.rgb += fringe * scan * 0.22;
+    color.rgb *= 1.12 + 0.38 * pulse + 0.35 * scan;
+    color.a *= 0.78 + 0.22 * pulse;
 
     fragColor = linear_fog(color, vertexDistance, FogStart, FogEnd, FogColor);
 }

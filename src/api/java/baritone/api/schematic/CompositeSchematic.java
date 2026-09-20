@@ -66,7 +66,7 @@ public class CompositeSchematic extends AbstractSchematic {
     public BlockState desiredState(int x, int y, int z, BlockState current, List<BlockState> approxPlaceable) {
         CompositeSchematicEntry entry = getSchematic(x, y, z, current);
         if (entry == null) {
-            throw new IllegalStateException("couldn't find schematic for this position");
+            return net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
         }
         return entry.schematic.desiredState(x - entry.x, y - entry.y, z - entry.z, current, approxPlaceable);
     }

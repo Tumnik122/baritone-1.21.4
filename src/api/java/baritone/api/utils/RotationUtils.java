@@ -244,9 +244,15 @@ public final class RotationUtils {
      */
     public static Optional<Rotation> reachableOffset(IPlayerContext ctx, BlockPos pos, Vec3 offsetPos, double blockReachDistance, boolean wouldSneak) {
         Vec3 eyes = wouldSneak ? RayTraceUtils.inferSneakingEyePosition(ctx.player()) : ctx.player().getEyePosition(1.0F);
+
+        // Eye-cast distance guard: reject target if further than blockReachDistance from eye.
+        // GrimAC validates reach from the eye position, so matching this exactly avoids FarPlace / Reach flags.
+        if (eyes.distanceTo(offsetPos) > blockReachDistance) {
+            return Optional.empty();
+        }
+
         Rotation rotation = calcRotationFromVec3d(eyes, offsetPos, ctx.playerRotations());
         HitResult result = RayTraceUtils.rayTraceTowards(ctx.player(), rotation, blockReachDistance, wouldSneak);
-        //System.out.println(result);
         if (result != null && result.getType() == HitResult.Type.BLOCK) {
             if (((BlockHitResult) result).getBlockPos().equals(pos)) {
                 return Optional.of(rotation);

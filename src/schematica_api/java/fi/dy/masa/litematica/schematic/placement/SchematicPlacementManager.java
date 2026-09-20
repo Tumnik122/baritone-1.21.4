@@ -21,9 +21,20 @@ import java.util.List;
 
 public class SchematicPlacementManager {
 
-    //in case of a java.lang.NoSuchMethodError try change the name of this method to getAllSchematicPlacements()
-    //there are inconsistencies in the litematica mod about the naming of this method
+    // In case of inconsistencies in the Litematica mod about naming, provide all known variants
     public List<SchematicPlacement> getAllSchematicsPlacements() {
+        throw new LinkageError();
+    }
+
+    public List<SchematicPlacement> getAllSchematicPlacements() {
+        throw new LinkageError();
+    }
+
+    public List<SchematicPlacement> getAllPlacements() {
+        throw new LinkageError();
+    }
+
+    public SchematicPlacement getSelectedSchematicPlacement() {
         throw new LinkageError();
     }
 }

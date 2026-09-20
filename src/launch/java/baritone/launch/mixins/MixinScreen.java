@@ -17,6 +17,7 @@
 
 package baritone.launch.mixins;
 
+import baritone.Baritone;
 import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
 import baritone.api.event.events.ChatEvent;
@@ -36,6 +37,18 @@ import static baritone.api.command.IBaritoneChatControl.FORCE_COMMAND_PREFIX;
 
 @Mixin(Screen.class)
 public abstract class MixinScreen implements IGuiScreen {
+
+    @Inject(
+            method = "isPauseScreen",
+            at = @At("HEAD"),
+            cancellable = true
+    )
+    private void baritoneCancelPauseScreen(CallbackInfoReturnable<Boolean> cir) {
+        if ((Baritone.settings().noPauseWhenPathing.value || Baritone.settings().runBackgroundWhenUnfocused.value)
+                && Baritone.isPrimaryActive()) {
+            cir.setReturnValue(false);
+        }
+    }
 
     //TODO: switch to enum extention with mixin 9.0 or whenever Mumfrey gets around to it
     @Inject(at = @At(value = "INVOKE", target = "Lorg/slf4j/Logger;error(Ljava/lang/String;Ljava/lang/Object;)V", remap = false, ordinal = 1), method = "handleComponentClicked", cancellable = true)

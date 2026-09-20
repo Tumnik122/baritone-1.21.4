@@ -7,7 +7,8 @@ dist/
 volderyarn/
 
 # Gradle
-build/
+**/build/
+!src/**/build/
 .gradle/
 classes/
 *.class
@@ -29,6 +30,8 @@ common/logs/
 .project
 .settings/
 baritone_Client.launch
+bin/
+
 
 # Copyright Files
 !/.idea/copyright/Baritone.xml

@@ -151,7 +151,7 @@ public interface MovementHelper extends ActionCosts, Helper {
             return NO;
         }
         if (block == Blocks.POWDER_SNOW) {
-            return NO;
+            return Baritone.settings().avoidPowderSnow.value ? NO : MAYBE;
         }
         if (Baritone.settings().blocksToAvoid.value.contains(block)) {
             return NO;
@@ -204,7 +204,7 @@ public interface MovementHelper extends ActionCosts, Helper {
             }
             // the check in BlockSnow.isPassable is layers < 5
             // while actually, we want < 3 because 3 or greater makes it impassable in a 2 high ceiling
-            if (state.getValue(SnowLayerBlock.LAYERS) >= 3) {
+            if (state.getValue(SnowLayerBlock.LAYERS) > Baritone.settings().snowPassableLayers.value) {
                 return false;
             }
             // ok, it's low enough we could walk through it, but is it supported?

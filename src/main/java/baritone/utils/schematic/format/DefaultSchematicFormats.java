@@ -79,16 +79,13 @@ public enum DefaultSchematicFormats implements ISchematicFormat {
         public IStaticSchematic parse(InputStream input) throws IOException {
             CompoundTag nbt = NbtIo.readCompressed(input, NbtAccounter.unlimitedHeap());
             int version = nbt.getInt("Version");
-            switch (version) {
-                case 4: //1.12
-                case 5: //1.13-1.17
-                    throw new UnsupportedOperationException("This litematic Version is too old.");
-                case 6: //1.18-1.20
-                    throw new UnsupportedOperationException("This litematic Version is too old.");
-                case 7: //1.21+
-                    return new LitematicaSchematic(nbt);
-                default:
-                    throw new UnsupportedOperationException("Unsuported Version of a Litematica Schematic");
+            // Bypass arbitrary version locks: versions 5 (1.13-1.17), 6 (1.18-1.20),
+            // and 7 (1.21+) all share the same tag structure (Regions, Palette, BlockStates).
+            // Even older or newer versions should be attempted rather than immediately aborted.
+            try {
+                return new LitematicaSchematic(nbt);
+            } catch (Exception ex) {
+                throw new UnsupportedOperationException("Failed to parse Litematica schematic (Version " + version + "): " + ex.getMessage(), ex);
             }
         }
     };

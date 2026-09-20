@@ -18,6 +18,7 @@
 package baritone.behavior;
 
 import baritone.Baritone;
+import baritone.utils.builder.SmoothLookHelper;
 import baritone.api.Settings;
 import baritone.api.behavior.ILookBehavior;
 import baritone.api.behavior.look.IAimProcessor;
@@ -56,12 +57,16 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         this.processor = new AimProcessor(baritone.getPlayerContext());
         this.smoothYawBuffer   = new ArrayDeque<>();
         this.smoothPitchBuffer = new ArrayDeque<>();
-        this.lastAppliedYaw   = 0f;
-        this.lastAppliedPitch = 0f;
+        this.lastAppliedYaw   = Float.NaN;
+        this.lastAppliedPitch = Float.NaN;
     }
 
     @Override
     public void updateTarget(Rotation rotation, boolean blockInteract) {
+        if (rotation == null) {
+            this.target = null;
+            return;
+        }
         this.target = new Target(rotation, Target.Mode.resolve(ctx, blockInteract), blockInteract);
     }
 
@@ -91,36 +96,27 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 }
 
                 this.prevRotation = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
-                final Rotation actual = this.processor.peekRotation(this.target.rotation, this.target.blockInteract);
+                Rotation actual = this.processor.peekRotation(this.target.rotation, this.target.blockInteract);
+
+                // Anti-DuplicateRotPlace: add Gaussian micro-jitter when target rotation is stationary
+                actual = this.applyAntiDuplicateJitter(actual);
 
                 this.lastAppliedYaw   = actual.getYaw();
                 this.lastAppliedPitch = actual.getPitch();
 
-                ctx.player().setYRot(actual.getYaw());
-                ctx.player().setXRot(actual.getPitch());
+                if (Baritone.settings().smoothRotation.value) {
+                    SmoothLookHelper.apply(ctx.player(), actual);
+                } else {
+                    ctx.player().setYRot(actual.getYaw());
+                    ctx.player().setXRot(actual.getPitch());
+                }
                 break;
             }
             case POST: {
                 if (this.prevRotation != null) {
-                    this.smoothYawBuffer.addLast(this.target.rotation.getYaw());
-                    while (this.smoothYawBuffer.size() > Baritone.settings().smoothLookTicks.value) {
-                        this.smoothYawBuffer.removeFirst();
-                    }
-                    this.smoothPitchBuffer.addLast(this.target.rotation.getPitch());
-                    while (this.smoothPitchBuffer.size() > Baritone.settings().smoothLookTicks.value) {
-                        this.smoothPitchBuffer.removeFirst();
-                    }
                     if (this.target.mode == Target.Mode.SERVER) {
                         ctx.player().setYRot(this.prevRotation.getYaw());
                         ctx.player().setXRot(this.prevRotation.getPitch());
-                    } else if (ctx.player().isFallFlying() ? Baritone.settings().elytraSmoothLook.value
-                            : Baritone.settings().smoothLook.value) {
-                        ctx.player().setYRot((float) this.smoothYawBuffer.stream().mapToDouble(d -> d).average()
-                                .orElse(this.prevRotation.getYaw()));
-                        if (ctx.player().isFallFlying()) {
-                            ctx.player().setXRot((float) this.smoothPitchBuffer.stream().mapToDouble(d -> d).average()
-                                    .orElse(this.prevRotation.getPitch()));
-                        }
                     }
                     this.prevRotation = null;
                 }
@@ -190,6 +186,27 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             final Rotation actual = this.processor.peekRotation(this.target.rotation);
             ctx.player().setYRot(actual.getYaw());
         }
+    }
+
+    /**
+     * Eliminuje DuplicateRotPlace*: gdy rotacja wyjściowa jest stacjonarna
+     * (|Δyaw| < 0.01° i |Δpitch| < 0.01° względem OSTATNIO WYSŁANEJ),
+     * dodaje mikro-jitter Gaussa — żadne dwa kolejne pakiety nie mają
+     * identycznego kąta co do bitu.
+     */
+    private Rotation applyAntiDuplicateJitter(Rotation target) {
+        if (Float.isNaN(this.lastAppliedYaw) || Float.isNaN(this.lastAppliedPitch)) {
+            return target;
+        }
+        float dYaw = Math.abs(Mth.wrapDegrees(target.getYaw() - this.lastAppliedYaw));
+        float dPitch = Math.abs(target.getPitch() - this.lastAppliedPitch);
+
+        if (dYaw < 0.01F && dPitch < 0.01F) {
+            float yaw = target.getYaw() + (float) (ThreadLocalRandom.current().nextGaussian() * 0.015F);
+            float pitch = target.getPitch() + (float) (ThreadLocalRandom.current().nextGaussian() * 0.010F);
+            return new Rotation(Mth.wrapDegrees(yaw), Mth.clamp(pitch, -90.0F, 90.0F));
+        }
+        return target;
     }
 
     public Optional<Rotation> getEffectiveRotation() {
@@ -278,16 +295,15 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 desiredPitch = nudgeToLevel(desiredPitch);
             }
 
-            // ── 1. Losowy czas reakcji ───────────────────────────────────────
-            if (!blockInteract) {
-                if (this.firstTarget) {
-                    this.firstTarget = false;
-                } else {
-                    // ~5 % chance to skip a tick (simulate "thinking pause")
-                    if (ThreadLocalRandom.current().nextDouble() < 0.05) {
-                        return prev;
-                    }
-                }
+            // ── 1. First-target initialisation ──────────────────────────────
+            // Removed: random 5 % tick-skip ("thinking pause").
+            // GrimAC compares the rotation sent in a movement packet against the
+            // predicted sprint/walk direction every tick. Skipping a rotation update
+            // while Baritone is already pressing FORWARD causes the sent yaw to
+            // diverge from the movement vector, producing an InvalidSprint /
+            // RotationPrediction flag and a position setback.
+            if (this.firstTarget) {
+                this.firstTarget = false;
             }
 
             // ── 2. Target noise ──────────────────────────────────────────────
@@ -402,6 +418,10 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 newPitch = Math.round(newPitch / mouseStep) * mouseStep;
             }
 
+            // Strictly clamp pitch after rounding to guarantee [-90.0F, 90.0F] bounds
+            // and eliminate float rounding artifacts (e.g. -90.000015F triggering BadPacketsD).
+            newPitch = Mth.clamp(newPitch, -90.0F, 90.0F);
+
             return new Rotation(newYaw, newPitch);
         }
 
@@ -503,24 +523,18 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
             static Mode resolve(IPlayerContext ctx, boolean blockInteract) {
                 final Settings settings    = Baritone.settings();
-                final boolean antiCheat    = settings.antiCheatCompatibility.value;
                 final boolean blockFreeLook = settings.blockFreeLook.value;
 
-                if (ctx.player().isFallFlying()) {
+                if (ctx.player() != null && ctx.player().isFallFlying()) {
                     return settings.elytraFreeLook.value ? SERVER : CLIENT;
                 } else if (settings.freeLook.value) {
                     if (blockInteract) {
                         return blockFreeLook ? SERVER : CLIENT;
                     }
-                    // When antiCheat is on, always use SERVER to hide client rotations.
-                    // The old 50/50 random CLIENT/SERVER randomness created rare
-                    // server↔client rotation anomalies that anticheat logs captured.
-                    return antiCheat ? SERVER : (ThreadLocalRandom.current().nextBoolean() ? SERVER : NONE);
+                    return SERVER;
                 }
 
-                // antiCheat enabled: always SERVER (removed the previous 10 % CLIENT
-                // leak which caused detectable rotation-sync spikes in anticheats).
-                return antiCheat ? SERVER : CLIENT;
+                return CLIENT;
             }
         }
     }

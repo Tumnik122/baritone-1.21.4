@@ -30,6 +30,7 @@ import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
+import baritone.utils.ContinuousBreakController;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
@@ -130,6 +131,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                     MovementHelper.switchToBestToolFor(ctx, ctx.world().getBlockState(pos));
                     if (ctx.isLookingAt(pos) || ctx.playerRotations().isReallyCloseTo(rot.get())) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+                        ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(pos));
+                    } else if (ContinuousBreakController.shouldHoldThrough(ctx, new BetterBlockPos(pos), rot.get())) {
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
                     }
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
@@ -170,7 +174,18 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     @Override
     public String displayName0() {
-        return "Mine " + filter;
+        if (filter == null) {
+            return "Mine";
+        }
+        var blocks = filter.blocks();
+        if (blocks == null || blocks.isEmpty()) {
+            return "Mine";
+        }
+        String first = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(blocks.get(0).getBlock()).getPath();
+        if (blocks.size() == 1) {
+            return "Mine " + first;
+        }
+        return "Mine " + first + " (+" + (blocks.size() - 1) + ")";
     }
 
     private PathingCommand updateGoal() {

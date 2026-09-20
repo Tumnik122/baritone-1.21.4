@@ -59,7 +59,10 @@ public final class RayTraceUtils {
                 direction.y * blockReachDistance,
                 direction.z * blockReachDistance
         );
-        return entity.level().clip(new ClipContext(start, end, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, entity));
+        // Use COLLIDER (not OUTLINE) because the server-side (and GrimAC) physics simulate
+        // block collision shapes, not visual outlines. Matching this exactly prevents
+        // false "AimC" / block hit position flags when the client outline differs from collider.
+        return entity.level().clip(new ClipContext(start, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
     }
 
     public static Vec3 inferSneakingEyePosition(Entity entity) {

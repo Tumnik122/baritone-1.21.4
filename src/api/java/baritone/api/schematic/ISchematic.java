@@ -91,4 +91,20 @@ public interface ISchematic {
      * @return The length (Z axis length) of this schematic
      */
     int lengthZ();
+
+    default int width() {
+        return widthX();
+    }
+
+    default int height() {
+        return heightY();
+    }
+
+    default int length() {
+        return lengthZ();
+    }
+
+    default BlockState desiredState(int x, int y, int z) {
+        return desiredState(x, y, z, null, java.util.Collections.emptyList());
+    }
 }

@@ -97,7 +97,10 @@ public final class FpsOptimizer {
         }
 
         Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null || entity == mc.player || entity == mc.player.getVehicle()) {
+        if (mc.player == null
+                || entity == mc.player
+                || entity == mc.getCameraEntity()   // F5 / 3rd-person: never cull the viewed entity
+                || entity == mc.player.getVehicle()) {
             return true;
         }
 

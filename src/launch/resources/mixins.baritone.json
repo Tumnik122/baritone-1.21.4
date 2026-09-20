@@ -30,7 +30,8 @@
     "MixinGui",
     "MixinCoreShaders",
     "MixinBlockEntityRenderDispatcher",
-    "MixinParticle"
+    "MixinParticle",
+    "MixinBlockItem"
   ],
   "mixins": [
   ]

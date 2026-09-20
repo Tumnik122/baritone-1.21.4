@@ -60,7 +60,8 @@ public class MixinWorldRenderer {
 
     @Inject(
             method = "renderLevel",
-            at = @At("RETURN")
+            at = @At("RETURN"),
+            require = 0
     )
     private void onStartHand(final GraphicsResourceAllocator graphicsResourceAllocator, final DeltaTracker deltaTracker, final boolean bl, final Camera camera, final GameRenderer gameRenderer, final Matrix4f matrix4f, final Matrix4f matrix4f2, final CallbackInfo ci) {
         for (IBaritone ibaritone : BaritoneAPI.getProvider().getAllBaritones()) {

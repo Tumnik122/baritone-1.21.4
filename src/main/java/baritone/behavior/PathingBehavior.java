@@ -18,8 +18,11 @@
 package baritone.behavior;
 
 import baritone.Baritone;
+import baritone.utils.builder.PathingFailureTracker;
+import baritone.hud.AiActionLogger;
 import baritone.api.behavior.IPathingBehavior;
 import baritone.api.event.events.*;
+import baritone.api.utils.input.Input;
 import baritone.api.pathing.calc.IPath;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalXZ;
@@ -30,6 +33,7 @@ import baritone.api.utils.PathCalculationResult;
 import baritone.api.utils.interfaces.IGoalRenderPos;
 import baritone.pathing.calc.AStarPathFinder;
 import baritone.pathing.calc.AbstractNodeCostSearch;
+import baritone.pathing.calc.CalcRetryLadder;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.path.PathExecutor;
@@ -76,6 +80,9 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     private final Object pathCalcLock = new Object();
     private final Object pathPlanLock = new Object();
 
+    /* Retry ladder for CALC_FAILED */
+    private final CalcRetryLadder calcRetry = new CalcRetryLadder();
+
     private boolean lastAutoJump;
     private BetterBlockPos expectedSegmentStart;
 
@@ -95,6 +102,13 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
         calcFailedLastTick = curr.contains(PathEvent.CALC_FAILED);
         for (var event : curr) {
             baritone.getGameEventHandler().onPathEvent(event);
+            switch (event) {
+                case CALC_STARTED -> AiActionLogger.log("A*", "Rozpoczęto obliczanie nowej ścieżki do celu");
+                case CALC_FINISHED_NOW_EXECUTING -> AiActionLogger.log("PATH", "Obliczono ścieżkę (" + (current != null ? current.getPath().length() + " kroków" : "") + "), rozpoczynam ruch");
+                case CALC_FAILED -> AiActionLogger.log("A*", "Nie udało się znaleźć bezpiecznej ścieżki (CALC_FAILED)");
+                case AT_GOAL -> AiActionLogger.log("GOAL", "Dotarto do celu!");
+                default -> {}
+            }
         }
     }
 
@@ -116,8 +130,10 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
 
     @Override
     public void onPlayerSprintState(SprintStateEvent event) {
-        if (isPathing()) {
-            event.setState(current.isSprinting());
+        if (isPathing() && current != null) {
+            event.setSprinting(current.isSprinting());
+        } else if (baritone.getInputOverrideHandler().isInputForcedDown(Input.SPRINT)) {
+            event.setSprinting(true);
         }
     }
 
@@ -500,6 +516,15 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     }
 
     private void findPathInNewThread(final BlockPos start, final boolean talkAboutIt, CalculationContext context) {
+        long primaryTimeout = (current == null) ? Baritone.settings().primaryTimeoutMS.value
+                : Baritone.settings().planAheadPrimaryTimeoutMS.value;
+        long failureTimeout = (current == null) ? Baritone.settings().failureTimeoutMS.value
+                : Baritone.settings().planAheadFailureTimeoutMS.value;
+        findPathInNewThreadWithTimeouts(start, talkAboutIt, context, primaryTimeout, failureTimeout);
+    }
+
+    private void findPathInNewThreadWithTimeouts(final BlockPos start, final boolean talkAboutIt,
+            CalculationContext context, long primaryTimeout, long failureTimeout) {
         if (!Thread.holdsLock(pathCalcLock)) {
             throw new IllegalStateException("Must be called with synchronization on pathCalcLock");
         }
@@ -516,11 +541,6 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
             return;
         }
 
-        long primaryTimeout = (current == null) ? Baritone.settings().primaryTimeoutMS.value
-                : Baritone.settings().planAheadPrimaryTimeoutMS.value;
-        long failureTimeout = (current == null) ? Baritone.settings().failureTimeoutMS.value
-                : Baritone.settings().planAheadFailureTimeoutMS.value;
-
         AbstractNodeCostSearch pathfinder = createPathfinder(start, goal, current == null ? null : current.getPath(),
                 context);
 
@@ -530,12 +550,14 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
 
         inProgress = pathfinder;
 
+        final long pt = primaryTimeout;
+        final long ft = failureTimeout;
         Baritone.getExecutor().execute(() -> {
             if (talkAboutIt) {
                 logDebug("Starting to search for path from " + start + " to " + goal);
             }
 
-            PathCalculationResult calcResult = pathfinder.calculate(primaryTimeout, failureTimeout);
+            PathCalculationResult calcResult = pathfinder.calculate(pt, ft);
 
             synchronized (pathPlanLock) {
                 Optional<PathExecutor> executor = calcResult.getPath()
@@ -562,12 +584,29 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
             if (executor.get().getPath().positions().contains(expectedSegmentStart)) {
                 queuePathEvent(PathEvent.CALC_FINISHED_NOW_EXECUTING);
                 current = executor.get();
+                calcRetry.onSuccess();
+                PathingFailureTracker.get(baritone).onPathSuccess();
                 resetEstimatedTicksToGoal(start);
             } else {
                 logDebug("Warning: discarding orphan path segment with incorrect start");
             }
         } else if (calcResult.getType() != PathCalculationResult.Type.CANCELLATION
                 && calcResult.getType() != PathCalculationResult.Type.EXCEPTION) {
+            // Retry ladder: try again with more time before giving up
+            if (Baritone.settings().calcFailedRetryLadder.value) {
+                CalcRetryLadder.Attempt next = calcRetry.nextAttempt();
+                if (next != null) {
+                    logDebug("CALC_FAILED — drabina retry, próba " + next.index() + "/3 (primary=" + next.primaryMs() + "ms, failure=" + next.failureMs() + "ms)");
+                    synchronized (pathCalcLock) {
+                        if (inProgress == null && goal != null) {
+                            findPathInNewThreadWithTimeouts(expectedSegmentStart, true, context, next.primaryMs(), next.failureMs());
+                            return;
+                        }
+                    }
+                }
+                calcRetry.reset();
+            }
+            PathingFailureTracker.get(baritone).onCalcFailed();
             queuePathEvent(PathEvent.CALC_FAILED);
         }
     }
@@ -582,6 +621,7 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
                     logDebug("Warning: discarding orphan next segment with incorrect start");
                 }
             } else {
+                PathingFailureTracker.get(baritone).onCalcFailed();
                 queuePathEvent(PathEvent.NEXT_CALC_FAILED);
             }
         } else {

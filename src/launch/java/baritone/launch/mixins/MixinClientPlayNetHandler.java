@@ -85,6 +85,7 @@ public abstract class MixinClientPlayNetHandler extends ClientCommonPacketListen
             cancellable = true
     )
     private void sendChatMessage(String string, CallbackInfo ci) {
+        baritone.utils.ScreenInputGate.suppress(2);
         ChatEvent event = new ChatEvent(string);
         IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(this.minecraft.player);
         if (baritone == null) {
@@ -94,6 +95,15 @@ public abstract class MixinClientPlayNetHandler extends ClientCommonPacketListen
         if (event.isCancelled()) {
             ci.cancel();
         }
+    }
+
+    @Inject(
+            method = "sendCommand",
+            at = @At("HEAD"),
+            require = 0
+    )
+    private void onSendCommand(String command, CallbackInfo ci) {
+        baritone.utils.ScreenInputGate.suppress(2);
     }
 
     @Inject(

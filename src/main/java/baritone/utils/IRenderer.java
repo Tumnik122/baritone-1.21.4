@@ -49,13 +49,26 @@ public interface IRenderer {
     }
 
     static BufferBuilder startLines(Color color, float alpha, float lineWidth, boolean ignoreDepth) {
+        return startLines(color, alpha, lineWidth, ignoreDepth, false);
+    }
+
+    static BufferBuilder startLines(Color color, float alpha, float lineWidth, boolean ignoreDepth, boolean additiveHalo) {
         RenderSystem.enableBlend();
-        RenderSystem.blendFuncSeparate(
-                GlStateManager.SourceFactor.SRC_ALPHA,
-                GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA,
-                GlStateManager.SourceFactor.ONE,
-                GlStateManager.DestFactor.ZERO
-        );
+        if (additiveHalo && settings.renderShaderEffects.value) {
+            RenderSystem.blendFuncSeparate(
+                    GlStateManager.SourceFactor.SRC_ALPHA,
+                    GlStateManager.DestFactor.ONE,
+                    GlStateManager.SourceFactor.ONE,
+                    GlStateManager.DestFactor.ONE
+            );
+        } else {
+            RenderSystem.blendFuncSeparate(
+                    GlStateManager.SourceFactor.SRC_ALPHA,
+                    GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA,
+                    GlStateManager.SourceFactor.ONE,
+                    GlStateManager.DestFactor.ZERO
+            );
+        }
         glColor(color, alpha);
         RenderSystem.lineWidth(lineWidth);
         RenderSystem.depthMask(false);
@@ -154,7 +167,7 @@ public interface IRenderer {
         emitLine(bufferBuilder, stack, start.x - vpX, start.y - vpY, start.z - vpZ, end.x - vpX, end.y - vpY, end.z - vpZ);
     }
 
-    static BufferBuilder startFilled(Color color, float alpha, boolean ignoreDepth) {
+    static BufferBuilder startFilled(Color color, float alpha, boolean ignoreDepth, boolean holo) {
         RenderSystem.enableBlend();
         RenderSystem.blendFuncSeparate(
                 GlStateManager.SourceFactor.SRC_ALPHA,
@@ -170,9 +183,17 @@ public interface IRenderer {
             RenderSystem.disableDepthTest();
         }
         RenderSystem.setShader(settings.renderShaderEffects.value
-                ? BaritoneShaderPrograms.FILL_GLOW
+                ? (holo ? BaritoneShaderPrograms.GOAL_HOLO : BaritoneShaderPrograms.FILL_GLOW)
                 : CoreShaders.POSITION_COLOR);
         return tessellator.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
+    }
+
+    static BufferBuilder startFilled(Color color, float alpha, boolean ignoreDepth) {
+        return startFilled(color, alpha, ignoreDepth, false);
+    }
+
+    static BufferBuilder startFilledHolo(Color color, float alpha, boolean ignoreDepth) {
+        return startFilled(color, alpha, ignoreDepth, true);
     }
 
     static BufferBuilder startFilled(Color color, boolean ignoreDepth) {

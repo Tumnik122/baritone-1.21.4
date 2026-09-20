@@ -15,9 +15,14 @@ in vec4 vertexColor;
 out vec4 fragColor;
 
 void main() {
-    float pulse = 0.5 + 0.5 * sin(GameTime * 12.566371 + fillPhase * 6.0);
+    float t = GameTime * 24000.0;
+    float pulse = 0.88 + 0.12 * sin(t * 6.28318 * 0.20);
     vec4 color = vertexColor * ColorModulator;
-    color.rgb = mix(color.rgb, vec3(0.72, 0.94, 1.0), 0.18 * pulse);
-    color.a *= 0.72 + 0.28 * pulse;
+
+    // Elegant, soft translucent fill with gentle subtle breathing
+    color.rgb *= (0.95 + 0.15 * pulse);
+    color.a *= 0.25 * pulse;
+
     fragColor = linear_fog(color, vertexDistance, FogStart, FogEnd, FogColor);
 }
+

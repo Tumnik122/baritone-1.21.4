@@ -104,12 +104,19 @@ public final class LitematicaSchematic extends CompositeSchematic implements ISt
      */
     private static BlockState getBlockState(Block block, CompoundTag properties) {
         BlockState blockState = block.defaultBlockState();
+        if (properties == null || properties.isEmpty()) {
+            return blockState;
+        }
 
-        for (Object key : properties.getAllKeys()) {
-            Property<?> property = block.getStateDefinition().getProperty((String) key);
-            String propertyValue = properties.getString((String) key);
-            if (property != null) {
-                blockState = setPropertyValue(blockState, property, propertyValue);
+        for (String key : properties.getAllKeys()) {
+            try {
+                Property<?> property = block.getStateDefinition().getProperty(key);
+                if (property != null) {
+                    String propertyValue = properties.getString(key);
+                    blockState = setPropertyValue(blockState, property, propertyValue);
+                }
+            } catch (Throwable ignored) {
+                // Ignore unrecognized or incompatible property values across MC versions
             }
         }
         return blockState;
@@ -119,12 +126,15 @@ public final class LitematicaSchematic extends CompositeSchematic implements ISt
      * @author Emerson
      */
     private static <T extends Comparable<T>> BlockState setPropertyValue(BlockState state, Property<T> property, String value) {
-        Optional<T> parsed = property.getValue(value);
-        if (parsed.isPresent()) {
-            return state.setValue(property, parsed.get());
-        } else {
-            throw new IllegalArgumentException("Invalid value for property " + property);
+        try {
+            Optional<T> parsed = property.getValue(value);
+            if (parsed.isPresent()) {
+                return state.setValue(property, parsed.get());
+            }
+        } catch (Throwable ignored) {
         }
+        // Fallback: keep current/default state if property value is not recognized
+        return state;
     }
 
     /**
@@ -132,7 +142,7 @@ public final class LitematicaSchematic extends CompositeSchematic implements ISt
      * @return amount of bits used to encode a block.
      */
     private static int getBitsPerBlock(int amountOfBlockTypes) {
-        return (int) Math.max(2, Math.ceil(Math.log(amountOfBlockTypes) / Math.log(2)));
+        return (int) Math.max(2, Math.ceil(Math.log(Math.max(1, amountOfBlockTypes)) / Math.log(2)));
     }
 
     /**
@@ -143,7 +153,7 @@ public final class LitematicaSchematic extends CompositeSchematic implements ISt
      */
     private static long getVolume(CompoundTag subReg) {
         CompoundTag size = subReg.getCompound("Size");
-        return Math.abs(size.getInt("x") * size.getInt("y") * size.getInt("z"));
+        return Math.abs((long) size.getInt("x") * (long) size.getInt("y") * (long) size.getInt("z"));
     }
 
     /**
@@ -167,7 +177,7 @@ public final class LitematicaSchematic extends CompositeSchematic implements ISt
             ListTag usedBlockTypes = subReg.getList("BlockStatePalette", 10);
             BlockState[] blockList = getBlockList(usedBlockTypes);
 
-            int bitsPerBlock = getBitsPerBlock(usedBlockTypes.size());
+            int bitsPerBlock = getBitsPerBlock(Math.max(1, usedBlockTypes.size()));
             long regionVolume = getVolume(subReg);
             long[] blockStateArray = subReg.getLongArray("BlockStates");
 
@@ -192,10 +202,26 @@ public final class LitematicaSchematic extends CompositeSchematic implements ISt
         int sizeZ = Math.abs(size.getInt("z"));
         BlockState[][][] states = new BlockState[sizeX][sizeZ][sizeY];
         int index = 0;
+        BlockState defaultState = (blockList != null && blockList.length > 0 && blockList[0] != null)
+                ? blockList[0]
+                : Blocks.AIR.defaultBlockState();
+
         for (int y = 0; y < sizeY; y++) {
             for (int z = 0; z < sizeZ; z++) {
                 for (int x = 0; x < sizeX; x++) {
-                    states[x][z][y] = blockList[bitArray.getAt(index)];
+                    if (blockList == null || blockList.length == 0) {
+                        states[x][z][y] = Blocks.AIR.defaultBlockState();
+                    } else if (blockList.length == 1) {
+                        // When palette has only 1 block, Litematica often omits BlockStates array
+                        states[x][z][y] = defaultState;
+                    } else {
+                        int paletteIdx = bitArray.getAt(index);
+                        if (paletteIdx >= 0 && paletteIdx < blockList.length && blockList[paletteIdx] != null) {
+                            states[x][z][y] = blockList[paletteIdx];
+                        } else {
+                            states[x][z][y] = defaultState;
+                        }
+                    }
                     index++;
                 }
             }
@@ -234,15 +260,15 @@ public final class LitematicaSchematic extends CompositeSchematic implements ISt
         private final long arraySize;
 
         public LitematicaBitArray(int bitsPerEntryIn, long arraySizeIn, @Nullable long[] longArrayIn) {
-            Validate.inclusiveBetween(1L, 32L, bitsPerEntryIn);
-            this.arraySize = arraySizeIn;
-            this.bitsPerEntry = bitsPerEntryIn;
-            this.maxEntryValue = (1L << bitsPerEntryIn) - 1L;
+            this.arraySize = Math.max(0L, arraySizeIn);
+            this.bitsPerEntry = Math.max(1, Math.min(32, bitsPerEntryIn));
+            this.maxEntryValue = (1L << this.bitsPerEntry) - 1L;
 
-            if (longArrayIn != null) {
+            if (longArrayIn != null && longArrayIn.length > 0) {
                 this.longArray = longArrayIn;
             } else {
-                this.longArray = new long[(int) (roundUp(arraySizeIn * (long) bitsPerEntryIn, 64L) / 64L)];
+                int requiredLen = (int) (roundUp(this.arraySize * (long) this.bitsPerEntry, 64L) / 64L);
+                this.longArray = new long[Math.max(1, requiredLen)];
             }
         }
 
@@ -263,17 +289,24 @@ public final class LitematicaSchematic extends CompositeSchematic implements ISt
         }
 
         public int getAt(long index) {
-            Validate.inclusiveBetween(0L, this.arraySize - 1L, index);
+            if (index < 0L || index >= this.arraySize || this.longArray.length == 0) {
+                return 0;
+            }
             long startOffset = index * (long) this.bitsPerEntry;
             int startArrIndex = (int) (startOffset >> 6); // startOffset / 64
             int endArrIndex = (int) (((index + 1L) * (long) this.bitsPerEntry - 1L) >> 6);
             int startBitOffset = (int) (startOffset & 0x3F); // startOffset % 64
 
+            if (startArrIndex >= this.longArray.length) {
+                return 0;
+            }
+
             if (startArrIndex == endArrIndex) {
                 return (int) (this.longArray[startArrIndex] >>> startBitOffset & this.maxEntryValue);
             } else {
                 int endOffset = 64 - startBitOffset;
-                return (int) ((this.longArray[startArrIndex] >>> startBitOffset | this.longArray[endArrIndex] << endOffset) & this.maxEntryValue);
+                long endVal = (endArrIndex < this.longArray.length) ? this.longArray[endArrIndex] : 0L;
+                return (int) ((this.longArray[startArrIndex] >>> startBitOffset | endVal << endOffset) & this.maxEntryValue);
             }
         }
 

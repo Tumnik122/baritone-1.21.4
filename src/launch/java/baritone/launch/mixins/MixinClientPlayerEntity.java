@@ -23,7 +23,6 @@ import baritone.api.event.events.PlayerUpdateEvent;
 import baritone.api.event.events.SprintStateEvent;
 import baritone.api.event.events.type.EventState;
 import baritone.behavior.LookBehavior;
-import net.minecraft.client.KeyMapping;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.entity.player.Abilities;
 import org.spongepowered.asm.mixin.Mixin;
@@ -44,6 +43,7 @@ import java.lang.invoke.MethodType;
  */
 @Mixin(LocalPlayer.class)
 public class MixinClientPlayerEntity {
+
     @Unique
     private static final MethodHandle MAY_FLY = baritone$resolveMayFly();
 
@@ -59,18 +59,50 @@ public class MixinClientPlayerEntity {
         }
     }
 
+    @Unique
+    private IBaritone baritone$getBaritone() {
+        // noinspection ConstantConditions
+        return BaritoneAPI.getProvider().getBaritoneForPlayer((LocalPlayer) (Object) this);
+    }
+
     @Inject(
             method = "tick",
-            at = @At(
-                    value = "INVOKE",
-                    target = "net/minecraft/client/player/AbstractClientPlayer.tick()V",
-                    shift = At.Shift.AFTER
-            )
+            at = @At("HEAD")
     )
     private void onPreUpdate(CallbackInfo ci) {
-        IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer((LocalPlayer) (Object) this);
+        IBaritone baritone = this.baritone$getBaritone();
         if (baritone != null) {
             baritone.getGameEventHandler().onPlayerUpdate(new PlayerUpdateEvent(EventState.PRE));
+        }
+    }
+
+    @Inject(
+            method = "tick",
+            at = @At("RETURN")
+    )
+    private void onPostUpdate(CallbackInfo ci) {
+        IBaritone baritone = this.baritone$getBaritone();
+        if (baritone != null) {
+            baritone.getGameEventHandler().onPlayerUpdate(new PlayerUpdateEvent(EventState.POST));
+        }
+    }
+
+    @Inject(
+            method = "aiStep",
+            at = @At("HEAD")
+    )
+    private void synchronizeSprintState(CallbackInfo ci) {
+        LocalPlayer self = (LocalPlayer) (Object) this;
+        IBaritone baritone = this.baritone$getBaritone();
+        if (baritone == null) {
+            return;
+        }
+
+        SprintStateEvent event = new SprintStateEvent(self.isSprinting());
+        baritone.getGameEventHandler().onPlayerSprintState(event);
+
+        if (event.isModified() && event.isSprinting() != self.isSprinting()) {
+            self.setSprinting(event.isSprinting());
         }
     }
 
@@ -83,7 +115,7 @@ public class MixinClientPlayerEntity {
     )
     @Group(name = "mayFly", min = 1, max = 1)
     private boolean isAllowFlying(Abilities capabilities) {
-        IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer((LocalPlayer) (Object) this);
+        IBaritone baritone = this.baritone$getBaritone();
         if (baritone == null) {
             return capabilities.mayfly;
         }
@@ -99,35 +131,11 @@ public class MixinClientPlayerEntity {
     )
     @Group(name = "mayFly", min = 1, max = 1)
     private boolean onMayFlyNeoforge(LocalPlayer instance) throws Throwable {
-        IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer((LocalPlayer) (Object) this);
+        IBaritone baritone = this.baritone$getBaritone();
         if (baritone == null) {
             return (boolean) MAY_FLY.invokeExact(instance);
         }
         return !baritone.getPathingBehavior().isPathing() && (boolean) MAY_FLY.invokeExact(instance);
-    }
-
-    @Redirect(
-            method = "aiStep",
-            at = @At(
-                    value = "INVOKE",
-                    target = "net/minecraft/client/KeyMapping.isDown()Z"
-            )
-    )
-    private boolean isKeyDown(KeyMapping keyBinding) {
-        IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer((LocalPlayer) (Object) this);
-        if (baritone == null) {
-            return keyBinding.isDown();
-        }
-        SprintStateEvent event = new SprintStateEvent();
-        baritone.getGameEventHandler().onPlayerSprintState(event);
-        if (event.getState() != null) {
-            return event.getState();
-        }
-        if (baritone != BaritoneAPI.getProvider().getPrimaryBaritone()) {
-            // hitting control shouldn't make all bots sprint
-            return false;
-        }
-        return keyBinding.isDown();
     }
 
     @Inject(
@@ -137,7 +145,7 @@ public class MixinClientPlayerEntity {
             )
     )
     private void updateRidden(CallbackInfo cb) {
-        IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer((LocalPlayer) (Object) this);
+        IBaritone baritone = this.baritone$getBaritone();
         if (baritone != null) {
             ((LookBehavior) baritone.getLookBehavior()).pig();
         }

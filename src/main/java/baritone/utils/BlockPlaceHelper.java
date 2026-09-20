@@ -27,6 +27,9 @@ import net.minecraft.world.phys.HitResult;
 
 import java.util.Random;
 
+import baritone.utils.builder.BlockStateResolver;
+import net.minecraft.world.level.block.state.BlockState;
+
 public class BlockPlaceHelper {
     // base ticks between places caused by tick logic
     private static final int BASE_PLACE_DELAY = 1;
@@ -58,7 +61,25 @@ public class BlockPlaceHelper {
             return;
         }
 
+        // GrimAC guard: Reach check (max 4.0 blocks to avoid Reach / FarPlace flags)
+        double maxReach = Baritone.settings().antiCheatCompatibility.value ? 4.0D : Baritone.settings().blockReachDistance.value;
+        if (ctx.player().getEyePosition().distanceTo(mouseOver.getLocation()) > maxReach) {
+            return;
+        }
+
         BlockPos currentTarget = ((BlockHitResult) mouseOver).getBlockPos();
+        BlockState targetState = ctx.world().getBlockState(currentTarget);
+
+        // GrimAC guard: If placing against an interactive block (chest, furnace, crafting table),
+        // we must be crouching, otherwise the click will open the container GUI on server!
+        if (BlockStateResolver.requiresSneakToPlaceAgainst(targetState) && !ctx.player().isCrouching()) {
+            return;
+        }
+
+        // GrimAC guard: No sprint while placing
+        if (Baritone.settings().antiCheatCompatibility.value && ctx.player().isSprinting()) {
+            ctx.player().setSprinting(false);
+        }
 
         // Humanized reaction delay: 1-2 ticks before placing on a new block face
         if (Baritone.settings().humanizedInteractDelay.value) {

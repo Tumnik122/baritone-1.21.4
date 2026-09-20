@@ -130,7 +130,19 @@ public class CalculationContext {
         this.allowDiagonalAscend = Baritone.settings().allowDiagonalAscend.value;
         this.allowDownward = Baritone.settings().allowDownward.value;
         this.minFallHeight = 3; // Minimum fall height used by MovementFall
-        this.maxFallHeightNoWater = Baritone.settings().maxFallHeightNoWater.value;
+        {
+            int baseFall = Baritone.settings().maxFallHeightNoWater.value;
+            int ffBonus = 0;
+            ItemEnchantments bootsEnch = baritone.getPlayerContext().player()
+                    .getItemBySlot(EquipmentSlot.FEET).getEnchantments();
+            for (Holder<Enchantment> enchant : bootsEnch.keySet()) {
+                if (enchant.is(Enchantments.FEATHER_FALLING)) {
+                    int level = bootsEnch.getLevel(enchant);
+                    ffBonus = Math.max(0, level) * Math.max(0, Baritone.settings().maxFallHeightFeatherBonusPerLevel.value);
+                }
+            }
+            this.maxFallHeightNoWater = baseFall + ffBonus;
+        }
         this.maxFallHeightBucket = Baritone.settings().maxFallHeightBucket.value;
         float waterSpeedMultiplier = 1.0f;
         OUTER: for (EquipmentSlot slot : EquipmentSlot.values()) {

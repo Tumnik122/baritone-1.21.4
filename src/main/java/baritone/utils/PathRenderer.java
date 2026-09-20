@@ -25,10 +25,14 @@ import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.interfaces.IGoalRenderPos;
 import baritone.behavior.PathingBehavior;
 import baritone.pathing.path.PathExecutor;
+import baritone.process.BuilderProcess;
+import baritone.utils.builder.PlacementScheduler;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.blockentity.BeaconRenderer;
+import org.joml.Matrix4f;
 import net.minecraft.core.BlockPos;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
@@ -36,6 +40,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.jetbrains.annotations.Nullable;
@@ -53,7 +58,7 @@ import java.util.List;
 public final class PathRenderer implements IRenderer {
 
     private static final ResourceLocation TEXTURE_BEACON_BEAM = ResourceLocation.parse("textures/entity/beacon_beam.png");
-
+    private static final Matrix4f currentProjection = new Matrix4f();
 
     private PathRenderer() {}
 
@@ -77,6 +82,8 @@ public final class PathRenderer implements IRenderer {
         if (ctx.minecraft().screen instanceof GuiClick) {
             ((GuiClick) ctx.minecraft().screen).onRender(event.getModelViewStack(), event.getProjectionMatrix());
         }
+
+        currentProjection.set(event.getProjectionMatrix());
 
         final float partialTicks = event.getPartialTicks();
         final Goal goal = behavior.getGoal();
@@ -115,7 +122,10 @@ public final class PathRenderer implements IRenderer {
         // Render the current path with gradient color
         if (current != null && current.getPath() != null) {
             int renderBegin = Math.max(current.getPosition() - 3, 0);
-            drawPathGradient(event.getModelViewStack(), current.getPath().positions(), renderBegin, settings.fadePath.value, 10, 20);
+            List<BetterBlockPos> curPos = current.getPath().positions();
+            drawPathGradient(event.getModelViewStack(), curPos, renderBegin, settings.fadePath.value, 10, 20);
+            drawPathRibbon(event.getModelViewStack(), curPos, renderBegin);
+            drawPathWaveOrbs(event.getModelViewStack(), curPos, renderBegin);
         }
 
         if (next != null && next.getPath() != null) {
@@ -131,8 +141,14 @@ public final class PathRenderer implements IRenderer {
             currentlyRunning.pathToMostRecentNodeConsidered().ifPresent(mr -> {
                 drawPath(event.getModelViewStack(), mr.positions(), 0, settings.colorMostRecentConsidered.value, settings.fadePath.value, 10, 20);
                 drawManySelectionBoxes(event.getModelViewStack(), ctx.player(), Collections.singletonList(mr.getDest()), settings.colorMostRecentConsidered.value);
+                drawSearchNodes(event.getModelViewStack(), mr.positions());
             });
         });
+
+        // ---- Builder / Litematica overlay (Fix 5 + 6) ----
+        if (settings.builderVisuals.value) {
+            renderBuilderOverlay(event.getModelViewStack(), behavior.ctx, event.getPartialTicks());
+        }
     }
 
     public static void drawPath(PoseStack stack, List<BetterBlockPos> positions, int startIndex, Color color, boolean fadeOut, int fadeStart0, int fadeEnd0) {
@@ -141,19 +157,24 @@ public final class PathRenderer implements IRenderer {
 
     public static void drawPath(PoseStack stack, List<BetterBlockPos> positions, int startIndex, Color color, boolean fadeOut, int fadeStart0, int fadeEnd0, double offset) {
         if (settings.renderShaderEffects.value) {
-            // A wide, low-alpha pass gives the custom fragment shader a visible halo without a costly post-process pass.
-            drawPathPass(stack, positions, startIndex, color, fadeOut, fadeStart0, fadeEnd0, offset, 2.35F, 0.24F);
+            drawPathPass(stack, positions, startIndex, color, fadeOut, fadeStart0, fadeEnd0, offset, 2.35F, 0.24F, true);
         }
-        drawPathPass(stack, positions, startIndex, color, fadeOut, fadeStart0, fadeEnd0, offset, 1.0F, 1.0F);
+        drawPathPass(stack, positions, startIndex, color, fadeOut, fadeStart0, fadeEnd0, offset, 1.0F, 1.0F, false);
     }
 
     private static void drawPathPass(PoseStack stack, List<BetterBlockPos> positions, int startIndex, Color color, boolean fadeOut,
                                      int fadeStart0, int fadeEnd0, double offset, float lineWidthMultiplier, float alphaMultiplier) {
+        drawPathPass(stack, positions, startIndex, color, fadeOut, fadeStart0, fadeEnd0, offset, lineWidthMultiplier, alphaMultiplier, false);
+    }
+
+    private static void drawPathPass(PoseStack stack, List<BetterBlockPos> positions, int startIndex, Color color, boolean fadeOut,
+                                     int fadeStart0, int fadeEnd0, double offset, float lineWidthMultiplier, float alphaMultiplier, boolean additiveHalo) {
         BufferBuilder bufferBuilder = IRenderer.startLines(
                 color,
                 0.4F * alphaMultiplier,
                 settings.pathRenderLineWidthPixels.value * lineWidthMultiplier,
-                settings.renderPathIgnoreDepth.value
+                settings.renderPathIgnoreDepth.value,
+                additiveHalo
         );
 
         int fadeStart = fadeStart0 + startIndex;
@@ -403,6 +424,20 @@ public final class PathRenderer implements IRenderer {
         if (setupRender) {
             IRenderer.endLines(bufferBuilder, settings.renderGoalIgnoreDepth.value);
         }
+
+        if (maxY - minY > 12.0) {
+            return;
+        }
+        if (WorldFxShaders.isUsable()) {
+            AABB cam = new AABB(minX, minY, minZ, maxX, maxY, maxZ);
+            WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_HOLO, settings.renderGoalIgnoreDepth.value, false);
+            WorldFxShaders.holoBox(cam, colorIn, 0.55F);
+            WorldFxShaders.end();
+        } else if (settings.renderFilledBoxes.value && settings.renderShaderEffects.value) {
+            BufferBuilder fill = IRenderer.startFilledHolo(colorIn, Math.max(0.18F, settings.filledBoxAlpha.value), settings.renderGoalIgnoreDepth.value);
+            IRenderer.emitFilledAABB(fill, stack, new AABB(minX + posX(), minY + posY(), minZ + posZ(), maxX + posX(), maxY + posY(), maxZ + posZ()));
+            IRenderer.endFilled(fill, settings.renderGoalIgnoreDepth.value);
+        }
     }
 
     private static void renderHorizontalQuad(BufferBuilder bufferBuilder, PoseStack stack, double minX, double maxX, double minZ, double maxZ, double y) {
@@ -428,15 +463,14 @@ public final class PathRenderer implements IRenderer {
 
         // Wide halo pass first
         if (settings.renderShaderEffects.value) {
-            drawPathGradientPass(stack, positions, startIndex, fadeOut, fadeStart0, fadeEnd0, 0.5D, 2.4F, 0.22F, t);
+            drawPathGradientPass(stack, positions, startIndex, fadeOut, fadeStart0, fadeEnd0, 0.5D, 2.4F, 0.22F, t, true);
         }
-        // Sharp pass on top
-        drawPathGradientPass(stack, positions, startIndex, fadeOut, fadeStart0, fadeEnd0, 0.5D, 1.0F, 1.0F, t);
+        drawPathGradientPass(stack, positions, startIndex, fadeOut, fadeStart0, fadeEnd0, 0.5D, 1.0F, 1.0F, t, false);
     }
 
     private static void drawPathGradientPass(PoseStack stack, List<BetterBlockPos> positions, int startIndex,
                                               boolean fadeOut, int fadeStart0, int fadeEnd0,
-                                              double offset, float widthMult, float alphaMult, long timeMs) {
+                                              double offset, float widthMult, float alphaMult, long timeMs, boolean additiveHalo) {
         int total = positions.size();
         if (total < 2 || startIndex >= total - 1) return;
 
@@ -444,7 +478,7 @@ public final class PathRenderer implements IRenderer {
         int fadeEnd = fadeEnd0 + startIndex;
 
         BufferBuilder buf = IRenderer.startLines(Color.WHITE, 0.55F * alphaMult,
-                settings.pathRenderLineWidthPixels.value * widthMult, settings.renderPathIgnoreDepth.value);
+                settings.pathRenderLineWidthPixels.value * widthMult, settings.renderPathIgnoreDepth.value, additiveHalo);
 
         // We render all segments in a single batched buffer pass
         for (int i = startIndex; i < total - 1; i++) {
@@ -527,11 +561,6 @@ public final class PathRenderer implements IRenderer {
         });
         IRenderer.endLines(bufferBuilder, settings.renderSelectionBoxesIgnoreDepth.value);
     }
-
-    /**
-     * Draws 4 small orbital marker boxes around the goal position,
-     * rotating around the Y axis like satellites.
-     */
     private static void drawGoalOrbitParticles(PoseStack stack, IPlayerContext ctx, Goal goal) {
         if (!(goal instanceof IGoalRenderPos)) return;
         BlockPos goalPos = ((IGoalRenderPos) goal).getGoalPos();
@@ -541,32 +570,255 @@ public final class PathRenderer implements IRenderer {
         double cz = goalPos.getZ() + 0.5 - posZ();
 
         long t = System.currentTimeMillis();
-        double angleBase = (t / 1200.0) * Math.PI * 2.0; // full orbit every 1.2 seconds
-        double radius = 0.75;
-        double size = 0.08;
+        double angleBase = (t / 1200.0) * Math.PI * 2.0;
+        double radius = 0.85;
+        int numOrbs = 6;
 
-        int numOrbs = 4;
+        if (WorldFxShaders.isUsable()) {
+            WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_ORB, settings.renderGoalIgnoreDepth.value, true);
+            for (int i = 0; i < numOrbs; i++) {
+                double angle = angleBase + (Math.PI * 2.0 / numOrbs) * i;
+                float ox = (float) (cx + Math.cos(angle) * radius);
+                float oz = (float) (cz + Math.sin(angle) * radius);
+                float oy = (float) (cy + Math.sin(angle * 2 + t / 700.0) * 0.22);
+                float hue = (float) (((angle / (Math.PI * 2.0)) + (t / 3000.0)) % 1.0);
+                WorldFxShaders.billboard(ox, oy, oz, 0.14F, Color.getHSBColor(hue, 0.9F, 1.0F), 0.9F, (float) i);
+            }
+            WorldFxShaders.end();
+            return;
+        }
+
+        double size = 0.08;
         BufferBuilder buf = IRenderer.startLines(Color.WHITE, 0.85F,
                 settings.pathRenderLineWidthPixels.value * 1.5F, settings.renderGoalIgnoreDepth.value);
-
         for (int i = 0; i < numOrbs; i++) {
             double angle = angleBase + (Math.PI * 2.0 / numOrbs) * i;
             double ox = cx + Math.cos(angle) * radius;
             double oz = cz + Math.sin(angle) * radius;
-            // Bob up and down slightly
             double oy = cy + Math.sin(angle * 2 + t / 700.0) * 0.2;
-
             AABB orb = new AABB(ox - size, oy - size, oz - size, ox + size, oy + size, oz + size);
-
-            // Hue based on orbit position
             float hue = (float) (((angle / (Math.PI * 2.0)) + (t / 3000.0)) % 1.0);
-            Color orbColor = Color.getHSBColor(hue, 0.9F, 1.0F);
-
-            IRenderer.glColor(orbColor, 0.85F);
+            IRenderer.glColor(Color.getHSBColor(hue, 0.9F, 1.0F), 0.85F);
             IRenderer.emitAABB(buf, stack, orb, 0.0);
         }
-
         IRenderer.endLines(buf, settings.renderGoalIgnoreDepth.value);
+    }
+
+    private static void drawPathRibbon(PoseStack stack, List<BetterBlockPos> positions, int startIndex) {
+        if (!WorldFxShaders.isUsable() || positions == null || positions.size() < 2) {
+            return;
+        }
+        int total = positions.size();
+        if (startIndex >= total - 1) {
+            return;
+        }
+        long t = System.currentTimeMillis();
+        WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_RIBBON, settings.renderPathIgnoreDepth.value, true);
+        int step = Math.max(1, (total - startIndex) / 256);
+        int drawn = 0;
+        for (int i = startIndex; i < total - 1 && drawn < 256; i += step, drawn++) {
+            int j = Math.min(total - 1, i + step);
+            BetterBlockPos a = positions.get(i);
+            BetterBlockPos b = positions.get(j);
+            float along0 = (float) i / (total - 1);
+            float along1 = (float) j / (total - 1);
+            Color c;
+            if (settings.renderRainbowPath.value) {
+                c = Color.getHSBColor((float) ((t / 2500.0 + i / 18.0) % 1.0), 0.85F, 1.0F);
+            } else {
+                float hue = (0.50F + along0 * 0.33F + (float) ((t / 8000.0) % 1.0)) % 1.0F;
+                c = Color.getHSBColor(hue, 0.88F, 1.0F);
+            }
+            WorldFxShaders.ribbon(
+                    (float) (a.x + 0.5 - posX()), (float) (a.y + 0.5 - posY()), (float) (a.z + 0.5 - posZ()),
+                    (float) (b.x + 0.5 - posX()), (float) (b.y + 0.5 - posY()), (float) (b.z + 0.5 - posZ()),
+                    0.16F, c, 0.55F, along0, along1
+            );
+        }
+        WorldFxShaders.end();
+    }
+
+    private static void drawPathWaveOrbs(PoseStack stack, List<BetterBlockPos> positions, int startIndex) {
+        if (!WorldFxShaders.isUsable() || positions == null || positions.size() < 2) {
+            return;
+        }
+        int total = positions.size();
+        if (startIndex >= total - 1) {
+            return;
+        }
+        long timeMs = System.currentTimeMillis();
+        double wavePos = ((timeMs % 1600L) / 1600.0) * (total - 1);
+        WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_ORB, settings.renderPathIgnoreDepth.value, true);
+        for (int k = 0; k < 8; k++) {
+            double idx = wavePos - k * 0.55;
+            if (idx < startIndex) {
+                idx += (total - 1 - startIndex);
+            }
+            if (idx < startIndex || idx > total - 1) {
+                continue;
+            }
+            int i0 = (int) Math.floor(idx);
+            int i1 = Math.min(total - 1, i0 + 1);
+            i0 = Math.max(0, Math.min(total - 1, i0));
+            float f = (float) (idx - i0);
+            BetterBlockPos a = positions.get(i0);
+            BetterBlockPos b = positions.get(i1);
+            float x = (float) (a.x + (b.x - a.x) * f + 0.5 - posX());
+            float y = (float) (a.y + (b.y - a.y) * f + 0.5 - posY());
+            float z = (float) (a.z + (b.z - a.z) * f + 0.5 - posZ());
+            float hue = (0.50F + (float) i0 / Math.max(1, total - 1) * 0.33F) % 1.0F;
+            WorldFxShaders.billboard(x, y, z, 0.11F - k * 0.008F, Color.getHSBColor(hue, 0.9F, 1.0F), 0.85F, (float) k);
+        }
+        WorldFxShaders.end();
+    }
+
+    private static void drawSearchNodes(PoseStack stack, List<BetterBlockPos> positions) {
+        if (!WorldFxShaders.isUsable() || positions == null || positions.isEmpty()) {
+            return;
+        }
+        WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_NODE, settings.renderPathIgnoreDepth.value, true);
+        int step = Math.max(1, positions.size() / 48);
+        int n = 0;
+        for (int i = 0; i < positions.size() && n < 48; i += step, n++) {
+            BetterBlockPos p = positions.get(i);
+            WorldFxShaders.billboard(
+                    (float) (p.x + 0.5 - posX()), (float) (p.y + 0.5 - posY()), (float) (p.z + 0.5 - posZ()),
+                    0.10F, new Color(255, 140, 40), 0.7F, i * 0.17F
+            );
+        }
+        WorldFxShaders.end();
+    }
+
+    // =====================================================================
+    // Builder overlay (Fix 5 + 6)
+    // =====================================================================
+
+    /**
+     * Renders color-coded wireframe boxes for all pending build targets:
+     * <ul>
+     *   <li>Green  (0x00FF64) — in reach, has material</li>
+     *   <li>Amber  (0xFFC800) — out of reach, has material</li>
+     *   <li>Red    (0xFF3232) pulsing — missing material</li>
+     *   <li>Blue   (0x5096FF) — temporarily skipped</li>
+     * </ul>
+     * Current target gets a bright white pulsing wireframe + holographic fill.
+     * Placement success events get an orbiting-orb animation.
+     */
+    private static void renderBuilderOverlay(PoseStack stack, IPlayerContext ctx, float partialTicks) {
+        if (BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess() == null) {
+            return;
+        }
+        Object rawBuilder = BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess();
+        if (!(rawBuilder instanceof BuilderProcess builder) || !builder.isActive()) {
+            return;
+        }
+
+        float time = (ctx.world().getGameTime() + partialTicks) / 20.0F;
+        Vec3 eye = ctx.player().getEyePosition(partialTicks);
+        double reach = BaritoneAPI.getSettings().builderPlacementReach.value;
+        int maxTargets = BaritoneAPI.getSettings().builderOverlayMaxTargets.value;
+        double overlayDist = BaritoneAPI.getSettings().builderOverlayDistance.value;
+
+        List<PlacementScheduler.Target> pending = builder.getPendingTargets();
+        PlacementScheduler.Target current = builder.getCurrentTarget();
+
+        // ---- pass 1: color-coded wireframes for all pending targets (no depth test) ----
+        if (!pending.isEmpty()) {
+            // Color constants
+            Color colorGreen  = new Color(0x00, 0xFF, 0x64, 100);
+            Color colorAmber  = new Color(0xFF, 0xC8, 0x00, 76);
+            Color colorRed    = new Color(0xFF, 0x32, 0x32, 130);
+            Color colorBlue   = new Color(0x50, 0x96, 0xFF, 51);
+
+            int drawn = 0;
+            BufferBuilder bb = IRenderer.startLines(colorGreen, 0.4f, 1.5f, true);
+            for (PlacementScheduler.Target t : pending) {
+                if (t == current) continue;
+                if (drawn >= maxTargets) break;
+                double dx = t.pos.getX() + 0.5 - eye.x;
+                double dy = t.pos.getY() + 0.5 - eye.y;
+                double dz = t.pos.getZ() + 0.5 - eye.z;
+                if (dx * dx + dy * dy + dz * dz > overlayDist * overlayDist) continue;
+
+                boolean missing = builder.isMissingMaterial(t);
+                boolean skipped = builder.isSkipped(t);
+
+                Color c;
+                if (missing) {
+                    float pulse = 0.55f + 0.45f * Mth.sin(time * 7.0f);
+                    c = new Color(0xFF, 0x32, 0x32, (int)(130 * pulse));
+                } else if (skipped) {
+                    c = colorBlue;
+                } else if (eye.distanceToSqr(Vec3.atCenterOf(t.pos)) < reach * reach) {
+                    c = colorGreen;
+                } else {
+                    c = colorAmber;
+                }
+                IRenderer.glColor(c, c.getAlpha() / 255.0f);
+                IRenderer.emitAABB(bb, stack, new AABB(t.pos));
+                drawn++;
+            }
+            IRenderer.endLines(bb, true);
+        }
+
+        // ---- pass 2: current target — bright white pulsing wireframe + holo fill ----
+        if (current != null) {
+            float pulse = 0.5f + 0.5f * Mth.sin(time * 6.0f);
+            Color curColor = new Color(1.0f, 1.0f, 1.0f, 0.5f + 0.5f * pulse);
+
+            BufferBuilder bbCur = IRenderer.startLines(curColor, 0.5f + 0.5f * pulse, 2.5f, true);
+            IRenderer.glColor(curColor, 0.5f + 0.5f * pulse);
+            IRenderer.emitAABB(bbCur, stack, new AABB(current.pos));
+            IRenderer.endLines(bbCur, true);
+
+            // Holographic fill (uses existing holo shader if available)
+            if (BaritoneAPI.getSettings().builderHologramCurrentTarget.value) {
+                Color holoColor = new Color(0x9A, 0xE8, 0xFF, (int)(255 * 0.25f * (0.6f + 0.4f * pulse)));
+                if (WorldFxShaders.isUsable()) {
+                    WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_HOLO, true, false);
+                    WorldFxShaders.holoBox(new AABB(current.pos), holoColor, holoColor.getAlpha() / 255.0f);
+                    WorldFxShaders.end();
+                } else {
+                    BufferBuilder bbHolo = IRenderer.startFilledHolo(holoColor, holoColor.getAlpha() / 255.0f, true);
+                    IRenderer.glColor(holoColor, holoColor.getAlpha() / 255.0f);
+                    IRenderer.emitFilledAABB(bbHolo, stack, new AABB(current.pos));
+                    IRenderer.endFilled(bbHolo, true);
+                }
+            }
+        }
+
+        // ---- pass 3: placement FX (orbiting orbs on success) ----
+        if (BaritoneAPI.getSettings().builderPlacementFx.value && WorldFxShaders.isUsable()) {
+            renderPlacementFxOrbs(stack, builder, time, partialTicks);
+        }
+    }
+
+    /** Orbiting orbs burst animation on each confirmed block placement. */
+    private static void renderPlacementFxOrbs(PoseStack stack, BuilderProcess builder, float time, float partialTicks) {
+        PlacementScheduler scheduler = builder.getScheduler();
+        BlockPos lastPos = scheduler.getLastPlacedPos();
+        long lastTick = scheduler.getLastPlacedTick();
+        if (lastPos == null) return;
+
+        // Animate for 20 ticks (1 second) after placement
+        long currentTick = Minecraft.getInstance().level != null ? Minecraft.getInstance().level.getGameTime() : 0;
+        float age = (currentTick - lastTick + partialTicks) / 20.0F;
+        if (age < 0.0f || age >= 1.0f) return;
+
+        float fade = 1.0f - age;
+        WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_ORB, true, true);
+        for (int i = 0; i < 6; i++) {
+            float theta = age * (float)(Math.PI * 4.0) + i * Mth.PI / 3.0f;
+            float orbX = (float)(lastPos.getX() + 0.5 - posX() + Math.cos(theta) * 0.62);
+            float orbY = (float)(lastPos.getY() + 0.5 - posY() + 0.5 + 0.35 * age);
+            float orbZ = (float)(lastPos.getZ() + 0.5 - posZ() + Math.sin(theta) * 0.62);
+            WorldFxShaders.billboard(orbX, orbY, orbZ,
+                    0.10f * fade,
+                    new Color(0x50, 0xE8, 0xFF),
+                    fade * 0.85f,
+                    i * 0.3f + time);
+        }
+        WorldFxShaders.end();
     }
 }
 

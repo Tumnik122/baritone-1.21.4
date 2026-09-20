@@ -18,7 +18,9 @@
 package baritone.utils;
 
 import baritone.api.BaritoneAPI;
+import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.IPlayerContext;
+import baritone.hud.AiActionLogger;
 import baritone.utils.accessor.IPlayerControllerMP;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
@@ -61,6 +63,7 @@ public final class BlockBreakHelper {
         }
         lastTargetPos = null;
         reactionDelay = 0;
+        ContinuousBreakController.reset();
     }
 
     public void tick(boolean isLeftClick) {
@@ -73,6 +76,7 @@ public final class BlockBreakHelper {
 
         if (isLeftClick && isBlockTrace) {
             BlockPos currentTarget = ((BlockHitResult) trace).getBlockPos();
+            ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(currentTarget));
 
             // Humanized reaction delay: wait 1-2 ticks the first time we look at a new block
             if (BaritoneAPI.getSettings().humanizedInteractDelay.value) {
@@ -101,6 +105,7 @@ public final class BlockBreakHelper {
                 }
                 if (ctx.playerController().hasBrokenBlock()) { // block broken this tick
                     baritone.hud.GatherTracker.INSTANCE.onBlockBroken(brokenState.getBlock(), targetPos);
+                    AiActionLogger.log("MINE", "Wykopano " + brokenState.getBlock().getName().getString() + " na [" + targetPos.getX() + ", " + targetPos.getY() + ", " + targetPos.getZ() + "]");
                     // break delay timer only applies for multi-tick block breaks like vanilla
                     int baseDelay = BaritoneAPI.getSettings().blockBreakSpeed.value - BASE_BREAK_DELAY;
 
@@ -115,9 +120,13 @@ public final class BlockBreakHelper {
                             baseDelay = 0;
                         }
                     }
-                    breakDelayTimer = Math.max(0, baseDelay);
-                    // must reset controller's destroy delay to prevent the client from delaying itself unnecessarily
-                    ((IPlayerControllerMP) ctx.minecraft().gameMode).setDestroyDelay(0);
+                    if (BaritoneAPI.getSettings().antiCheatCompatibility.value) {
+                        breakDelayTimer = Math.max(5, baseDelay);
+                        ((IPlayerControllerMP) ctx.minecraft().gameMode).setDestroyDelay(5);
+                    } else {
+                        breakDelayTimer = Math.max(0, baseDelay);
+                        ((IPlayerControllerMP) ctx.minecraft().gameMode).setDestroyDelay(0);
+                    }
                     // Reset lastTargetPos so next block also gets a reaction delay
                     lastTargetPos = null;
                 }

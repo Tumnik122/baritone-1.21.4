@@ -68,6 +68,26 @@ public final class Settings {
     public final Setting<List<Block>> allowBreakAnyway = new Setting<>(new ArrayList<>());
 
     /**
+     * Ciągłe trzymanie przycisku niszczenia między kolejnymi blokami (słupki kłód, linie drzew).
+     */
+    public final Setting<Boolean> continuousBreaking = new Setting<>(true);
+
+    /**
+     * Ile ticków po rozbiciu bloku lepkość jeszcze działa (15 = 0.75 s).
+     */
+    public final Setting<Integer> breakHoldTicks = new Setting<>(15);
+
+    /**
+     * Maks. dystans nowego celu od ostatnio rozbitego bloku (słupek=1, linia drzew≈5).
+     */
+    public final Setting<Double> breakHoldMaxDistance = new Setting<>(5.0);
+
+    /**
+     * Maks. kąt obrotu (stopnie), podczas którego trzymamy przycisk.
+     */
+    public final Setting<Double> breakHoldMaxAngle = new Setting<>(90.0);
+
+    /**
      * Allow Baritone to sprint
      */
     public final Setting<Boolean> allowSprint = new Setting<>(true);
@@ -331,6 +351,99 @@ public final class Settings {
     public final Setting<List<String>> buildIgnoreProperties = new Setting<>(new ArrayList<>(Arrays.asList(
     )));
 
+    // ========================= Builder / placement tuning =========================
+
+    /** BUG 5 / IMPROVEMENT 1: Y-first ordering + support priority before placement. */
+    public final Setting<Boolean> smartPlacementScheduler = new Setting<>(true);
+
+    /** BUG 3 / IMPROVEMENT 2: wait for the placed block to appear in the world
+     *  (client prediction + server-correction window) before the next placement.
+     *  Detects ghost blocks and re-queues them. */
+    public final Setting<Boolean> placementVerifyServer = new Setting<>(true);
+
+    /** IMPROVEMENT 2: ticks to wait for the server block update before treating
+     *  a placement as confirmed / rejecting it as a ghost block. */
+    public final Setting<Integer> placementVerifyTimeoutTicks = new Setting<>(10);
+
+    /** BUG 3: forced cooldown ticks between two placements.
+     *  2 = max 1 block per 2 ticks (GrimAC-safe). */
+    public final Setting<Integer> placementDelayTicks = new Setting<>(2);
+
+    /** BUG 4: advanced orientation resolution for directional blocks (stairs,
+     *  slabs, furnaces, observers, logs, pistons, hoppers, crafters...) by
+     *  simulating vanilla's getStateForPlacement() before clicking. */
+    public final Setting<Boolean> rotationResolver = new Setting<>(true);
+
+    /** IMPROVEMENT 4: smooth, human-like rotation. */
+    public final Setting<Boolean> smoothRotation = new Setting<>(true);
+    public final Setting<Integer> maxRotationStepDegrees = new Setting<>(45);
+    public final Setting<Double> rotationNoiseDegrees = new Setting<>(0.5);
+
+    /** Master switch for strict anti-cheat compat (GrimAC). Forces
+     *  placementDelayTicks >= 2, smooth rotation and disables sprinting while a
+     *  placement is pending. */
+    public final Setting<Boolean> antiCheatCompat = new Setting<>(true);
+
+    /** BUG 1: consecutive pathing failures tolerated for the same work area
+     *  before those blocks are skipped (and retried later). */
+    public final Setting<Integer> calcFailSkipThreshold = new Setting<>(3);
+    public final Setting<Integer> unreachableRetryTicks = new Setting<>(200);
+
+    // ---- FIX 1: Verification hard cap + ghost backoff ----
+    /** Hard cap on how long a pending placement verification may age (ticks). Clamped to [1,20]. */
+    public final Setting<Integer> builderPlacementVerifyHardCapTicks = new Setting<>(20);
+    /** Base ghost-block backoff ticks. Doubles per consecutive failure: 200 -> 400 -> 800, then capped. */
+    public final Setting<Integer> builderGhostBackoffBaseTicks = new Setting<>(200);
+
+    // ---- Anti-stall / watchdog ----
+    /** Max ticks of zero movement / zero placements before force-skipping the current target (3s = 60t). */
+    public final Setting<Integer> builderMaxStandStillTicks = new Setting<>(60);
+    /** Consecutive path-calc failures before skipping a target. */
+    public final Setting<Integer> builderCalcFailStreakSkip = new Setting<>(2);
+    /** Ticks with zero actionable targets before a layer is force-advanced / skips are relaxed. */
+    public final Setting<Integer> builderStarvedTickLimit = new Setting<>(100);
+
+    // ---- FIX 3: Self-unstuck ----
+    /** Radius of the GoalRunAway used to escape a schematic block the player is standing inside. */
+    public final Setting<Integer> builderSelfUnstuckRadius = new Setting<>(2);
+
+    // ---- GrimAC-safe pacing ----
+    /** Ticks between placements. */
+    public final Setting<Integer> builderPlacementCooldownTicks = new Setting<>(6);
+    /** Block-reach distance clamp (vanilla = 4.5, GrimAC safe = 4.0). */
+    public final Setting<Double>  builderPlacementReach = new Setting<>(4.0D);
+    /** Max rotation degrees per tick while building. */
+    public final Setting<Double>  builderMaxRotationStepDeg = new Setting<>(60.0D);
+    /** Ticks the crosshair must be settled on target before a click fires. */
+    public final Setting<Integer> builderRotationSettleTicks = new Setting<>(2);
+
+    // ---- FIX 2: Scaffolding ----
+    /** Allow building temporary support blocks when no adjacent solid face exists. */
+    public final Setting<Boolean> builderScaffolding = new Setting<>(true);
+    /** Blocks usable as throwaway scaffold (first found in inventory wins). */
+    public final Setting<List<Block>> builderScaffoldBlocks = new Setting<>(new ArrayList<>(Arrays.asList(
+            Blocks.COBBLESTONE, Blocks.DIRT, Blocks.NETHERRACK, Blocks.STONE)));
+
+    // ---- FIX 4: Materials handling ----
+    /** true = missing materials pause and wait for restock; false = old hard-stop behavior. */
+    public final Setting<Boolean> builderWaitForMaterials = new Setting<>(true);
+    /** Fuzzy world-vs-schematic comparison (same block type, ignoring minor state differences). */
+    public final Setting<Boolean> builderFuzzyBlockMatch = new Setting<>(true);
+
+    // ---- Visuals (Fix 5/6) ----
+    /** Master switch for builder block overlay (color-coded pending targets). */
+    public final Setting<Boolean>  builderVisuals = new Setting<>(true);
+    /** Show holographic preview on the currently aimed-at target block. */
+    public final Setting<Boolean>  builderHologramCurrentTarget = new Setting<>(true);
+    /** Show placement success particle animation (orbit orbs + holo fade). */
+    public final Setting<Boolean>  builderPlacementFx = new Setting<>(true);
+    /** Use custom GLSL shaders for builder visuals; falls back to vanilla rendering if false. */
+    public final Setting<Boolean>  builderUseCustomShaders = new Setting<>(true);
+    /** Maximum number of pending targets rendered in the overlay (performance cap). */
+    public final Setting<Integer>  builderOverlayMaxTargets = new Setting<>(512);
+    /** Maximum distance from the player to render builder overlay targets (blocks). */
+    public final Setting<Integer>  builderOverlayDistance = new Setting<>(64);
+
     /**
      * If this setting is true, Baritone will never break a block that is adjacent to an unsupported falling block.
      * <p>
@@ -359,14 +472,14 @@ public final class Settings {
      * <p>
      * It also overshoots the landing pretty much always (making contact with the next block over), so be careful
      */
-    public final Setting<Boolean> allowParkour = new Setting<>(false);
+    public final Setting<Boolean> allowParkour = new Setting<>(true);
 
     /**
      * Actually pretty reliable.
      * <p>
      * Doesn't make it any more dangerous compared to just normal allowParkour th
      */
-    public final Setting<Boolean> allowParkourPlace = new Setting<>(false);
+    public final Setting<Boolean> allowParkourPlace = new Setting<>(true);
 
     /**
      * For example, if you have Mining Fatigue or Haste, adjust the costs of breaking blocks accordingly.
@@ -374,16 +487,23 @@ public final class Settings {
     public final Setting<Boolean> considerPotionEffects = new Setting<>(true);
 
     /**
-     * Sprint and jump a block early on ascends wherever possible
+     * Sprint and jump a block early on ascends wherever possible.
+     * <p>
+     * Disabled by default: at high latency (>60 ms) the early jump fires before
+     * the server has confirmed the player's foot position, causing a collision
+     * GrimAC registers as an invalid ascend and issues a setback.
      */
-    public final Setting<Boolean> sprintAscends = new Setting<>(true);
+    public final Setting<Boolean> sprintAscends = new Setting<>(false);
 
     /**
      * If we overshoot a traverse and end up one block beyond the destination, mark it as successful anyway.
      * <p>
-     * This helps with speed exceeding 20m/s
+     * Disabled by default: overshooting at sprint speed places the player hitbox
+     * partially over the next block before the server confirms the position. On
+     * narrow bridges or edges this triggers a GrimAC NoSlowDown / EdgeTravel
+     * flag and causes a setback.
      */
-    public final Setting<Boolean> overshootTraverse = new Setting<>(true);
+    public final Setting<Boolean> overshootTraverse = new Setting<>(false);
 
     /**
      * When breaking blocks for a movement, wait until all falling blocks have settled before continuing
@@ -403,7 +523,7 @@ public final class Settings {
     /**
      * Block reach distance
      */
-    public final Setting<Float> blockReachDistance = new Setting<>(4.5f);
+    public final Setting<Float> blockReachDistance = new Setting<>(4.0f);
 
     /**
      * How many ticks between breaking a block and starting to break the next block. Default in game is 6 ticks.
@@ -554,7 +674,7 @@ public final class Settings {
      * 3 won't deal any damage. But if you just want to get down the mountain quickly and you have
      * Feather Falling IV, you might set it a bit higher, like 4 or 5.
      */
-    public final Setting<Integer> maxFallHeightNoWater = new Setting<>(3);
+    public final Setting<Integer> maxFallHeightNoWater = new Setting<>(4);
 
     /**
      * How far are you allowed to fall onto solid ground (with a water bucket)?
@@ -595,12 +715,42 @@ public final class Settings {
      * <p>
      * If no valid path (length above the minimum) has been found, pathing continues up until the failure timeout
      */
-    public final Setting<Long> primaryTimeoutMS = new Setting<>(500L);
+    public final Setting<Long> primaryTimeoutMS = new Setting<>(2500L);
 
     /**
      * Pathing can never take longer than this, even if that means failing to find any path at all
      */
-    public final Setting<Long> failureTimeoutMS = new Setting<>(2000L);
+    public final Setting<Long> failureTimeoutMS = new Setting<>(6000L);
+
+    /**
+     * Pozwól na wykonanie najlepszego częściowego segmentu w stronę celu, nawet gdy pełna trasa nie jest znana
+     */
+    public final Setting<Boolean> planAheadWithFailed = new Setting<>(true);
+
+    /**
+     * Waga heurystyki A* (weighted A*): 1.0 = optimum, 1.15 = 3-10x szybciej w trudnym terenie
+     */
+    public final Setting<Double> astarWeight = new Setting<>(1.15);
+
+    /**
+     * Ile warstw śniegu traktujemy jako przechodnie (1-2 = spacer przez śnieg bez kopania)
+     */
+    public final Setting<Integer> snowPassableLayers = new Setting<>(2);
+
+    /**
+     * Dodatkowe kratki zeskoku na 1 poziom Feather Falling
+     */
+    public final Setting<Integer> maxFallHeightFeatherBonusPerLevel = new Setting<>(1);
+
+    /**
+     * Nigdy nie wchodź na powder snow
+     */
+    public final Setting<Boolean> avoidPowderSnow = new Setting<>(true);
+
+    /**
+     * Drabina retry po CALC_FAILED
+     */
+    public final Setting<Boolean> calcFailedRetryLadder = new Setting<>(true);
 
     /**
      * Planning ahead while executing a segment ends after this amount of time, but only if a path has been found
@@ -837,10 +987,48 @@ public final class Settings {
     public final Setting<Boolean> showHudOverlay = new Setting<>(true);
 
     /**
+     * Mini XZ radar of the active path on the HUD (shader). Requires {@link #showHudOverlay}.
+     */
+    public final Setting<Boolean> hudShowRadar = new Setting<>(true);
+
+    /**
+     * When true and Baritone is actively pathing/mining, prevents Minecraft from pausing the game
+     * or throttling the tick/frame rate when the window is minimized or loses focus.
+     * This allows Baritone to keep mining uninterrupted while you alt+tab or minimize.
+     */
+    public final Setting<Boolean> runBackgroundWhenUnfocused = new Setting<>(true);
+
+    /**
+     * Baritone nie pozwala, by gra się zatrzymała podczas pathingu:
+     * - ESC / menu pauzy nie pauzuje świata (singleplayer),
+     * - utrata fokusu okna (alt-tab) nie pauzuje świata.
+     * Bezpieczne dla anty-cheatów — nie zmienia pakietów, tylko tickowanie.
+     */
+    public final Setting<Boolean> noPauseWhenPathing = new Setting<>(true);
+
+    /**
+     * Baritone steruje ruchem także przy otwartym ekranie
+     * (czat, ekwipunek, ESC). Domyślnie WŁĄCZONE.
+     * Flagi ChatC neutralizowane osobno (chat suppress przy wysyłce).
+     */
+    public final Setting<Boolean> inputWhileScreenOpen = new Setting<>(true);
+
+    /**
+     * Prawy przycisk (jedzenie, stawianie bloków) działa mimo otwartego GUI.
+     */
+    public final Setting<Boolean> clicksWithScreenOpen = new Setting<>(true);
+
+    /**
      * Use Baritone's custom GPU shaders for path lines and target block fills.
      * Disabling this falls back to the vanilla position/color render programs.
      */
     public final Setting<Boolean> renderShaderEffects = new Setting<>(true);
+
+    /**
+     * Extra world overlay FX (energy ribbon, goal hologram, orbit orbs, A* nodes).
+     * Requires {@link #renderShaderEffects}. Disable if you need a few extra FPS.
+     */
+    public final Setting<Boolean> renderWorldFx = new Setting<>(true);
 
     /**
      * Render translucent shader-based filled boxes with glowing outlines for path targets, blocks to break, and goals.
@@ -870,9 +1058,13 @@ public final class Settings {
     public final Setting<Boolean> pathThroughCachedOnly = new Setting<>(false);
 
     /**
-     * Continue sprinting while in water
+     * Continue sprinting while in water.
+     * <p>
+     * Disabled by default: GrimAC's FastSwim module flags sprint speeds in water
+     * unless the player has Depth Strider III or Dolphin's Grace. Enabling this
+     * on most servers causes an immediate position setback.
      */
-    public final Setting<Boolean> sprintInWater = new Setting<>(true);
+    public final Setting<Boolean> sprintInWater = new Setting<>(false);
 
     /**
      * When GetToBlockProcess or MineProcess fails to calculate a path, instead of just giving up, mark the closest instance
@@ -1066,11 +1258,12 @@ public final class Settings {
 
     /**
      * Don't consider the next layer in builder until the current one is done
+     * Default: true — builds layer by layer for precision
      */
-    public final Setting<Boolean> buildInLayers = new Setting<>(false);
+    public final Setting<Boolean> buildInLayers = new Setting<>(true);
 
     /**
-     * false = build from bottom to top
+     * false = build from bottom to top (domyślnie — warstwa 1, potem 2, potem 3...)
      * <p>
      * true = build from top to bottom
      */
@@ -1078,6 +1271,7 @@ public final class Settings {
 
     /**
      * How high should the individual layers be?
+     * Default: 1 — jedna warstwa na raz (najdokładniejsze)
      */
     public final Setting<Integer> layerHeight = new Setting<>(1);
 
@@ -1687,7 +1881,7 @@ public final class Settings {
     /**
      * Automatically pause Baritone, select food, eat until full/healed, and resume pathing
      */
-    public final Setting<Boolean> autoEat = new Setting<>(true);
+    public final Setting<Boolean> autoEat = new Setting<>(false);
 
     /**
      * Minimum hunger level before autoEat triggers eating (max 20)
