@@ -81,6 +81,7 @@ public class Baritone implements IBaritone {
     private final InventoryPauserProcess inventoryPauserProcess;
     private final AutoEatProcess autoEatProcess;
     private final IElytraProcess elytraProcess;
+    private final baritone.bypass.BypassProcess bypassProcess;
 
     private final PathingControlManager pathingControlManager;
     private final SelectionManager selectionManager;
@@ -125,6 +126,7 @@ public class Baritone implements IBaritone {
             this.inventoryPauserProcess  = this.registerProcess(InventoryPauserProcess::new);
             this.autoEatProcess          = this.registerProcess(AutoEatProcess::new);
             this.elytraProcess           = this.registerProcess(ElytraProcess::create);
+            this.bypassProcess           = this.registerProcess(baritone.bypass.BypassProcess::new);
             this.registerProcess(BackfillProcess::new);
         }
 
@@ -244,6 +246,10 @@ public class Baritone implements IBaritone {
     @Override
     public IElytraProcess getElytraProcess() {
         return this.elytraProcess;
+    }
+
+    public baritone.bypass.BypassProcess getBypassProcess() {
+        return this.bypassProcess;
     }
 
     @Override

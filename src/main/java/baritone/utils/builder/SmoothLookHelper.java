@@ -26,6 +26,11 @@ public final class SmoothLookHelper {
     }
 
     public static void apply(LocalPlayer player, Rotation target, Settings settings) {
+        if (settings.antiCheatCompat.value) {
+            baritone.bypass.RotationEngine.apply(player, target, settings);
+            return;
+        }
+
         ThreadLocalRandom rng = ThreadLocalRandom.current();
 
         float maxStep = settings.maxRotationStepDegrees.value;
