@@ -32,6 +32,16 @@ unimined.minecraft {
     }
 }
 
+// Fix: java.nio.file.ClosedFileSystemException in Fabric Loader 0.16.x (ZipFS access on Java 17+)
+afterEvaluate {
+    tasks.named("runClient") {
+        jvmArgs(
+            "--add-opens", "java.base/java.nio.file=ALL-UNNAMED",
+            "--add-opens", "jdk.zipfs/jdk.nio.zipfs=ALL-UNNAMED"
+        )
+    }
+}
+
 configurations {
     common
     shadowCommon // Don't use shadow from the shadow plugin because we don't want IDEA to index this.
