@@ -26,6 +26,7 @@ import baritone.api.process.IBaritoneProcess;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.behavior.PathingBehavior;
+import baritone.bypass.ReconnectManager;
 import baritone.pathing.path.PathExecutor;
 import net.minecraft.core.BlockPos;
 
@@ -48,6 +49,7 @@ public class PathingControlManager implements IPathingControlManager {
             @Override
             public void onTick(TickEvent event) {
                 if (event.getType() == TickEvent.Type.IN) {
+                    ReconnectManager.onTick(baritone);
                     postTick();
                 }
             }

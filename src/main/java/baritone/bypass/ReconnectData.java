@@ -15,6 +15,7 @@ import java.util.List;
  */
 public class ReconnectData {
 
+    public String server_ip;
     public double x;
     public double y;
     public double z;
@@ -32,6 +33,10 @@ public class ReconnectData {
         if (player == null || filePath == null) return;
         try {
             ReconnectData data = new ReconnectData();
+            try {
+                net.minecraft.client.multiplayer.ServerData sData = net.minecraft.client.Minecraft.getInstance().getCurrentServer();
+                data.server_ip = sData != null ? sData.ip : "";
+            } catch (Throwable ignored) {}
             data.x = player.getX();
             data.y = player.getY();
             data.z = player.getZ();

@@ -32,14 +32,12 @@ common/logs/
 baritone_Client.launch
 bin/
 
-
 # Copyright Files
 !/.idea/copyright/Baritone.xml
 !/.idea/copyright/profiles_settings.xml
 
 .vscode/launch.json
 .architectury-transformer
-
 
 mapping
 
