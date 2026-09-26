@@ -29,7 +29,6 @@ import baritone.utils.schematic.litematica.LitematicaHelper;
 import baritone.utils.schematic.schematica.SchematicaHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import net.minecraft.core.BlockPos;
@@ -727,20 +726,14 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             }
         }
 
-        // GrimAC atomic synchronization: ensure exact rotation and sneak state packets are sent right before useItemOn
-        if (player.connection != null) {
-            player.connection.send(new ServerboundMovePlayerPacket.Rot(
-                    plan.rotation.getYaw(),
-                    plan.rotation.getPitch(),
-                    player.onGround(),
-                    player.horizontalCollision
+        // Set player rotation directly so vanilla tick sends movement packet naturally without extra flying packet
+        player.setYRot(plan.rotation.getYaw());
+        player.setXRot(plan.rotation.getPitch());
+        if (player.connection != null && plan.sneak) {
+            player.connection.send(new ServerboundPlayerCommandPacket(
+                    player,
+                    ServerboundPlayerCommandPacket.Action.PRESS_SHIFT_KEY
             ));
-            if (plan.sneak) {
-                player.connection.send(new ServerboundPlayerCommandPacket(
-                        player,
-                        ServerboundPlayerCommandPacket.Action.PRESS_SHIFT_KEY
-                ));
-            }
         }
 
         // Click with the verified BlockHitResult
