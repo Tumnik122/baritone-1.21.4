@@ -54,6 +54,8 @@ public class BypassCommand extends Command {
             logDirect("  §e#bypass autotool <on/off> §7- automatyczny dobór narzędzi z ochroną trwałości");
             logDirect("  §e#bypass autodrop <on/off> §7- automatyczne wyrzucanie śmieci przy pełnym EQ");
             logDirect("  §e#bypass esp <on/off> §7- cicha detekcja graczy (GrimAC safe)");
+            logDirect("  §e#bypass vein <on/off> §7- automatyczne wykopywanie całych żył rud (BFS)");
+            logDirect("  §e#bypass dynamicradius <on/off> §7- dynamiczny zasięg skanowania wg wydajności");
             logDirect("  §e#bypass script <reload/list/run> §7- skrypty Lua (hot-reload w locie)");
             return;
         }
@@ -123,6 +125,28 @@ public class BypassCommand extends Command {
                 activeConfig.espPlayerDetect = !activeConfig.espPlayerDetect;
             }
             logDirect("§b[Bypass] Cicha detekcja graczy ESP: " + (activeConfig.espPlayerDetect ? "§aWŁĄCZONA" : "§cWYŁĄCZONA"));
+            return;
+        }
+
+        if (firstArg.equals("vein")) {
+            if (args.hasAny()) {
+                String val = args.getString().toLowerCase(Locale.ROOT);
+                activeConfig.veinMining = val.equals("on") || val.equals("true") || val.equals("1");
+            } else {
+                activeConfig.veinMining = !activeConfig.veinMining;
+            }
+            logDirect("§b[Bypass] Wydobywanie całych żył (Vein Mining BFS): " + (activeConfig.veinMining ? "§aWŁĄCZONE" : "§cWYŁĄCZONE"));
+            return;
+        }
+
+        if (firstArg.equals("dynamicradius") || firstArg.equals("dynradius")) {
+            if (args.hasAny()) {
+                String val = args.getString().toLowerCase(Locale.ROOT);
+                activeConfig.dynamicOreRadius = val.equals("on") || val.equals("true") || val.equals("1");
+            } else {
+                activeConfig.dynamicOreRadius = !activeConfig.dynamicOreRadius;
+            }
+            logDirect("§b[Bypass] Dynamiczny zasięg skanowania rud wg wydajności kilofa: " + (activeConfig.dynamicOreRadius ? "§aWŁĄCZONY" : "§cWYŁĄCZONY"));
             return;
         }
 
@@ -239,7 +263,7 @@ public class BypassCommand extends Command {
             } else if (first.equals("friend")) {
                 String sub = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "";
                 return Stream.of("add", "remove", "list").filter(s -> s.startsWith(sub));
-            } else if (first.equals("autotool") || first.equals("autodrop") || first.equals("esp")) {
+            } else if (first.equals("autotool") || first.equals("autodrop") || first.equals("esp") || first.equals("vein") || first.equals("dynamicradius")) {
                 String sub = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "";
                 return Stream.of("on", "off").filter(s -> s.startsWith(sub));
             }
@@ -254,6 +278,8 @@ public class BypassCommand extends Command {
         options.add("autotool");
         options.add("autodrop");
         options.add("esp");
+        options.add("vein");
+        options.add("dynamicradius");
         options.addAll(config.getAvailableOreKeys());
 
         String currentArg = args.hasAny() ? args.getString().toLowerCase(Locale.ROOT) : "";

@@ -55,7 +55,7 @@ public final class InventoryCleaner {
             return false;
         }
 
-        // Szukamy pierwszego stacka śmieci do wyrzucenia
+        // 1. Szukamy najpierw w głównym ekwipunku (sloty 9-35)
         for (int i = 9; i < 36; i++) {
             ItemStack stack = inv.getItem(i);
             if (stack.isEmpty()) continue;
@@ -65,12 +65,35 @@ public final class InventoryCleaner {
 
             String path = loc.getPath().toLowerCase(Locale.ROOT);
             if (config.trashBlocks.contains(path)) {
-                // Wyrzucamy cały stack: containerId, slotId, mouseButton=1 (throw all), ClickType.THROW
-                // InventoryMenu indices 9..35 map directly to the main inventory.
+                // Wyrzucamy cały stack z głównego ekwipunku (slot 9-35)
                 if (i >= player.inventoryMenu.slots.size()) {
                     return false;
                 }
                 ctx.playerController().windowClick(player.inventoryMenu.containerId, i, 1, ClickType.THROW, player);
+                lastDropTime = System.currentTimeMillis();
+                return true;
+            }
+        }
+
+        // 2. Jeśli główny ekwipunek nie ma śmieci, sprawdzamy hotbar (sloty 0-8)
+        // Ignorujemy aktualnie wybrany slot (selected) oraz narzędzia
+        for (int i = 0; i < 9; i++) {
+            if (i == inv.selected) continue; // Nigdy nie wyrzucaj aktualnie trzymanego przedmiotu
+
+            ItemStack stack = inv.getItem(i);
+            if (stack.isEmpty()) continue;
+
+            ResourceLocation loc = BuiltInRegistries.ITEM.getKey(stack.getItem());
+            if (loc == null) continue;
+
+            String path = loc.getPath().toLowerCase(Locale.ROOT);
+            if (config.trashBlocks.contains(path)) {
+                // W InventoryMenu sloty hotbara mają indeksy 36..44
+                int menuSlot = 36 + i;
+                if (menuSlot >= player.inventoryMenu.slots.size()) {
+                    return false;
+                }
+                ctx.playerController().windowClick(player.inventoryMenu.containerId, menuSlot, 1, ClickType.THROW, player);
                 lastDropTime = System.currentTimeMillis();
                 return true;
             }

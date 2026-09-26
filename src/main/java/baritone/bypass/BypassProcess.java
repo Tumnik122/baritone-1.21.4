@@ -126,6 +126,10 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
     private final Set<String> targetDropItems = new HashSet<>();
     private int dropTargetId = -1;
 
+    // Kolejka bloków żyły rudy (Vein Mining)
+    private final LinkedList<BlockPos> activeVeinQueue = new LinkedList<>();
+    private final Set<BlockPos> veinDiscovered = new HashSet<>();
+
     // Watchdog utknięcia na przeszkodach
     private BlockPos lastPlayerPos = null;
     private int stuckTicks = 0;
@@ -559,7 +563,8 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
     }
 
     /**
-     * Obsługa zniszczenia bloku rudy — inicjuje podchodzenie do dropu.
+     * Obsługa zniszczenia bloku rudy — inicjuje podchodzenie do dropu oraz
+     * uruchamia algorytm Vein Mining (flood-fill BFS) w poszukiwaniu sąsiednich rud z żyły.
      */
     public void onOreBroken(BlockPos orePos, BlockState stateBeforeBreak) {
         if (!active || stateBeforeBreak == null) return;
@@ -570,9 +575,79 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
         logDirect(String.format("§a[Bypass] Wykopano rudę! Łącznie: %d (Diament: %d, Złoto: %d)",
                 oresMined, diamondCount, goldCount));
         currentTargetBlock = null;
+
+        // Odkrywanie sąsiednich bloków żyły (Vein Mining)
+        discoverVein(orePos, stateBeforeBreak.getBlock());
+
         beginCollectingDrop(orePos, BypassDropTracker.itemsForOre(oreName));
         // Scripts may stop/restart the process; don't overwrite their decision afterwards.
         luaEngine.fireOreBroken(oreName, oresMined);
+    }
+
+    private void discoverVein(BlockPos origin, Block oreBlock) {
+        if (!config.veinMining || origin == null || oreBlock == null || ctx.world() == null) return;
+        Level world = ctx.world();
+        Queue<BlockPos> queue = new ArrayDeque<>();
+        queue.add(origin);
+        veinDiscovered.add(origin);
+
+        int maxSearch = config.veinMaxSize;
+        while (!queue.isEmpty() && activeVeinQueue.size() < maxSearch) {
+            BlockPos current = queue.poll();
+            for (Direction dir : Direction.values()) {
+                BlockPos neighbor = current.relative(dir);
+                if (veinDiscovered.contains(neighbor) || OreScanner.isBlacklisted(neighbor)) {
+                    continue;
+                }
+                veinDiscovered.add(neighbor);
+
+                BlockState state = world.getBlockState(neighbor);
+                if (state.getBlock() == oreBlock || targetOreBlocks.contains(state.getBlock())) {
+                    if (LiquidDetector.isSafeToMine(world, neighbor)) {
+                        activeVeinQueue.add(neighbor.immutable());
+                        queue.add(neighbor);
+                        if (activeVeinQueue.size() >= maxSearch) break;
+                    }
+                }
+            }
+        }
+        if (!activeVeinQueue.isEmpty()) {
+            logDirect("§a[Bypass Vein] Wykryto żyłę! Dodano " + activeVeinQueue.size() + " sąsiednich rud do kolejki.");
+        }
+    }
+
+    private BlockPos getNextVeinOre() {
+        if (!config.veinMining || ctx.world() == null) return null;
+        Level world = ctx.world();
+        while (!activeVeinQueue.isEmpty()) {
+            BlockPos candidate = activeVeinQueue.poll();
+            if (candidate == null || OreScanner.isBlacklisted(candidate)) continue;
+            BlockState state = world.getBlockState(candidate);
+            if (targetOreBlocks.contains(state.getBlock()) && LiquidDetector.isSafeToMine(world, candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private int getEffectiveOreRadius() {
+        int base = config.oreRadius;
+        if (!config.dynamicOreRadius || ctx.player() == null) return base;
+        ItemStack mainHand = ctx.player().getMainHandItem();
+        if (mainHand.isEmpty()) return base;
+        try {
+            int eff = 0;
+            for (var entry : mainHand.getEnchantments().entrySet()) {
+                String enchantName = entry.getKey().unwrapKey().map(k -> k.location().getPath()).orElse("");
+                if (enchantName.contains("efficiency")) {
+                    eff = entry.getIntValue();
+                    break;
+                }
+            }
+            return Math.min(base + (eff / 2), 8);
+        } catch (Throwable t) {
+            return base;
+        }
     }
 
     private void beginCollectingDrop(BlockPos pos, Set<String> acceptedItems) {
@@ -655,7 +730,10 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
     private void finishCollectingDrop() {
         currentTargetBlock = null;
         lastPositionChangeTime = System.currentTimeMillis();
-        BlockPos nextOre = miningCooldownTicks <= 0 ? findBestOreNearby(ctx.playerFeet(), config.oreRadius) : null;
+        BlockPos nextOre = getNextVeinOre();
+        if (nextOre == null && miningCooldownTicks <= 0) {
+            nextOre = findBestOreNearby(ctx.playerFeet(), getEffectiveOreRadius());
+        }
         stateMachine.transition(nextOre == null ? travelState(ctx.playerFeet().getY(), config.yLevel) : State.MINING_ORE);
         currentTargetBlock = nextOre;
     }
@@ -754,7 +832,10 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
         }
         if (collectNearbyOreDrop()) return pause();
         if (miningCooldownTicks <= 0 && breakingBlock == null) {
-            BlockPos ore = findBestOreNearby(feet, config.oreRadius);
+            BlockPos ore = getNextVeinOre();
+            if (ore == null) {
+                ore = findBestOreNearby(feet, getEffectiveOreRadius());
+            }
             if (ore != null) {
                 stateMachine.transition(State.MINING_ORE);
                 currentTargetBlock = ore;
@@ -813,7 +894,10 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
         // frame used to replace the ore with the wall (or forget it after break).
         if (currentTargetBlock == null || OreScanner.isBlacklisted(currentTargetBlock)
                 || !targetOreBlocks.contains(ctx.world().getBlockState(currentTargetBlock).getBlock())) {
-            currentTargetBlock = findBestOreNearby(feet, config.oreRadius);
+            currentTargetBlock = getNextVeinOre();
+            if (currentTargetBlock == null) {
+                currentTargetBlock = findBestOreNearby(feet, getEffectiveOreRadius());
+            }
             oreApproachTicks = 0;
         }
         if (currentTargetBlock == null) {
@@ -1038,63 +1122,8 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
     }
 
     private BlockPos findBestOreNearby(BlockPos center, int radius) {
-        if (targetOreBlocks.isEmpty() || ctx.world() == null) return null;
-        Level level = ctx.world();
-
-        BlockPos bestPos = null;
-        int bestPriority = Integer.MAX_VALUE;
-        double bestDistSq = Double.MAX_VALUE;
-
-        int cx = center.getX();
-        int cy = center.getY();
-        int cz = center.getZ();
-
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dy = -radius; dy <= radius; dy++) {
-                for (int dz = -radius; dz <= radius; dz++) {
-                    if (dx * dx + dy * dy + dz * dz > radius * radius) continue;
-                    BlockPos p = new BlockPos(cx + dx, cy + dy, cz + dz);
-
-                    // Pomiń zblacklistowane rudy
-                    if (OreScanner.isBlacklisted(p)) continue;
-
-                    BlockState state = level.getBlockState(p);
-                    Block b = state.getBlock();
-
-                    if (targetOreBlocks.contains(b)) {
-                        // Sprawdź czy nie za lawą
-                        if (!LiquidDetector.isSafeToMine(level, p)) {
-                            OreScanner.blacklist(p);
-                            continue;
-                        }
-
-                        int prio = getOrePriority(b);
-                        double dSq = p.distSqr(center);
-                        if (prio < bestPriority || (prio == bestPriority && dSq < bestDistSq)) {
-                            bestPriority = prio;
-                            bestDistSq = dSq;
-                            bestPos = p.immutable();
-                        }
-                    }
-                }
-            }
-        }
-        return bestPos;
-    }
-
-    private int getOrePriority(Block block) {
-        ResourceLocation key = BuiltInRegistries.BLOCK.getKey(block);
-        if (key == null) return Integer.MAX_VALUE;
-        String path = key.getPath();
-
-        for (int i = 0; i < config.priority.size(); i++) {
-            String ore = config.priority.get(i);
-            List<String> validNames = config.getOreBlockNames(ore);
-            if (validNames.contains(path)) {
-                return i;
-            }
-        }
-        return Integer.MAX_VALUE;
+        if (targetOreBlocks.isEmpty() || ctx.world() == null || center == null) return null;
+        return OreScanner.findBestOre(ctx.world(), center, targetOreBlocks, radius, config);
     }
 
     private void resolveTargetBlocks() {
@@ -1326,6 +1355,8 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
         varianceCooldownTicks = 0;
         orphanDropScanTicks = 0;
         deferredDrops.clear();
+        activeVeinQueue.clear();
+        veinDiscovered.clear();
         OreScanner.clearBlacklist();
         RotationEngine.reset();
     }

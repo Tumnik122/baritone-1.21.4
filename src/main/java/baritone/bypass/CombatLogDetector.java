@@ -23,10 +23,24 @@ public final class CombatLogDetector {
 
     private CombatLogDetector() {}
 
+    private static final String[] CANDIDATE_FIELD_NAMES = {"events", "bossBars", "map"};
+
     private static void initReflection() {
         if (reflectionInitialized) return;
         reflectionInitialized = true;
         try {
+            // 1. Spróbuj dopasować znane nazwy pól z MojMap / Yarn
+            for (String candidate : CANDIDATE_FIELD_NAMES) {
+                try {
+                    Field f = BossHealthOverlay.class.getDeclaredField(candidate);
+                    if (Map.class.isAssignableFrom(f.getType())) {
+                        f.setAccessible(true);
+                        eventsField = f;
+                        return;
+                    }
+                } catch (NoSuchFieldException ignored) {}
+            }
+            // 2. Fallback: iteruj po wszystkich polach typu Map
             for (Field f : BossHealthOverlay.class.getDeclaredFields()) {
                 if (Map.class.isAssignableFrom(f.getType())) {
                     f.setAccessible(true);
@@ -34,7 +48,9 @@ public final class CombatLogDetector {
                     break;
                 }
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            baritone.api.utils.Helper.HELPER.logDebug("CombatLogDetector: nie udało się zainicjalizować refleksji BossHealthOverlay: " + t.getMessage());
+        }
     }
 
     /**
@@ -66,7 +82,9 @@ public final class CombatLogDetector {
                     }
                 }
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            baritone.api.utils.Helper.HELPER.logDebug("CombatLogDetector: błąd sprawdzania pasków bossów: " + t.getMessage());
+        }
 
         return false;
     }

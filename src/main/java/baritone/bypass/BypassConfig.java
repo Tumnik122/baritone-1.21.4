@@ -17,8 +17,12 @@ public class BypassConfig {
     public int height = 2;
     public int width = 1;
 
-    // Ores
+    // Ores & Vein Mining
     public int oreRadius = 5;
+    public boolean dynamicOreRadius = true;
+    public boolean veinMining = true;
+    public int veinMaxSize = 16;
+    public int veinSearchDepth = 3;
     public List<String> priority = Arrays.asList("diamond", "gold", "iron", "redstone", "lapis", "emerald", "coal");
     public Map<String, List<String>> oreBlocks = new LinkedHashMap<>();
 

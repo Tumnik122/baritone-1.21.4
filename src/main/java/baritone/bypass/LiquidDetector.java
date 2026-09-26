@@ -19,18 +19,49 @@ public final class LiquidDetector {
     private LiquidDetector() {}
 
     /**
-     * Sprawdza 6 kierunków od bloku, który zamierzamy wykopać:
-     * góra, dół, północ, południe, wschód, zachód.
+     * Sprawdza bezpieczeństwo kopania bloku:
+     * 1. 6 bezpośrednich kierunków (góra, dół, północ, południe, wschód, zachód).
+     * 2. Blok 2 poziomy wyżej (target.above(2)) - ochrona przed spadającą lawą/wodą.
+     * 3. Promień 2 bloków w poziomie - jeśli blok pośredni jest powietrzem lub wymienialny,
+     *    płyn wleje się natychmiast po wykopaniu.
      */
     public static boolean isSafeToMine(Level world, BlockPos target) {
         if (world == null || target == null) return false;
-        return check(world, target) &&
-               check(world, target.above()) && // góra
-               check(world, target.below()) && // dół
-               check(world, target.north()) && // północ
-               check(world, target.south()) && // południe
-               check(world, target.east())  && // wschód
-               check(world, target.west());    // zachód
+
+        // 1. Bezpośredni blok i 6 sąsiadów
+        if (!check(world, target) ||
+            !check(world, target.above()) ||
+            !check(world, target.below()) ||
+            !check(world, target.north()) ||
+            !check(world, target.south()) ||
+            !check(world, target.east())  ||
+            !check(world, target.west())) {
+            return false;
+        }
+
+        // 2. Blok 2 w górę (spadające płyny)
+        if (!check(world, target.above(2))) {
+            BlockState aboveState = world.getBlockState(target.above());
+            if (aboveState.isAir() || aboveState.canBeReplaced()) {
+                return false;
+            }
+        }
+
+        // 3. Płyny 2 bloki w poziomie i po skosie w górę (przelewanie się płynów)
+        for (Direction dir : Direction.Plane.HORIZONTAL) {
+            BlockPos near = target.relative(dir);
+            BlockPos far = near.relative(dir);
+            BlockState nearState = world.getBlockState(near);
+
+            boolean nearOpen = nearState.isAir() || nearState.canBeReplaced();
+            if (nearOpen) {
+                if (!check(world, far) || !check(world, near.above())) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     /**

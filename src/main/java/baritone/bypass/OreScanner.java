@@ -21,6 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class OreScanner {
 
     public static final int MAX_FAILED_ATTEMPTS = 3;
+    private static final int MAX_CACHE_ENTRIES = 512;
 
     private static final Set<BlockPos> blacklistedOres = ConcurrentHashMap.newKeySet();
     private static final Map<BlockPos, Integer> failedAttempts = new ConcurrentHashMap<>();
@@ -29,9 +30,17 @@ public final class OreScanner {
 
     /**
      * Dodaje pozycję rudy do czarnej listy (nigdy więcej nie próbuj jej kopać).
+     * Posiada limit wielkości (LRU eviction), aby zapobiec wyciekom pamięci w wielogodzinnych sesjach.
      */
     public static void blacklist(BlockPos pos) {
         if (pos == null) return;
+        if (blacklistedOres.size() >= MAX_CACHE_ENTRIES) {
+            Iterator<BlockPos> it = blacklistedOres.iterator();
+            if (it.hasNext()) {
+                it.next();
+                it.remove();
+            }
+        }
         blacklistedOres.add(pos.immutable());
         failedAttempts.remove(pos);
     }
@@ -59,6 +68,13 @@ public final class OreScanner {
     public static int recordFailedAttempt(BlockPos pos) {
         if (pos == null) return 0;
         BlockPos immutable = pos.immutable();
+        if (failedAttempts.size() >= MAX_CACHE_ENTRIES) {
+            Iterator<BlockPos> it = failedAttempts.keySet().iterator();
+            if (it.hasNext()) {
+                it.next();
+                it.remove();
+            }
+        }
         int attempts = failedAttempts.compute(immutable, (k, v) -> v == null ? 1 : v + 1);
         if (attempts >= MAX_FAILED_ATTEMPTS) {
             blacklist(immutable);
@@ -142,7 +158,60 @@ public final class OreScanner {
         return oreQueue;
     }
 
-    private static int getPriority(Block block, BypassConfig config) {
+    /**
+     * Szuka najlepszej rudy w podanym promieniu (zgodnie z priorytetem i dystansem).
+     * Jedyne źródło prawdy dla wyboru rudy w całym systemie bypass.
+     */
+    public static BlockPos findBestOre(Level world,
+                                       BlockPos center,
+                                       Set<Block> targetOreBlocks,
+                                       int radius,
+                                       BypassConfig config) {
+        if (world == null || center == null || targetOreBlocks == null || targetOreBlocks.isEmpty()) {
+            return null;
+        }
+
+        BlockPos bestPos = null;
+        int bestPriority = Integer.MAX_VALUE;
+        double bestDistSq = Double.MAX_VALUE;
+
+        int cx = center.getX();
+        int cy = center.getY();
+        int cz = center.getZ();
+        int rSq = radius * radius;
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (dx * dx + dy * dy + dz * dz > rSq) continue;
+                    BlockPos p = new BlockPos(cx + dx, cy + dy, cz + dz);
+
+                    if (isBlacklisted(p)) continue;
+
+                    BlockState state = world.getBlockState(p);
+                    Block b = state.getBlock();
+
+                    if (targetOreBlocks.contains(b)) {
+                        if (!LiquidDetector.isSafeToMine(world, p)) {
+                            blacklist(p);
+                            continue;
+                        }
+
+                        int prio = getPriority(b, config);
+                        double dSq = p.distSqr(center);
+                        if (prio < bestPriority || (prio == bestPriority && dSq < bestDistSq)) {
+                            bestPriority = prio;
+                            bestDistSq = dSq;
+                            bestPos = p.immutable();
+                        }
+                    }
+                }
+            }
+        }
+        return bestPos;
+    }
+
+    public static int getPriority(Block block, BypassConfig config) {
         ResourceLocation key = BuiltInRegistries.BLOCK.getKey(block);
         if (key == null) return Integer.MAX_VALUE;
         String path = key.getPath();
