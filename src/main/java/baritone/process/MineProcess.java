@@ -371,7 +371,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                         BlockState state = bsi.get0(bp);
                         BlockState below = bsi.get0(bp.below());
                         if (MovementHelper.isLava(state) || MovementHelper.isLava(below)
-                                || MovementHelper.isLavaHazardBelowOrAdjacent(bsi, bp.getX(), bp.getY(), bp.getZ())) {
+                                || MovementHelper.isLavaPitBelow(bsi, bp.getX(), bp.getY(), bp.getZ())) {
                             continue; // Ignoruj przedmioty w lawie lub nad jeziorem lawy
                         }
                     }
@@ -384,7 +384,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 BlockState state = bsi.get0(pos);
                 BlockState below = bsi.get0(pos.below());
                 if (MovementHelper.isLava(state) || MovementHelper.isLava(below)
-                        || MovementHelper.isLavaHazardBelowOrAdjacent(bsi, pos.getX(), pos.getY(), pos.getZ())) {
+                        || MovementHelper.isLavaPitBelow(bsi, pos.getX(), pos.getY(), pos.getZ())) {
                     continue;
                 }
             }
@@ -465,7 +465,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     private static List<BlockPos> prune(CalculationContext ctx, List<BlockPos> locs2, BlockOptionalMetaLookup filter, int max, List<BlockPos> blacklist, List<BlockPos> dropped) {
         dropped.removeIf(drop -> {
-            if (Baritone.settings().mineAvoidLava.value && MovementHelper.isLavaHazardBelowOrAdjacent(ctx.bsi, drop.getX(), drop.getY(), drop.getZ())) {
+            if (Baritone.settings().mineAvoidLava.value && MovementHelper.isLavaPitBelow(ctx.bsi, drop.getX(), drop.getY(), drop.getZ())) {
                 return true;
             }
             for (BlockPos pos : locs2) {
@@ -533,36 +533,8 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             return false;
         }
 
-        if (Baritone.settings().mineAvoidLava.value && isLavaHazard(ctx, pos)) {
-            return false;
-        }
-
         // bedrock above and below makes it implausible, otherwise we're good
         return !(ctx.bsi.get0(pos.above()).getBlock() == Blocks.BEDROCK && ctx.bsi.get0(pos.below()).getBlock() == Blocks.BEDROCK);
-    }
-
-    public static boolean isLavaHazard(CalculationContext ctx, BlockPos pos) {
-        int x = pos.getX();
-        int y = pos.getY();
-        int z = pos.getZ();
-        if (MovementHelper.isLavaHazardBelowOrAdjacent(ctx.bsi, x, y, z)) {
-            return true;
-        }
-        return isLavaState(ctx.bsi.get0(x, y, z))
-                || isLavaState(ctx.bsi.get0(x, y + 1, z))
-                || isLavaState(ctx.bsi.get0(x, y - 1, z))
-                || isLavaState(ctx.bsi.get0(x + 1, y, z))
-                || isLavaState(ctx.bsi.get0(x - 1, y, z))
-                || isLavaState(ctx.bsi.get0(x, y, z + 1))
-                || isLavaState(ctx.bsi.get0(x, y, z - 1));
-    }
-
-    private static boolean isLavaState(BlockState state) {
-        if (state == null) return false;
-        Block b = state.getBlock();
-        if (b == Blocks.LAVA) return true;
-        FluidState fs = state.getFluidState();
-        return !fs.isEmpty() && (fs.is(Fluids.LAVA) || fs.is(Fluids.FLOWING_LAVA));
     }
 
     @Override

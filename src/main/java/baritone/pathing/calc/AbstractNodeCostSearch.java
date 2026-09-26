@@ -214,10 +214,6 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
                 bestDist = dist;
             }
             if (dist > MIN_DIST_PATH * MIN_DIST_PATH) { // square the comparison since distFromStartSq is squared
-                if (COEFFICIENTS[i] >= 3 && !Baritone.settings().allowYoloFallback.value) {
-                    logDebug("Pomijanie ryzykownej ścieżki (współczynnik kosztu " + COEFFICIENTS[i] + ", allowYoloFallback wyłączone)");
-                    continue;
-                }
                 if (logInfo) {
                     if (COEFFICIENTS[i] >= 3) {
                         logDebug("Warning: cost coefficient is greater than three! Probably means that the path I found is pretty terrible (like sneak-bridging for dozens of blocks)");

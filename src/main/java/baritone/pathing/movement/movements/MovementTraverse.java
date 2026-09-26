@@ -127,7 +127,7 @@ public class MovementTraverse extends Movement {
             if (MovementHelper.isClimbable(srcDownBlock)) {
                 return COST_INF;
             }
-            if (Baritone.settings().mineAvoidLava.value && MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y - 1, destZ)) {
+            if (Baritone.settings().mineAvoidLava.value && (MovementHelper.isLava(destOn) || MovementHelper.isLavaPitBelow(context.bsi, destX, y - 1, destZ))) {
                 return COST_INF;
             }
             if (MovementHelper.isReplaceable(destX, y - 1, destZ, destOn, context.bsi)) {

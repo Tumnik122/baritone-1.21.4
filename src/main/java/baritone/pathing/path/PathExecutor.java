@@ -122,7 +122,7 @@ public class PathExecutor implements IPathExecutor, Helper {
                     BlockState destState = bsiLava.get0(dest);
                     BlockState destBelow = bsiLava.get0(dest.below());
                     if (MovementHelper.isLava(destState) || MovementHelper.isLava(destBelow)
-                            || MovementHelper.isLavaHazardBelowOrAdjacent(bsiLava, dest.x, dest.y - 1, dest.z)) {
+                            || MovementHelper.isLavaPitBelow(bsiLava, dest.x, dest.y - 1, dest.z)) {
                         logDirect("§c[Baritone Safety] Ścieżka prowadzi w stronę lawy [" + dest.x + ", " + dest.y + ", " + dest.z + "]! Anulowanie.");
                         clearKeys();
                         cancel();

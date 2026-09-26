@@ -210,7 +210,7 @@ public class CalculationContext {
             return COST_INF;
         }
         if (Baritone.settings().mineAvoidLava.value) {
-            if (MovementHelper.isLava(current) || MovementHelper.isLavaHazardBelowOrAdjacent(bsi, x, y, z)) {
+            if (MovementHelper.isLava(current) || MovementHelper.isLavaPitBelow(bsi, x, y, z)) {
                 return COST_INF;
             }
         }

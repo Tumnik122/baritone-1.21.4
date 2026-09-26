@@ -170,9 +170,7 @@ public class MovementDiagonal extends Movement {
             return;
         }
         if (Baritone.settings().mineAvoidLava.value) {
-            if (MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, x, y - 1, destZ)
-                    || MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y - 1, z)
-                    || MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y - 1, destZ)) {
+            if (MovementHelper.isLavaPitBelow(context.bsi, destX, y - 1, destZ)) {
                 return;
             }
         }

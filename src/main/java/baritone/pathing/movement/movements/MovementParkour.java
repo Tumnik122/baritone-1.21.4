@@ -129,9 +129,7 @@ public class MovementParkour extends Movement {
             }
 
             if (Baritone.settings().mineAvoidLava.value) {
-                // Sprawdź czy pod trasą skoku oraz lądowaniem nie ma lawy (ochrona przed utonięciem w lawie)
-                if (MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y, destZ)
-                        || MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y - 1, destZ)) {
+                if (MovementHelper.isLavaPitBelow(context.bsi, destX, y - 1, destZ)) {
                     break;
                 }
             }

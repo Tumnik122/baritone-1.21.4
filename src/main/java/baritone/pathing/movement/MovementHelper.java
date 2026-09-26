@@ -754,22 +754,27 @@ public interface MovementHelper extends ActionCosts, Helper {
         return f == Fluids.LAVA || f == Fluids.FLOWING_LAVA;
     }
 
-    static boolean isLavaHazardBelowOrAdjacent(BlockStateInterface bsi, int x, int y, int z) {
+    static boolean isLavaPitBelow(BlockStateInterface bsi, int x, int y, int z) {
         if (bsi == null) return false;
-        // Sprawdź pozycję i do 5 bloków w dół w poszukiwaniu lawy (ochrona przed mostkowaniem nad jeziorem lawy)
         for (int dy = 0; dy <= 5; dy++) {
             BlockState s = bsi.get0(x, y - dy, z);
-            if (isLava(s)) return true;
-        }
-        // Sprawdź sąsiednie bloki poziome (promień 2)
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dz = -2; dz <= 2; dz++) {
-                if (dx == 0 && dz == 0) continue;
-                if (isLava(bsi.get0(x + dx, y, z + dz))) return true;
-                if (isLava(bsi.get0(x + dx, y - 1, z + dz))) return true;
+            if (isLava(s)) {
+                return true;
+            }
+            if (canWalkOn(bsi, x, y - dy, z, s)) {
+                return false;
             }
         }
         return false;
+    }
+
+    static boolean isLavaHazardBelowOrAdjacent(BlockStateInterface bsi, int x, int y, int z) {
+        if (bsi == null) return false;
+        if (isLava(bsi.get0(x, y, z)) || isLavaPitBelow(bsi, x, y, z)) {
+            return true;
+        }
+        return isLava(bsi.get0(x + 1, y, z)) || isLava(bsi.get0(x - 1, y, z))
+                || isLava(bsi.get0(x, y, z + 1)) || isLava(bsi.get0(x, y, z - 1));
     }
 
     /**
