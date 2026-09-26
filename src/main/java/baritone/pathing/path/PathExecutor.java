@@ -35,6 +35,7 @@ import baritone.utils.BlockStateInterface;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Vec3i;
 import net.minecraft.util.Tuple;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 import java.util.*;
 
@@ -99,6 +100,37 @@ public class PathExecutor implements IPathExecutor, Helper {
         }
         Movement movement = (Movement) path.movements().get(pathPosition);
         BetterBlockPos whereAmI = ctx.playerFeet();
+
+        // === REAL-TIME LAVA SAFETY GUARD ===
+        BlockStateInterface bsiLava = new BlockStateInterface(ctx);
+        if (ctx.player() != null && ctx.world() != null) {
+            BlockState feetState = bsiLava.get0(whereAmI);
+            BlockState belowState = bsiLava.get0(whereAmI.below());
+            // 1. Jeśli gracz dotyka lawy lub stoi na krawędzi w lawie - natychmiastowe zatrzymanie i odskok
+            if (ctx.player().isInLava() || MovementHelper.isLava(feetState) || MovementHelper.isLava(belowState)) {
+                logDirect("§c[Baritone Safety] WYKRYTO LAWĘ! Natychmiastowe zatrzymanie i odskok!");
+                clearKeys();
+                cancel();
+                behavior.baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+                behavior.baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+                return false;
+            }
+            // 2. Jeśli cel bieżącego ruchu jest w lawie lub nad jeziorem lawy - natychmiast anuluj ścieżkę
+            if (Baritone.settings().mineAvoidLava.value && movement != null) {
+                BetterBlockPos dest = movement.getDest();
+                if (dest != null) {
+                    BlockState destState = bsiLava.get0(dest);
+                    BlockState destBelow = bsiLava.get0(dest.below());
+                    if (MovementHelper.isLava(destState) || MovementHelper.isLava(destBelow)
+                            || MovementHelper.isLavaHazardBelowOrAdjacent(bsiLava, dest.x, dest.y - 1, dest.z)) {
+                        logDirect("§c[Baritone Safety] Ścieżka prowadzi w stronę lawy [" + dest.x + ", " + dest.y + ", " + dest.z + "]! Anulowanie.");
+                        clearKeys();
+                        cancel();
+                        return false;
+                    }
+                }
+            }
+        }
         if (!movement.getValidPositions().contains(whereAmI)) {
             for (int i = 0; i < pathPosition && i < path.length(); i++) {//this happens for example when you lag out and get teleported back a couple blocks
                 if (((Movement) path.movements().get(i)).getValidPositions().contains(whereAmI)) {

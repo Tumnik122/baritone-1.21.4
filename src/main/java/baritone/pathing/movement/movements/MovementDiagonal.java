@@ -166,8 +166,15 @@ public class MovementDiagonal extends Movement {
             return;
         }
         BlockState cuttingOver2 = context.get(destX, y - 1, z);
-        if ((!context.allowWalkOnMagmaBlocks && cuttingOver1.is(Blocks.MAGMA_BLOCK)) || MovementHelper.isLava(cuttingOver2)) {
+        if ((!context.allowWalkOnMagmaBlocks && cuttingOver2.is(Blocks.MAGMA_BLOCK)) || MovementHelper.isLava(cuttingOver2)) {
             return;
+        }
+        if (Baritone.settings().mineAvoidLava.value) {
+            if (MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, x, y - 1, destZ)
+                    || MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y - 1, z)
+                    || MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y - 1, destZ)) {
+                return;
+            }
         }
         boolean water = false;
         BlockState startState = context.get(x, y, z);

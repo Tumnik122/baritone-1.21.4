@@ -361,15 +361,35 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             return Collections.emptyList();
         }
         List<BlockPos> ret = new ArrayList<>();
+        BlockStateInterface bsi = new BlockStateInterface(ctx);
         for (Entity entity : ((ClientLevel) ctx.world()).entitiesForRendering()) {
             if (entity instanceof ItemEntity) {
                 ItemEntity ei = (ItemEntity) entity;
                 if (filter.has(ei.getItem())) {
-                    ret.add(entity.blockPosition());
+                    BlockPos bp = entity.blockPosition();
+                    if (Baritone.settings().mineAvoidLava.value) {
+                        BlockState state = bsi.get0(bp);
+                        BlockState below = bsi.get0(bp.below());
+                        if (MovementHelper.isLava(state) || MovementHelper.isLava(below)
+                                || MovementHelper.isLavaHazardBelowOrAdjacent(bsi, bp.getX(), bp.getY(), bp.getZ())) {
+                            continue; // Ignoruj przedmioty w lawie lub nad jeziorem lawy
+                        }
+                    }
+                    ret.add(bp);
                 }
             }
         }
-        ret.addAll(anticipatedDrops.keySet());
+        for (BlockPos pos : anticipatedDrops.keySet()) {
+            if (Baritone.settings().mineAvoidLava.value) {
+                BlockState state = bsi.get0(pos);
+                BlockState below = bsi.get0(pos.below());
+                if (MovementHelper.isLava(state) || MovementHelper.isLava(below)
+                        || MovementHelper.isLavaHazardBelowOrAdjacent(bsi, pos.getX(), pos.getY(), pos.getZ())) {
+                    continue;
+                }
+            }
+            ret.add(pos);
+        }
         return ret;
     }
 
@@ -445,8 +465,11 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     private static List<BlockPos> prune(CalculationContext ctx, List<BlockPos> locs2, BlockOptionalMetaLookup filter, int max, List<BlockPos> blacklist, List<BlockPos> dropped) {
         dropped.removeIf(drop -> {
+            if (Baritone.settings().mineAvoidLava.value && MovementHelper.isLavaHazardBelowOrAdjacent(ctx.bsi, drop.getX(), drop.getY(), drop.getZ())) {
+                return true;
+            }
             for (BlockPos pos : locs2) {
-                if (pos.distSqr(drop) <= 9 && filter.has(ctx.get(pos.getX(), pos.getY(), pos.getZ())) && MineProcess.plausibleToBreak(ctx, pos)) { // TODO maybe drop also has to be supported? no lava below?
+                if (pos.distSqr(drop) <= 9 && filter.has(ctx.get(pos.getX(), pos.getY(), pos.getZ())) && MineProcess.plausibleToBreak(ctx, pos)) {
                     return true;
                 }
             }
