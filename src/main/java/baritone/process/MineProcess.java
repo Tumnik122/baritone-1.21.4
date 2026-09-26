@@ -522,6 +522,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         int x = pos.getX();
         int y = pos.getY();
         int z = pos.getZ();
+        if (MovementHelper.isLavaHazardBelowOrAdjacent(ctx.bsi, x, y, z)) {
+            return true;
+        }
         return isLavaState(ctx.bsi.get0(x, y, z))
                 || isLavaState(ctx.bsi.get0(x, y + 1, z))
                 || isLavaState(ctx.bsi.get0(x, y - 1, z))

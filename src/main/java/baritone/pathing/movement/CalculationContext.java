@@ -209,6 +209,11 @@ public class CalculationContext {
         if (!Baritone.settings().allowPlaceInFluidsFlow.value && !current.getFluidState().isEmpty() && !current.getFluidState().isSource()) {
             return COST_INF;
         }
+        if (Baritone.settings().mineAvoidLava.value) {
+            if (MovementHelper.isLava(current) || MovementHelper.isLavaHazardBelowOrAdjacent(bsi, x, y, z)) {
+                return COST_INF;
+            }
+        }
         return placeBlockCost;
     }
 

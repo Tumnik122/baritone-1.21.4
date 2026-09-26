@@ -69,8 +69,9 @@ public final class Settings {
 
     /**
      * Ciągłe trzymanie przycisku niszczenia między kolejnymi blokami (słupki kłód, linie drzew).
+     * Wyłączone domyślnie (false), aby zapobiec flagom FastBreak na GrimAC.
      */
-    public final Setting<Boolean> continuousBreaking = new Setting<>(true);
+    public final Setting<Boolean> continuousBreaking = new Setting<>(false);
 
     /**
      * Ile ticków po rozbiciu bloku lepkość jeszcze działa (15 = 0.75 s).
@@ -1504,6 +1505,13 @@ public final class Settings {
      * Prevents MineProcess from pathing to or breaking blocks directly adjacent to lava.
      */
     public final Setting<Boolean> mineAvoidLava = new Setting<>(true);
+
+    /**
+     * Zezwala na desperackie, ryzykowne ścieżki A* (współczynnik kosztu >= 3.0),
+     * które próbują kucać i mostkować nad przepaściami/lawą ("because yolo").
+     * Domyślnie wyłączone (false), aby bot nie ginął w lawie i nie flagował GrimAC.
+     */
+    public final Setting<Boolean> allowYoloFallback = new Setting<>(false);
 
     /**
      * Disallow MineBehavior from using X-Ray to see where the ores are. Turn this option on to force it to mine "legit"

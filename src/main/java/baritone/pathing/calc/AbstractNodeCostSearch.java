@@ -214,13 +214,15 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
                 bestDist = dist;
             }
             if (dist > MIN_DIST_PATH * MIN_DIST_PATH) { // square the comparison since distFromStartSq is squared
+                if (COEFFICIENTS[i] >= 3 && !Baritone.settings().allowYoloFallback.value) {
+                    logDebug("Pomijanie ryzykownej ścieżki (współczynnik kosztu " + COEFFICIENTS[i] + ", allowYoloFallback wyłączone)");
+                    continue;
+                }
                 if (logInfo) {
                     if (COEFFICIENTS[i] >= 3) {
-                        System.out.println("Warning: cost coefficient is greater than three! Probably means that");
-                        System.out.println("the path I found is pretty terrible (like sneak-bridging for dozens of blocks)");
-                        System.out.println("But I'm going to do it anyway, because yolo");
+                        logDebug("Warning: cost coefficient is greater than three! Probably means that the path I found is pretty terrible (like sneak-bridging for dozens of blocks)");
                     }
-                    System.out.println("Path goes for " + Math.sqrt(dist) + " blocks");
+                    logDebug("Path goes for " + Math.sqrt(dist) + " blocks");
                     logDebug("A* cost coefficient " + COEFFICIENTS[i]);
                 }
                 return Optional.of(new Path(realStart, startNode, bestSoFar[i], numNodes, goal, context));

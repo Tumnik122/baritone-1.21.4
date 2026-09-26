@@ -127,6 +127,9 @@ public class MovementTraverse extends Movement {
             if (MovementHelper.isClimbable(srcDownBlock)) {
                 return COST_INF;
             }
+            if (Baritone.settings().mineAvoidLava.value && MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y - 1, destZ)) {
+                return COST_INF;
+            }
             if (MovementHelper.isReplaceable(destX, y - 1, destZ, destOn, context.bsi)) {
                 boolean throughWater = MovementHelper.isWater(pb0) || MovementHelper.isWater(pb1);
                 if (MovementHelper.isWater(destOn) && throughWater) {
@@ -248,9 +251,12 @@ public class MovementTraverse extends Movement {
         boolean isTheBridgeBlockThere = MovementHelper.canWalkOn(ctx, positionToPlace) || ladder || MovementHelper.canUseFrostWalker(ctx, positionToPlace);
         BlockPos feet = ctx.playerFeet();
         if (feet.getY() != dest.getY() && !ladder) {
+            if (MovementHelper.isLava(BlockStateInterface.get(ctx, feet)) || MovementHelper.isLava(BlockStateInterface.get(ctx, feet.below()))) {
+                return state.setStatus(MovementStatus.FAILED);
+            }
             logDebug("Wrong Y coordinate");
             if (feet.getY() < dest.getY()) {
-                System.out.println("In movement traverse");
+                logDebug("In movement traverse");
                 return state.setInput(Input.JUMP, true);
             }
             return state;
