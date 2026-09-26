@@ -121,9 +121,6 @@ public class BlockPlaceHelper {
                 lastPlaceTarget = null; // reset so next placement also gets delay
                 return;
             }
-            if (!ctx.player().getItemInHand(hand).isEmpty() && ctx.playerController().processRightClick(ctx.player(), ctx.world(), hand) == InteractionResult.SUCCESS) {
-                return;
-            }
         }
     }
 }

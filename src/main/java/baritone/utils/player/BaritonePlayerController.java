@@ -79,13 +79,25 @@ public final class BaritonePlayerController implements IPlayerController {
 
     @Override
     public InteractionResult processRightClickBlock(LocalPlayer player, Level world, InteractionHand hand, BlockHitResult result) {
-        // primaryplayercontroller is always in a ClientWorld so this is ok
+        syncRotation(player);
         return mc.gameMode.useItemOn(player, hand, result);
     }
 
     @Override
     public InteractionResult processRightClick(LocalPlayer player, Level world, InteractionHand hand) {
+        syncRotation(player);
         return mc.gameMode.useItem(player, hand);
+    }
+
+    private void syncRotation(LocalPlayer player) {
+        if (player != null && player.connection != null) {
+            player.connection.send(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
+                    player.getYRot(),
+                    player.getXRot(),
+                    player.onGround(),
+                    player.horizontalCollision
+            ));
+        }
     }
 
     @Override
