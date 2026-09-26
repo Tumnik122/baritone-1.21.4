@@ -131,7 +131,9 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     @Override
     public void onPlayerSprintState(SprintStateEvent event) {
         if (isPathing() && current != null) {
-            event.setSprinting(current.isSprinting());
+            boolean sprint = current.isSprinting();
+            event.setSprinting(sprint);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, sprint);
         } else if (baritone.getInputOverrideHandler().isInputForcedDown(Input.SPRINT)) {
             event.setSprinting(true);
         }

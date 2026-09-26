@@ -180,6 +180,9 @@ public class ExecutionControlCommands {
                     paused[0] = false;
                 }
                 baritone.getPathingBehavior().cancelEverything();
+                if (baritone instanceof baritone.Baritone baritoneImpl) {
+                    baritoneImpl.getBypassProcess().stop();
+                }
                 logDirect("ok canceled");
             }
 

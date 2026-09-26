@@ -1,6 +1,5 @@
 package baritone.bypass;
 
-import baritone.Baritone;
 import baritone.api.Settings;
 import baritone.api.utils.Rotation;
 import net.minecraft.client.Minecraft;
@@ -17,13 +16,21 @@ import java.util.concurrent.ThreadLocalRandom;
  * Zapewnia pełną zgodność z detekcją GrimAC:
  * 1. GCD-COMPLIANT ROTATIONS: Oblicza GCD z aktualnego sensitivity Minecrafta.
  *    Wszystkie delty rotacji (yaw & pitch) są kwantyzowane do wielokrotności GCD.
- * 2. PŁYNNIE ROZŁOŻONE: Płynna interpolacja Cubic Bezier rozłożona na 3-8 ticków.
- *    Maksymalna prędkość: ~360°/s (18°/tick).
- * 3. TIMING: Pre-rotation ticks (min 2 ticki przed rozpoczęciem kopania)
- *    oraz post-rotation ticks (utrzymanie rotacji 1-2 ticki po zniszczeniu bloku).
- * 4. JITTER: Losowa mikrokorekta ±0.1° na krok, również skwantyzowana do siatki GCD.
+ * 2. PŁYNNIE ROZŁOŻONE: Płynna interpolacja Cubic Bezier z adaptacyjną prędkością:
+ *    - Mały kąt (<30°) -> 1 tick, pełna prędkość
+ *    - Średni kąt (30-90°) -> 2-3 ticki
+ *    - Duży kąt (>90°) -> 3-5 ticków
+ * 3. ANGLE_TOLERANCE = 3.0°: Rotacja kończy się gdy jest blisko celu.
+ * 4. ROTATION_TIMEOUT_MS = 200: Wymuszenie zakończenia rotacji po 200ms.
+ * 5. MAX_ROTATION_SPEED = 720°/s (36°/tick).
+ * 6. MIN_PRE_ROTATION_TICKS = 1 tick stabilizacji przed rozpoczęciem kopania.
  */
 public final class RotationEngine {
+
+    public static final double ANGLE_TOLERANCE = 3.0D;
+    public static final long ROTATION_TIMEOUT_MS = 200L;
+    public static final double MAX_ROTATION_SPEED = 720.0D;
+    public static final int MIN_PRE_ROTATION_TICKS = 1;
 
     private RotationEngine() {}
 
@@ -36,12 +43,10 @@ public final class RotationEngine {
     private static int settledTicks = 0;
     private static int postBreakHoldTicks = 0;
     private static BlockPos lastBrokenBlockPos = null;
+    private static long rotationStartTimeMs = 0L;
 
     /**
      * Oblicza GCD z aktualnego mouse sensitivity Minecrafta.
-     * W vanilla Minecraft:
-     * float f = sensitivity * 0.6F + 0.2F;
-     * float gcd = f * f * f * 8.0F * 0.15F;
      */
     public static double getGcd() {
         double sensitivity = 0.5D;
@@ -70,30 +75,39 @@ public final class RotationEngine {
      */
     public static double cubicBezier(double t) {
         t = Mth.clamp(t, 0.0D, 1.0D);
-        // Standardowa łagodna krzywa S: 3t^2 - 2t^3 (lub bezier 0.25, 0.1, 0.25, 1.0)
         return t * t * (3.0D - 2.0D * t);
     }
 
     /**
-     * Oblicza liczbę ticków (3-8) zależnie od całkowitego kąta obrotu.
+     * Adaptacyjna prędkość obrotu:
+     * - Mały kąt (<30°) → 1 tick, full speed
+     * - Średni kąt (30-90°) → 2-3 ticki
+     * - Duży kąt (>90°) → 3-5 ticków
      */
     public static int calculateTicksForAngle(double angleDelta) {
         ThreadLocalRandom rng = ThreadLocalRandom.current();
-        if (angleDelta < 15.0D) {
-            return 3;
-        } else if (angleDelta < 45.0D) {
-            return 4 + rng.nextInt(2); // 4-5 ticków
+        if (angleDelta < 30.0D) {
+            return 1;
         } else if (angleDelta < 90.0D) {
-            return 6 + rng.nextInt(2); // 6-7 ticków
+            return 2 + rng.nextInt(2); // 2-3 ticki
         } else {
-            return 8;
+            return 3 + rng.nextInt(3); // 3-5 ticków
         }
     }
 
     /**
-     * Główna metoda aplikująca rotację do gracza z pełnym GrimAC-safe smoothingiem i kwantyzacją GCD.
+     * Główna metoda aplikująca rotację do gracza z pełnym GrimAC-safe smoothingiem, kwantyzacją GCD,
+     * tolerancją ANGLE_TOLERANCE (3.0°) oraz zabezpieczeniem czasowym ROTATION_TIMEOUT_MS (200ms).
      */
     public static void apply(LocalPlayer player, Rotation target, Settings settings) {
+        apply(player, target, settings, false);
+    }
+
+    /**
+     * Główna metoda aplikująca rotację do gracza z pełnym GrimAC-safe smoothingiem, kwantyzacją GCD,
+     * adaptacyjną tolerancją oraz zabezpieczeniem czasowym ROTATION_TIMEOUT_MS (200ms).
+     */
+    public static void apply(LocalPlayer player, Rotation target, Settings settings, boolean blockInteract) {
         if (player == null || target == null) return;
 
         ThreadLocalRandom rng = ThreadLocalRandom.current();
@@ -106,35 +120,65 @@ public final class RotationEngine {
         float diffPitch = target.getPitch() - curPitch;
         double totalAngle = Math.hypot(diffYaw, diffPitch);
 
+        // Jeśli bot wchodzi w interakcję z blokiem lub wykonuje duży obrót, anuluj hold po zniszczeniu
+        if (blockInteract || totalAngle > 10.0D) {
+            postBreakHoldTicks = 0;
+        }
+
         // Utrzymanie rotacji po zniszczeniu bloku (post-rotation hold)
         if (postBreakHoldTicks > 0) {
             postBreakHoldTicks--;
-            settledTicks++;
+            settledTicks = 0;
             return;
         }
 
-        // Jeśli cel się zmienił o więcej niż 3°, resetujemy interpolację na nowo
+        double angleTolerance = blockInteract ? 0.35D : ANGLE_TOLERANCE;
+
+        // Nowy cel lub zmiana celu o ponad 20° (nie restartuj pętli przy drobnych wahaniach celownika na bloku)
         if (currentSmoothTarget == null || Math.hypot(
                 Mth.wrapDegrees(target.getYaw() - currentSmoothTarget.getYaw()),
-                target.getPitch() - currentSmoothTarget.getPitch()) > 3.0D) {
+                target.getPitch() - currentSmoothTarget.getPitch()) > 20.0D) {
             currentSmoothTarget = target;
             startRotation = new Rotation(curYaw, curPitch);
-            totalInterpolationTicks = calculateTicksForAngle(totalAngle);
+            totalInterpolationTicks = blockInteract ? (totalAngle < 60.0D ? 1 : 2) : calculateTicksForAngle(totalAngle);
             currentInterpolationTick = 0;
             settledTicks = 0;
+            rotationStartTimeMs = System.currentTimeMillis();
+        } else {
+            // Płynna aktualizacja celu bez resetowania postępu interpolacji
+            currentSmoothTarget = target;
         }
 
-        // Gdy jesteśmy już bardzo blisko celu (< 0.8°)
-        if (totalAngle <= 0.8D) {
-            settledTicks++;
-            // Mikrokorekta jitter skwantyzowana do GCD
-            double jx = (rng.nextDouble() - 0.5D) * 0.1D;
-            double jy = (rng.nextDouble() - 0.5D) * 0.1D;
-            jx = quantizeToGcd(jx, gcd);
-            jy = quantizeToGcd(jy, gcd);
+        // ROTATION_TIMEOUT_MS (200ms) force complete — bot nie może wisieć na rotacji
+        long elapsedMs = System.currentTimeMillis() - rotationStartTimeMs;
+        if (rotationStartTimeMs > 0L && elapsedMs >= ROTATION_TIMEOUT_MS) {
+            double snapYaw = quantizeToGcd(target.getYaw() - curYaw, gcd);
+            double snapPitch = quantizeToGcd(target.getPitch() - curPitch, gcd);
+            player.setYRot((float) Mth.wrapDegrees(curYaw + snapYaw));
+            player.setXRot((float) Mth.clamp(curPitch + snapPitch, -90.0F, 90.0F));
+            settledTicks = Math.max(settledTicks + 1, MIN_PRE_ROTATION_TICKS);
+            return;
+        }
 
-            player.setYRot((float) (Mth.wrapDegrees(target.getYaw() + (float) jx)));
-            player.setXRot((float) Mth.clamp(target.getPitch() + (float) jy, -90.0F, 90.0F));
+        // Tolerancja celu: po dotarciu ustawiamy dokładną rotację skwantyzowaną do GCD
+        if (totalAngle <= angleTolerance) {
+            settledTicks++;
+            if (!blockInteract) {
+                // Mikrokorekta jitter skwantyzowana do GCD przy swobodnym rozglądaniu
+                double jx = (rng.nextDouble() - 0.5D) * 0.05D;
+                double jy = (rng.nextDouble() - 0.5D) * 0.05D;
+                jx = quantizeToGcd(jx, gcd);
+                jy = quantizeToGcd(jy, gcd);
+
+                player.setYRot((float) (Mth.wrapDegrees(target.getYaw() + (float) jx)));
+                player.setXRot((float) Mth.clamp(target.getPitch() + (float) jy, -90.0F, 90.0F));
+            } else {
+                // Precyzyjny snap na powierzchnię bloku (zgodny z siatką GCD)
+                double dY = quantizeToGcd(diffYaw, gcd);
+                double dP = quantizeToGcd(diffPitch, gcd);
+                player.setYRot((float) Mth.wrapDegrees(curYaw + (float) dY));
+                player.setXRot((float) Mth.clamp(curPitch + (float) dP, -90.0F, 90.0F));
+            }
             return;
         }
 
@@ -142,7 +186,6 @@ public final class RotationEngine {
         double t = (double) currentInterpolationTick / (double) Math.max(totalInterpolationTicks, 1);
         double easedT = cubicBezier(t);
 
-        // Docelowa delta w tym kroku
         double targetYawDelta = Mth.wrapDegrees(currentSmoothTarget.getYaw() - startRotation.getYaw()) * easedT;
         double targetPitchDelta = (currentSmoothTarget.getPitch() - startRotation.getPitch()) * easedT;
 
@@ -152,16 +195,19 @@ public final class RotationEngine {
         double stepYaw = Mth.wrapDegrees((float) (expectedYaw - curYaw));
         double stepPitch = expectedPitch - curPitch;
 
-        // Ograniczenie maksymalnej prędkości: ~360°/sekundę (~18°/tick)
-        double maxStepPerTick = 18.0D;
+        // Ograniczenie prędkości: przy interakcji z blokiem pozwalamy na szybszy snap (1200°/s)
+        double maxSpeed = blockInteract ? 1200.0D : MAX_ROTATION_SPEED;
+        double maxStepPerTick = maxSpeed / 20.0D;
         stepYaw = Mth.clamp(stepYaw, -maxStepPerTick, maxStepPerTick);
         stepPitch = Mth.clamp(stepPitch, -maxStepPerTick, maxStepPerTick);
 
-        // Losowy jitter (symulacja drżenia ręki) ±0.1°
-        double jitterYaw = (rng.nextDouble() - 0.5D) * 0.1D;
-        double jitterPitch = (rng.nextDouble() - 0.5D) * 0.1D;
-        stepYaw += jitterYaw;
-        stepPitch += jitterPitch;
+        if (!blockInteract) {
+            // Losowy jitter tylko przy swobodnym rozglądaniu
+            double jitterYaw = (rng.nextDouble() - 0.5D) * 0.05D;
+            double jitterPitch = (rng.nextDouble() - 0.5D) * 0.05D;
+            stepYaw += jitterYaw;
+            stepPitch += jitterPitch;
+        }
 
         // Snap do siatki GCD
         stepYaw = quantizeToGcd(stepYaw, gcd);
@@ -173,7 +219,7 @@ public final class RotationEngine {
         player.setYRot(newYaw);
         player.setXRot(newPitch);
 
-        if (Math.hypot(Mth.wrapDegrees(target.getYaw() - newYaw), target.getPitch() - newPitch) <= 1.2D) {
+        if (Math.hypot(Mth.wrapDegrees(target.getYaw() - newYaw), target.getPitch() - newPitch) <= angleTolerance) {
             settledTicks++;
         } else {
             settledTicks = 0;
@@ -185,14 +231,16 @@ public final class RotationEngine {
      */
     public static void notifyBlockBroken(BlockPos pos) {
         lastBrokenBlockPos = pos;
-        postBreakHoldTicks = 2; // utrzymanie 2 ticki
+        postBreakHoldTicks = 2;
     }
 
     /**
-     * Czy celownik jest ustabilizowany na celu przez co najmniej zadana liczbe tickow (pre-rotation).
+     * Czy celownik jest ustabilizowany na celu przez co najmniej MIN_PRE_ROTATION_TICKS (1 tick),
+     * lub upłynął timeout ROTATION_TIMEOUT_MS (200ms).
      */
     public static boolean isSettled(int requiredTicks) {
-        return settledTicks >= requiredTicks;
+        int req = Math.max(requiredTicks, MIN_PRE_ROTATION_TICKS);
+        return settledTicks >= req;
     }
 
     /**
@@ -205,6 +253,14 @@ public final class RotationEngine {
         currentInterpolationTick = 0;
         settledTicks = 0;
         postBreakHoldTicks = 0;
+        rotationStartTimeMs = 0L;
+    }
+
+    /**
+     * Anuluje bieżącą rotację (alias dla reset).
+     */
+    public static void cancel() {
+        reset();
     }
 
     /**

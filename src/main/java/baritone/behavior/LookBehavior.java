@@ -98,14 +98,16 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 this.prevRotation = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
                 Rotation actual = this.processor.peekRotation(this.target.rotation, this.target.blockInteract);
 
-                // Anti-DuplicateRotPlace: add Gaussian micro-jitter when target rotation is stationary
-                actual = this.applyAntiDuplicateJitter(actual);
+                // Anti-DuplicateRotPlace: add Gaussian micro-jitter when target rotation is stationary (only if not blockInteract)
+                if (!this.target.blockInteract) {
+                    actual = this.applyAntiDuplicateJitter(actual);
+                }
 
                 this.lastAppliedYaw   = actual.getYaw();
                 this.lastAppliedPitch = actual.getPitch();
 
                 if (Baritone.settings().smoothRotation.value) {
-                    SmoothLookHelper.apply(ctx.player(), actual);
+                    SmoothLookHelper.apply(ctx.player(), actual, Baritone.settings(), this.target.blockInteract);
                 } else {
                     ctx.player().setYRot(actual.getYaw());
                     ctx.player().setXRot(actual.getPitch());
@@ -307,15 +309,13 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             }
 
             // ── 2. Target noise ──────────────────────────────────────────────
-            // blockInteract uses a larger noise scale than before (0.09 instead of
-            // 0.04) – perfect aim at a block surface for seconds is unnatural.
-            // The noise is interpolated via Gaussian so it looks like "focus", not
-            // pure randomness.
-            float noiseScale = blockInteract ? 0.09f : 0.15f;
-            float randomTargetOffsetYaw   = (float) (ThreadLocalRandom.current().nextGaussian() * noiseScale);
-            float randomTargetOffsetPitch = (float) (ThreadLocalRandom.current().nextGaussian() * (noiseScale * 0.67f));
-            desiredYaw   += randomTargetOffsetYaw;
-            desiredPitch += randomTargetOffsetPitch;
+            if (!blockInteract) {
+                float noiseScale = 0.15f;
+                float randomTargetOffsetYaw   = (float) (ThreadLocalRandom.current().nextGaussian() * noiseScale);
+                float randomTargetOffsetPitch = (float) (ThreadLocalRandom.current().nextGaussian() * (noiseScale * 0.67f));
+                desiredYaw   += randomTargetOffsetYaw;
+                desiredPitch += randomTargetOffsetPitch;
+            }
 
             // ── 3. Overshoot / correction ────────────────────────────────────
             if (!blockInteract) {
@@ -338,13 +338,15 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             }
 
             // ── 4. Micro-tremor (hand shake) ─────────────────────────────────
-            this.microAdjustTick++;
-            if (this.microAdjustTick % 3 == 0) {
-                this.microYaw   = (float) (ThreadLocalRandom.current().nextGaussian() * 0.05);
-                this.microPitch = (float) (ThreadLocalRandom.current().nextGaussian() * 0.04);
+            if (!blockInteract) {
+                this.microAdjustTick++;
+                if (this.microAdjustTick % 3 == 0) {
+                    this.microYaw   = (float) (ThreadLocalRandom.current().nextGaussian() * 0.05);
+                    this.microPitch = (float) (ThreadLocalRandom.current().nextGaussian() * 0.04);
+                }
+                desiredYaw   += this.microYaw;
+                desiredPitch += this.microPitch;
             }
-            desiredYaw   += this.microYaw;
-            desiredPitch += this.microPitch;
 
             // ── 5. Walk head-bob ─────────────────────────────────────────────
             // While the player is moving horizontally, add a subtle sinusoidal
@@ -362,14 +364,16 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             }
 
             // ── 6. Random offsets (settings) ─────────────────────────────────
-            desiredYaw   += this.randomYawOffset;
-            desiredPitch += this.randomPitchOffset;
+            if (!blockInteract) {
+                desiredYaw   += this.randomYawOffset;
+                desiredPitch += this.randomPitchOffset;
+            }
 
             // ── Compute deltas ────────────────────────────────────────────────
             float deltaYaw   = Mth.wrapDegrees(desiredYaw   - prev.getYaw());
             float deltaPitch = desiredPitch - prev.getPitch();
 
-            if (Baritone.settings().humanizedRotations.value) {
+            if (Baritone.settings().humanizedRotations.value && !blockInteract) {
                 // ── 7. Variable rotation speed ────────────────────────────────
                 float baseMaxSpeed   = Baritone.settings().maxRotationSpeedPerTick.value;
                 float speedModifier  = (float) (0.6 + ThreadLocalRandom.current().nextDouble() * 0.8);

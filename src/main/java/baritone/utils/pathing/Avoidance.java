@@ -25,9 +25,14 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.monster.AbstractSkeleton;
+import net.minecraft.world.entity.monster.Creeper;
 import net.minecraft.world.entity.monster.EnderMan;
+import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.entity.monster.Spider;
+import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.entity.monster.ZombifiedPiglin;
 
 public class Avoidance {
@@ -65,19 +70,81 @@ public class Avoidance {
         }
         List<Avoidance> res = new ArrayList<>();
         double mobSpawnerCoeff = Baritone.settings().mobSpawnerAvoidanceCoefficient.value;
-        double mobCoeff = Baritone.settings().mobAvoidanceCoefficient.value;
-        if (mobSpawnerCoeff != 1.0D) {
+        if (mobSpawnerCoeff != 1.0D && ctx.worldData() != null && ctx.worldData().getCachedWorld() != null) {
             ctx.worldData().getCachedWorld().getLocationsOf("mob_spawner", 1, ctx.playerFeet().x, ctx.playerFeet().z, 2)
                     .forEach(mobspawner -> res.add(new Avoidance(mobspawner, mobSpawnerCoeff, Baritone.settings().mobSpawnerAvoidanceRadius.value)));
         }
-        if (mobCoeff != 1.0D) {
-            ctx.entitiesStream()
-                    .filter(entity -> entity instanceof Mob)
-                    .filter(entity -> (!(entity instanceof Spider)) || ctx.player().getLightLevelDependentMagicValue() < 0.5)
-                    .filter(entity -> !(entity instanceof ZombifiedPiglin) || ((ZombifiedPiglin) entity).getLastHurtByMob() != null)
-                    .filter(entity -> !(entity instanceof EnderMan) || ((EnderMan) entity).isCreepy())
-                    .forEach(entity -> res.add(new Avoidance(entity.blockPosition(), mobCoeff, Baritone.settings().mobAvoidanceRadius.value)));
-        }
+
+        ctx.entitiesStream()
+                .filter(entity -> entity instanceof Mob)
+                .forEach(entity -> {
+                    Mob mob = (Mob) entity;
+
+                    // 1. Creeper: wysokie ryzyko śmiertelnego wybuchu, omijany szerokim łukiem
+                    if (mob instanceof Creeper) {
+                        if (Baritone.settings().mobAvoidanceCreeper.value) {
+                            res.add(new Avoidance(mob.blockPosition(),
+                                    Baritone.settings().creeperAvoidanceCoefficient.value,
+                                    Baritone.settings().creeperAvoidanceRadius.value));
+                        }
+                        return;
+                    }
+
+                    // 2. Szkielety / Bogged / Stray / WitherSkeleton: moby dystansowe strzelające z łuków
+                    if (mob instanceof AbstractSkeleton) {
+                        if (Baritone.settings().mobAvoidanceSkeleton.value) {
+                            res.add(new Avoidance(mob.blockPosition(),
+                                    Baritone.settings().skeletonAvoidanceCoefficient.value,
+                                    Baritone.settings().skeletonAvoidanceRadius.value));
+                        }
+                        return;
+                    }
+
+                    // 3. Zombie / Husk / Drowned: wrogie moby walczące wręcz
+                    if (mob instanceof Zombie) {
+                        if (!(mob instanceof ZombifiedPiglin) || ((ZombifiedPiglin) mob).getLastHurtByMob() != null) {
+                            if (Baritone.settings().mobAvoidanceZombie.value) {
+                                res.add(new Avoidance(mob.blockPosition(),
+                                        Baritone.settings().zombieAvoidanceCoefficient.value,
+                                        Baritone.settings().zombieAvoidanceRadius.value));
+                            }
+                        }
+                        return;
+                    }
+
+                    // 4. Enderman: omijany, by nie wejść w niego ani nie spojrzeć mu w oczy
+                    if (mob instanceof EnderMan enderman) {
+                        if (Baritone.settings().mobAvoidanceEnderman.value) {
+                            double coeff = enderman.isCreepy()
+                                    ? Baritone.settings().endermanAvoidanceCoefficient.value * 2.0D
+                                    : Baritone.settings().endermanAvoidanceCoefficient.value;
+                            int radius = enderman.isCreepy()
+                                    ? Baritone.settings().endermanAvoidanceRadius.value + 4
+                                    : Baritone.settings().endermanAvoidanceRadius.value;
+                            res.add(new Avoidance(mob.blockPosition(), coeff, radius));
+                        }
+                        return;
+                    }
+
+                    // 5. Pająki: wrogie w ciemności (poziom światła < 0.5)
+                    if (mob instanceof Spider) {
+                        if (ctx.player() != null && ctx.player().getLightLevelDependentMagicValue() < 0.5F) {
+                            res.add(new Avoidance(mob.blockPosition(),
+                                    Baritone.settings().mobAvoidanceCoefficient.value,
+                                    Baritone.settings().mobAvoidanceRadius.value));
+                        }
+                        return;
+                    }
+
+                    // 6. Warden / Witch / Inne potwory (Enemy)
+                    if (mob instanceof Enemy) {
+                        boolean isWarden = mob.getType() == EntityType.WARDEN;
+                        double dangerCoeff = isWarden ? 5.0D : Baritone.settings().mobAvoidanceCoefficient.value;
+                        int dangerRadius = isWarden ? 16 : Baritone.settings().mobAvoidanceRadius.value;
+                        res.add(new Avoidance(mob.blockPosition(), dangerCoeff, dangerRadius));
+                    }
+                });
+
         return res;
     }
 

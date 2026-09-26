@@ -42,7 +42,8 @@ public final class RayTraceUtils {
      * @return The calculated raytrace result
      */
     public static HitResult rayTraceTowards(Entity entity, Rotation rotation, double blockReachDistance) {
-        return rayTraceTowards(entity, rotation, blockReachDistance, false);
+        boolean isSneaking = entity.isCrouching();
+        return rayTraceTowards(entity, rotation, blockReachDistance, isSneaking);
     }
 
     public static HitResult rayTraceTowards(Entity entity, Rotation rotation, double blockReachDistance, boolean wouldSneak) {
@@ -59,10 +60,7 @@ public final class RayTraceUtils {
                 direction.y * blockReachDistance,
                 direction.z * blockReachDistance
         );
-        // Use COLLIDER (not OUTLINE) because the server-side (and GrimAC) physics simulate
-        // block collision shapes, not visual outlines. Matching this exactly prevents
-        // false "AimC" / block hit position flags when the client outline differs from collider.
-        return entity.level().clip(new ClipContext(start, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, entity));
+        return entity.level().clip(new ClipContext(start, end, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, entity));
     }
 
     public static Vec3 inferSneakingEyePosition(Entity entity) {

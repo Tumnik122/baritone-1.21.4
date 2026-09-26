@@ -671,7 +671,11 @@ public interface MovementHelper extends ActionCosts, Helper {
      */
     static void switchToBestToolFor(IPlayerContext ctx, BlockState b, ToolSet ts, boolean preferSilkTouch) {
         if (Baritone.settings().autoTool.value && !Baritone.settings().assumeExternalAutoTool.value) {
-            ctx.player().getInventory().selected = ts.getBestSlot(b.getBlock(), preferSilkTouch);
+            int bestSlot = ts.getBestSlot(b.getBlock(), preferSilkTouch);
+            if (ctx.player() != null && ctx.player().getInventory().selected != bestSlot) {
+                ctx.player().getInventory().selected = bestSlot;
+                ctx.playerController().syncHeldItem();
+            }
         }
     }
 
@@ -823,7 +827,7 @@ public interface MovementHelper extends ActionCosts, Helper {
                 double faceY = (placeAt.getY() + against1.getY() + 0.5D) * 0.5D;
                 double faceZ = (placeAt.getZ() + against1.getZ() + 1.0D) * 0.5D;
                 Rotation place = RotationUtils.calcRotationFromVec3d(wouldSneak ? RayTraceUtils.inferSneakingEyePosition(ctx.player()) : ctx.playerHead(), new Vec3(faceX, faceY, faceZ), ctx.playerRotations());
-                Rotation actual = baritone.getLookBehavior().getAimProcessor().peekRotation(place);
+                Rotation actual = baritone.getLookBehavior().getAimProcessor().peekRotation(place, true);
                 HitResult res = RayTraceUtils.rayTraceTowards(ctx.player(), actual, ctx.playerController().getBlockReachDistance(), wouldSneak);
                 if (res != null && res.getType() == HitResult.Type.BLOCK && ((BlockHitResult) res).getBlockPos().equals(against1) && ((BlockHitResult) res).getBlockPos().relative(((BlockHitResult) res).getDirection()).equals(placeAt)) {
                     state.setTarget(new MovementTarget(place, true));

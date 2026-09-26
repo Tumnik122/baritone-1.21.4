@@ -58,6 +58,7 @@ public final class BaritonePlayerController implements IPlayerController {
 
     @Override
     public boolean onPlayerDamageBlock(BlockPos pos, Direction side) {
+        syncHeldItem();
         return mc.gameMode.continueDestroyBlock(pos, side);
     }
 
@@ -89,6 +90,7 @@ public final class BaritonePlayerController implements IPlayerController {
 
     @Override
     public boolean clickBlock(BlockPos loc, Direction face) {
+        syncHeldItem();
         return mc.gameMode.startDestroyBlock(loc, face);
     }
 

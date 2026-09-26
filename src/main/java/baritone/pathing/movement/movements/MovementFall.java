@@ -107,6 +107,7 @@ public class MovementFall extends Movement {
 
             if (ctx.player().position().y - dest.getY() < ctx.playerController().getBlockReachDistance() && !ctx.player().onGround()) {
                 ctx.player().getInventory().selected = ctx.player().getInventory().findSlotMatchingItem(STACK_BUCKET_WATER);
+                ctx.playerController().syncHeldItem();
 
                 targetRotation = new Rotation(toDest.getYaw(), 90.0F);
 
@@ -124,6 +125,7 @@ public class MovementFall extends Movement {
             if (isWater) { // only match water, not flowing water (which we cannot pick up with a bucket)
                 if (Inventory.isHotbarSlot(ctx.player().getInventory().findSlotMatchingItem(STACK_BUCKET_EMPTY))) {
                     ctx.player().getInventory().selected = ctx.player().getInventory().findSlotMatchingItem(STACK_BUCKET_EMPTY);
+                    ctx.playerController().syncHeldItem();
                     if (ctx.player().getDeltaMovement().y >= 0) {
                         return state.setInput(Input.CLICK_RIGHT, true);
                     } else {

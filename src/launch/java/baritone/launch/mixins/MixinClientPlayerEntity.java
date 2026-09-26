@@ -23,6 +23,7 @@ import baritone.api.event.events.PlayerUpdateEvent;
 import baritone.api.event.events.SprintStateEvent;
 import baritone.api.event.events.type.EventState;
 import baritone.behavior.LookBehavior;
+import baritone.api.utils.input.Input;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.entity.player.Abilities;
 import org.spongepowered.asm.mixin.Mixin;
@@ -101,8 +102,29 @@ public class MixinClientPlayerEntity {
         SprintStateEvent event = new SprintStateEvent(self.isSprinting());
         baritone.getGameEventHandler().onPlayerSprintState(event);
 
-        if (event.isModified() && event.isSprinting() != self.isSprinting()) {
-            self.setSprinting(event.isSprinting());
+        if (event.isModified()) {
+            boolean targetSprint = event.isSprinting();
+            if (targetSprint) {
+                // Strict vanilla physical simulation validation (GrimAC / PolarAC compatibility):
+                // 1. Cannot sprint while sneaking/crouching
+                // 2. Cannot sprint without enough food (hunger > 6 or mayfly)
+                // 3. Cannot sprint if horizontally colliding (wall bump)
+                // 4. Cannot sprint if in water (unless underwater swimming)
+                // 5. Cannot sprint without forward movement input
+                boolean canSprint = !self.isCrouching()
+                        && (self.getAbilities().mayfly || self.getFoodData().getFoodLevel() > 6.0F)
+                        && !(self.isInWater() && !self.isUnderWater())
+                        && !(self.horizontalCollision && !self.minorHorizontalCollision)
+                        && (self.input == null || self.input.hasForwardImpulse() || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD));
+                if (!canSprint) {
+                    targetSprint = false;
+                    baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+                }
+            }
+
+            if (targetSprint != self.isSprinting()) {
+                self.setSprinting(targetSprint);
+            }
         }
     }
 

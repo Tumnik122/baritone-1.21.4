@@ -20,6 +20,7 @@ package baritone.utils.player;
 import baritone.Baritone;
 import baritone.api.cache.IWorldData;
 import baritone.api.utils.*;
+import baritone.api.utils.input.Input;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.entity.Entity;
@@ -82,6 +83,7 @@ public final class BaritonePlayerContext implements IPlayerContext {
 
     @Override
     public HitResult objectMouseOver() {
-        return RayTraceUtils.rayTraceTowards(player(), playerRotations(), playerController().getBlockReachDistance());
+        boolean sneaking = player().isCrouching() || (this.baritone != null && this.baritone.getInputOverrideHandler().isInputForcedDown(Input.SNEAK));
+        return RayTraceUtils.rayTraceTowards(player(), playerRotations(), playerController().getBlockReachDistance(), sneaking);
     }
 }

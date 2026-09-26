@@ -18,7 +18,9 @@
 package baritone.utils;
 
 import baritone.Baritone;
+import baritone.api.BaritoneAPI;
 import baritone.api.utils.IPlayerContext;
+import baritone.api.utils.input.Input;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -44,6 +46,7 @@ public class BlockPlaceHelper {
      */
     private int placeReactionDelay = 0;
     private BlockPos lastPlaceTarget = null;
+    private int targetMissTicks = 0;
 
     BlockPlaceHelper(IPlayerContext playerContext) {
         this.ctx = playerContext;
@@ -56,10 +59,14 @@ public class BlockPlaceHelper {
         }
         HitResult mouseOver = ctx.objectMouseOver();
         if (!rightClickRequested || ctx.player().isHandsBusy() || mouseOver == null || mouseOver.getType() != HitResult.Type.BLOCK) {
-            lastPlaceTarget = null;
-            placeReactionDelay = 0;
+            targetMissTicks++;
+            if (targetMissTicks > 3) {
+                lastPlaceTarget = null;
+                placeReactionDelay = 0;
+            }
             return;
         }
+        targetMissTicks = 0;
 
         // GrimAC guard: Reach check (max 4.0 blocks to avoid Reach / FarPlace flags)
         double maxReach = Baritone.settings().antiCheatCompatibility.value ? 4.0D : Baritone.settings().blockReachDistance.value;
@@ -79,13 +86,17 @@ public class BlockPlaceHelper {
         // GrimAC guard: No sprint while placing
         if (Baritone.settings().antiCheatCompatibility.value && ctx.player().isSprinting()) {
             ctx.player().setSprinting(false);
+            var b = BaritoneAPI.getProvider().getBaritoneForPlayer(ctx.player());
+            if (b != null) {
+                b.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            }
         }
 
-        // Humanized reaction delay: 1-2 ticks before placing on a new block face
+        // Humanized reaction delay: 1 tick before placing on a brand new block face
         if (Baritone.settings().humanizedInteractDelay.value) {
             if (!currentTarget.equals(lastPlaceTarget)) {
                 lastPlaceTarget = currentTarget;
-                placeReactionDelay = 1 + (random.nextDouble() < 0.35 ? 1 : 0);
+                placeReactionDelay = 1;
             }
             if (placeReactionDelay > 0) {
                 placeReactionDelay--;

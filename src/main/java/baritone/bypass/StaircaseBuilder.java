@@ -102,18 +102,22 @@ public class StaircaseBuilder {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // 2. Kolejność kopania: góra (głowa) -> dół (stopy) -> stopień pod stopami (zejście)
+        // 2. Kolejność kopania: dół (stopy) -> góra (głowa) -> stopień pod stopami (zejście)
         BlockPos toBreak = null;
-        if (!isPassable(world, frontHead)) {
-            toBreak = frontHead;
-        } else if (!isPassable(world, frontFeet)) {
+        if (!isPassable(world, frontFeet)) {
             toBreak = frontFeet;
+        } else if (!isPassable(world, frontHead)) {
+            toBreak = frontHead;
         } else if (!isPassable(world, frontStepDown)) {
             toBreak = frontStepDown;
         }
 
         if (toBreak != null) {
-            currentTarget = toBreak;
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            if (!toBreak.equals(currentTarget)) {
+                currentTarget = toBreak;
+                RotationEngine.reset();
+            }
             Vec3 targetCenter = Vec3.atCenterOf(toBreak);
             Rotation rot = RotationEngine.lookAt(ctx.player().getEyePosition(), targetCenter);
             RotationEngine.apply(ctx.player(), rot, baritone.settings());
@@ -134,9 +138,12 @@ public class StaircaseBuilder {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // Bloki schodka wykopane - postaw krok w przód i w dół
+        // Bloki schodka wykopane - postaw krok w przód i w dół (bez Baritone pathfinding)
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-        return new PathingCommand(new GoalBlock(frontStepDown), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+        Rotation stepRot = new Rotation(facing.toYRot(), 20.0f);
+        RotationEngine.apply(ctx.player(), stepRot, baritone.settings());
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
     private void sealLiquidIfPossible(BlockPos liquidPos) {

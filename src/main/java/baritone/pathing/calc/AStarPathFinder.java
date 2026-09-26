@@ -70,7 +70,8 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
             logDebug("slowPath is on, path timeout will be " + Baritone.settings().slowPathTimeoutMS.value + "ms instead of " + primaryTimeout + "ms");
         }
         long primaryTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : primaryTimeout);
-        long failureTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : failureTimeout);
+        long effectiveFailure = Math.max(1L, Math.min(failureTimeout, Baritone.settings().failureTimeout.value));
+        long failureTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : effectiveFailure);
         boolean failing = true;
         int numNodes = 0;
         int numMovementsConsidered = 0;
@@ -84,7 +85,8 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         while (!openSet.isEmpty() && numEmptyChunk < pathingMaxChunkBorderFetch && !cancelRequested) {
             if ((numNodes & (timeCheckInterval - 1)) == 0) { // only call this once every 64 nodes (about half a millisecond)
                 long now = System.currentTimeMillis(); // since nanoTime is slow on windows (takes many microseconds)
-                if (now - failureTimeoutTime >= 0 || (!failing && now - primaryTimeoutTime >= 0)) {
+                boolean firstSegmentReady = !failing && Baritone.settings().startImmediatelyOnFirstSegment.value;
+                if (now - failureTimeoutTime >= 0 || (!failing && now - primaryTimeoutTime >= 0) || firstSegmentReady) {
                     break;
                 }
             }

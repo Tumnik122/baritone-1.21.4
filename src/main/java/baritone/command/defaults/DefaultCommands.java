@@ -72,7 +72,8 @@ public final class DefaultCommands {
                 new ElytraCommand(baritone),
                 new AiStatusCommand(baritone),
                 new BypassCommand(baritone),
-                new ReconnectCommand(baritone)
+                new ReconnectCommand(baritone),
+                new AutoLogoutCommand(baritone)
         ));
         ExecutionControlCommands prc = new ExecutionControlCommands(baritone);
         commands.add(prc.pauseCommand);

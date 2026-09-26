@@ -75,11 +75,7 @@ public class PathExecutor implements IPathExecutor, Helper {
     private final IPlayerContext ctx;
 
     private boolean sprintNextTick;
-    private boolean wasSprintingLastSegment = false;
-    private int segmentTransitionCooldown = 0;
-    // GrimAC Simulation bypass: 1-tick damper so sprint→stop velocity delta
-    // never exceeds what MC physics allows in a single tick.
-    private int sprintStopCooldown = 0;
+    private int transitionsThisTick = 0;
 
     public PathExecutor(PathingBehavior behavior, IPath path) {
         this.behavior = behavior;
@@ -95,14 +91,6 @@ public class PathExecutor implements IPathExecutor, Helper {
      * not sneaking out over lava), false otherwise
      */
     public boolean onTick() {
-        if (segmentTransitionCooldown > 0) {
-            segmentTransitionCooldown--;
-        }
-        if (sprintStopCooldown > 0) {
-            sprintStopCooldown--;
-            // Keep sprint off during damper period so velocity bleeds down naturally
-            ctx.player().setSprinting(false);
-        }
         if (pathPosition == path.length() - 1) {
             pathPosition++;
         }
@@ -241,25 +229,24 @@ public class PathExecutor implements IPathExecutor, Helper {
             return true;
         }
         if (movementStatus == SUCCESS) {
-            wasSprintingLastSegment = isSprinting();
-            // GrimAC fix: do NOT recursively call onTick() here.
-            // Chaining multiple movement steps in a single server tick produces
-            // a position delta that GrimAC's simulation rejects as impossible physics.
-            // Let the next game tick handle the new pathPosition naturally.
-            segmentTransitionCooldown = 2; // 2-tick freeze before next sprint decision
             pathPosition++;
             onChangeInPathPosition();
+            if (pathPosition < path.length()) {
+                if (transitionsThisTick < 3) {
+                    transitionsThisTick++;
+                    try {
+                        return onTick();
+                    } finally {
+                        transitionsThisTick--;
+                    }
+                }
+            }
             return true;
         } else {
             sprintNextTick = shouldSprintNextTick();
-            if (!sprintNextTick) {
-                // GrimAC Simulation fix: instead of instant setSprinting(false),
-                // schedule a 1-tick cooldown so the velocity change matches MC physics.
-                if (ctx.player().isSprinting() && sprintStopCooldown == 0) {
-                    sprintStopCooldown = 1;
-                } else if (sprintStopCooldown == 0) {
-                    ctx.player().setSprinting(false);
-                }
+            behavior.baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, sprintNextTick);
+            if (!sprintNextTick && ctx.player().isSprinting()) {
+                ctx.player().setSprinting(false);
             }
             ticksOnCurrent++;
             if (ticksOnCurrent > currentMovementOriginalCostEstimate + Baritone.settings().movementTimeoutTicks.value) {
@@ -367,11 +354,26 @@ public class PathExecutor implements IPathExecutor, Helper {
     private boolean shouldSprintNextTick() {
         boolean requested = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.SPRINT);
 
-        // we'll take it from here, no need for minecraft to see we're holding down control and sprint for us
-        behavior.baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-
-        // first and foremost, if allowSprint is off, or if we don't have enough hunger, don't try and sprint
+        // First and foremost, if allowSprint is off, or if we don't have enough hunger, don't try and sprint
         if (!new CalculationContext(behavior.baritone, false).canSprint) {
+            return false;
+        }
+
+        // Vanilla physical simulation guards (GrimAC / PolarAC strict compatibility):
+        // 1. Cannot sprint while sneaking/crouching
+        // 2. Cannot sprint in water unless underwater
+        // 3. Cannot sprint into a solid wall collision
+        // 4. Cannot sprint without forward movement
+        if (ctx.player().isCrouching()) {
+            return false;
+        }
+        if (ctx.player().isInWater() && !ctx.player().isUnderWater()) {
+            return false;
+        }
+        if (ctx.player().horizontalCollision && !ctx.player().minorHorizontalCollision) {
+            return false;
+        }
+        if (!behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD)) {
             return false;
         }
         IMovement current = path.movements().get(pathPosition);
@@ -689,9 +691,6 @@ public class PathExecutor implements IPathExecutor, Helper {
     }
 
     public boolean isSprinting() {
-        if (segmentTransitionCooldown > 0) {
-            return wasSprintingLastSegment;
-        }
         return sprintNextTick;
     }
 }

@@ -24,7 +24,8 @@ public final class LiquidDetector {
      */
     public static boolean isSafeToMine(Level world, BlockPos target) {
         if (world == null || target == null) return false;
-        return check(world, target.above()) && // góra
+        return check(world, target) &&
+               check(world, target.above()) && // góra
                check(world, target.below()) && // dół
                check(world, target.north()) && // północ
                check(world, target.south()) && // południe

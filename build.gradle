@@ -15,8 +15,13 @@
  * along with Baritone.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+plugins {
+    id 'org.jetbrains.kotlin.jvm' version '1.9.22' apply false
+}
+
 allprojects {
     apply plugin: 'java'
+    apply plugin: 'org.jetbrains.kotlin.jvm'
     apply plugin: "xyz.wagyourtail.unimined"
     apply plugin: "maven-publish"
 
@@ -85,6 +90,8 @@ allprojects {
         implementation "dev.babbaj:nether-pathfinder:${project.nether_pathfinder_version}"
 
         implementation 'com.google.code.findbugs:jsr305:3.0.2'
+        implementation 'org.luaj:luaj-jse:3.0.1'
+        implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.22"
     }
 
     unimined.minecraft(sourceSets.main, true) {

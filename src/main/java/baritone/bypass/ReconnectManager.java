@@ -93,10 +93,11 @@ public class ReconnectManager {
                     BlockPos currentPos = ctx.playerFeet();
                     double dist = Math.sqrt(currentPos.distSqr(targetSavedPos));
 
-                    // 4. Jeśli odległość > 5 bloków -> pathfind do zapisanej pozycji
+                    // 4. Jeśli odległość > 5 bloków -> pathfind do zapisanej pozycji za pomocą krótkich segmentów
                     if (dist > 5.0D) {
-                        Helper.HELPER.logDirect(String.format("§e[Reconnect] Odległość od miejsca zapisu: %.1f bloków (>5). Prowadzę gracza na pozycję...", dist));
-                        baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(targetSavedPos));
+                        Helper.HELPER.logDirect(String.format("§e[Reconnect] Odległość od miejsca zapisu: %.1f bloków (>5). Prowadzę gracza na pozycję (krótkie segmenty)...", dist));
+                        BlockPos shortGoal = calculateShortGoal(currentPos, targetSavedPos, 12);
+                        baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(shortGoal));
                         currentState = State.PATHFINDING_TO_SAVED_POS;
                     } else {
                         currentState = State.RESUMING;
@@ -107,9 +108,13 @@ public class ReconnectManager {
             case PATHFINDING_TO_SAVED_POS:
                 BlockPos feet = ctx.playerFeet();
                 double remainingDist = Math.sqrt(feet.distSqr(targetSavedPos));
-                if (remainingDist <= 3.0D || !baritone.getPathingBehavior().isPathing()) {
+                if (remainingDist <= 3.0D) {
                     Helper.HELPER.logDirect("§a[Reconnect] Osiągnięto zapisaną pozycję bota.");
                     currentState = State.RESUMING;
+                } else if (!baritone.getPathingBehavior().isPathing()) {
+                    // Kolejny krótki segment w stronę celu (max 12 bloków)
+                    BlockPos nextShortGoal = calculateShortGoal(feet, targetSavedPos, 12);
+                    baritone.getCustomGoalProcess().setGoalAndPath(new GoalBlock(nextShortGoal));
                 }
                 break;
 
@@ -122,6 +127,22 @@ public class ReconnectManager {
                 targetSavedPos = null;
                 break;
         }
+    }
+
+    private static BlockPos calculateShortGoal(BlockPos from, BlockPos to, int maxDistance) {
+        double dx = to.getX() - from.getX();
+        double dy = to.getY() - from.getY();
+        double dz = to.getZ() - from.getZ();
+        double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (dist <= maxDistance) {
+            return to;
+        }
+        double scale = maxDistance / dist;
+        return new BlockPos(
+                (int) Math.round(from.getX() + dx * scale),
+                (int) Math.round(from.getY() + dy * scale),
+                (int) Math.round(from.getZ() + dz * scale)
+        );
     }
 
     public static boolean isReconnecting() {

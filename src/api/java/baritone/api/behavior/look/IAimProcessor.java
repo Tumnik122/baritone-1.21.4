@@ -36,6 +36,18 @@ public interface IAimProcessor {
     Rotation peekRotation(Rotation desired);
 
     /**
+     * Returns the actual rotation that will be used when the desired rotation is requested,
+     * taking into account whether this is a block interaction (e.g. placing or breaking).
+     *
+     * @param desired The desired rotation to set
+     * @param blockInteract True if aiming to place or break a block
+     * @return The actual rotation
+     */
+    default Rotation peekRotation(Rotation desired, boolean blockInteract) {
+        return peekRotation(desired);
+    }
+
+    /**
      * Returns a copy of this {@link IAimProcessor} which has its own internal state and is manually tickable.
      *
      * @return The forked processor

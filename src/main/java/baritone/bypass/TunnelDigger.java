@@ -91,13 +91,16 @@ public class TunnelDigger {
         BlockPos feet = ctx.playerFeet();
         Direction activeDir = getActiveDirection();
 
-        // 1. Sprawdzenie strefy mobów (MobDetector)
+        // 1. Sprawdzenie strefy mobów (MobDetector) — bezpośrednie proste cofanie
         if (MobDetector.isMobInRetreatRange(ctx, config.mobRetreat)) {
-            BlockPos retreatPos = feet.relative(activeDir.getOpposite(), 3);
-            return new PathingCommand(new GoalBlock(retreatPos), PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH);
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         if (MobDetector.isMobInStopRange(ctx, config.mobStop)) {
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
@@ -107,14 +110,19 @@ public class TunnelDigger {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // Jeśli skończyliśmy odnogę boczną, wracamy do głównego tunelu
+        // Jeśli skończyliśmy odnogę boczną, wracamy do głównego tunelu (ruch bezpośredni)
         if (inSideBranch && sideBranchLength >= targetSideBranchLength) {
             if (branchStartPos != null && feet.distSqr(branchStartPos) > 1.0D) {
-                return new PathingCommand(new GoalBlock(branchStartPos), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+                Vec3 toStart = Vec3.atCenterOf(branchStartPos).subtract(ctx.player().position());
+                float yaw = (float) Math.toDegrees(Math.atan2(-toStart.x, toStart.z));
+                RotationEngine.apply(ctx.player(), new Rotation(yaw, 0f), baritone.settings());
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             } else {
                 inSideBranch = false;
                 branchStartPos = null;
                 sideBranchLength = 0;
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
                 Helper.HELPER.logDirect("§a[TunnelDigger] Zakończono odnogę boczną. Powrót do głównego tunelu (" + mainDirection + ").");
             }
         }
@@ -126,19 +134,24 @@ public class TunnelDigger {
         if (!LiquidDetector.isSafeToMine(world, frontFeet) || !LiquidDetector.isSafeToMine(world, frontHead)) {
             Helper.HELPER.logDirect("§6[TunnelDigger] Wykryto wodę lub lawę w korytarzu. Zmiana kierunku o 90°...");
             turnTunnel();
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // 3. Kopanie tunelu 1x2 (głowa, potem stopy)
+        // 3. Kopanie tunelu 1x2 (stopy, potem głowa)
         BlockPos toBreak = null;
-        if (!isPassable(world, frontHead)) {
-            toBreak = frontHead;
-        } else if (!isPassable(world, frontFeet)) {
+        if (!isPassable(world, frontFeet)) {
             toBreak = frontFeet;
+        } else if (!isPassable(world, frontHead)) {
+            toBreak = frontHead;
         }
 
         if (toBreak != null) {
-            currentTarget = toBreak;
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            if (!toBreak.equals(currentTarget)) {
+                currentTarget = toBreak;
+                RotationEngine.reset();
+            }
             Vec3 targetCenter = Vec3.atCenterOf(toBreak);
             Rotation rot = RotationEngine.lookAt(ctx.player().getEyePosition(), targetCenter);
             RotationEngine.apply(ctx.player(), rot, baritone.settings());
@@ -175,9 +188,12 @@ public class TunnelDigger {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // Tunel czysty przed nami - krok w przód
+        // Tunel czysty przed nami - bezpośredni krok w przód (BEZ Baritone pathfinding)
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-        return new PathingCommand(new GoalStrictDirection(feet, activeDir), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+        Rotation walkRot = new Rotation(activeDir.toYRot(), 0.0f);
+        RotationEngine.apply(ctx.player(), walkRot, baritone.settings());
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
     private void checkBranchTriggers(BlockPos currentPos) {

@@ -58,9 +58,16 @@ dependencies {
         shadowCommon sourceSet.output
     }
     include "dev.babbaj:nether-pathfinder:${project.nether_pathfinder_version}"
+    include "org.luaj:luaj-jse:3.0.1"
 }
 
 processResources {
+    for (sourceSet in rootProject.sourceSets) {
+        if (sourceSet == rootProject.sourceSets.test) continue
+        if (sourceSet == rootProject.sourceSets.schematica_api) continue
+        from(sourceSet.resources)
+    }
+
     inputs.property "version", project.version
 
     filesMatching("fabric.mod.json") {

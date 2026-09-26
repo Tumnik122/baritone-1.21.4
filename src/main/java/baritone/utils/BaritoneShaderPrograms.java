@@ -49,9 +49,7 @@ public final class BaritoneShaderPrograms {
         if (registered) {
             return;
         }
-        CoreShaders.getProgramsToPreload().add(PATH_GLOW);
-        CoreShaders.getProgramsToPreload().add(FILL_GLOW);
-        CoreShaders.getProgramsToPreload().add(GOAL_HOLO);
+        // Custom shaders are loaded on demand or fall back to CoreShaders.RENDERTYPE_LINES / POSITION_COLOR
         registered = true;
     }
 }

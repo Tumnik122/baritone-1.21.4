@@ -575,7 +575,35 @@ public final class Settings {
      * Specifically, building up the avoidance map on the main thread before pathing starts actually takes a noticeable
      * amount of time, especially when there are a lot of mobs around, and your game jitters for like 200ms while doing so
      */
-    public final Setting<Boolean> avoidance = new Setting<>(false);
+    public final Setting<Boolean> avoidance = new Setting<>(true);
+
+    /**
+     * Unikanie Creeperów (wysoki koszt i większy promień ze względu na wybuchy).
+     */
+    public final Setting<Boolean> mobAvoidanceCreeper = new Setting<>(true);
+    public final Setting<Double> creeperAvoidanceCoefficient = new Setting<>(4.0);
+    public final Setting<Integer> creeperAvoidanceRadius = new Setting<>(10);
+
+    /**
+     * Unikanie Szkieletów / Bogged / Stray (ze względu na strzały z dystansu).
+     */
+    public final Setting<Boolean> mobAvoidanceSkeleton = new Setting<>(true);
+    public final Setting<Double> skeletonAvoidanceCoefficient = new Setting<>(3.0);
+    public final Setting<Integer> skeletonAvoidanceRadius = new Setting<>(12);
+
+    /**
+     * Unikanie Zombie / Husk / Drowned.
+     */
+    public final Setting<Boolean> mobAvoidanceZombie = new Setting<>(true);
+    public final Setting<Double> zombieAvoidanceCoefficient = new Setting<>(2.5);
+    public final Setting<Integer> zombieAvoidanceRadius = new Setting<>(8);
+
+    /**
+     * Unikanie Endermanów (aby nie wejść w nich i nie sprowokować wzrokiem).
+     */
+    public final Setting<Boolean> mobAvoidanceEnderman = new Setting<>(true);
+    public final Setting<Double> endermanAvoidanceCoefficient = new Setting<>(3.0);
+    public final Setting<Integer> endermanAvoidanceRadius = new Setting<>(6);
 
     /**
      * Set to 1.0 to effectively disable this feature
@@ -590,14 +618,12 @@ public final class Settings {
     public final Setting<Integer> mobSpawnerAvoidanceRadius = new Setting<>(16);
 
     /**
-     * Set to 1.0 to effectively disable this feature
-     * <p>
-     * Set below 1.0 to go out of your way to walk near mobs
+     * Ogólny mnożnik kosztu omijania pozostałych wrogich mobów.
      */
-    public final Setting<Double> mobAvoidanceCoefficient = new Setting<>(1.5);
+    public final Setting<Double> mobAvoidanceCoefficient = new Setting<>(2.5);
 
     /**
-     * Distance to avoid mobs.
+     * Ogólny promień omijania mobów.
      */
     public final Setting<Integer> mobAvoidanceRadius = new Setting<>(8);
 
@@ -721,6 +747,22 @@ public final class Settings {
      * Pathing can never take longer than this, even if that means failing to find any path at all
      */
     public final Setting<Long> failureTimeoutMS = new Setting<>(6000L);
+
+    /**
+     * Startuj kopanie/ruch natychmiast po obliczeniu pierwszego segmentu trasy (kilka bloków),
+     * zamiast czekać na pełną trasę (Route 1/33 freeze fix).
+     */
+    public final Setting<Boolean> startImmediatelyOnFirstSegment = new Setting<>(true);
+
+    /**
+     * Ustawienia optymalizacyjne i aliasy dla szybkiego pathfindingu #bypass
+     */
+    public final Setting<Long> failureTimeout = new Setting<>(200L);
+    public final Setting<Integer> legalitySpamThreshold = new Setting<>(0);
+    public final Setting<Integer> planAheadPrimaryAttempts = new Setting<>(2);
+    public final Setting<Integer> planAheadAlternativeAttempts = new Setting<>(1);
+    public final Setting<Integer> backoffPrimaryTicks = new Setting<>(1);
+    public final Setting<Boolean> shortCircuitCache = new Setting<>(true);
 
     /**
      * Pozwól na wykonanie najlepszego częściowego segmentu w stronę celu, nawet gdy pełna trasa nie jest znana
@@ -1022,7 +1064,7 @@ public final class Settings {
      * Use Baritone's custom GPU shaders for path lines and target block fills.
      * Disabling this falls back to the vanilla position/color render programs.
      */
-    public final Setting<Boolean> renderShaderEffects = new Setting<>(true);
+    public final Setting<Boolean> renderShaderEffects = new Setting<>(false);
 
     /**
      * Extra world overlay FX (energy ribbon, goal hologram, orbit orbs, A* nodes).
@@ -1438,6 +1480,30 @@ public final class Settings {
      * Disconnect from the server upon arriving at your goal
      */
     public final Setting<Boolean> disconnectOnArrival = new Setting<>(false);
+
+    /**
+     * Auto-disconnect / logout from the server when player health drops below disconnectHealthHearts (in hearts).
+     * When triggered, this setting automatically turns OFF (sets to false) so that rejoining does not cause an infinite disconnect loop.
+     */
+    public final Setting<Boolean> disconnectOnLowHealth = new Setting<>(false);
+
+    /**
+     * Health threshold in hearts (1 heart = 2 HP) for disconnectOnLowHealth and autoLogout.
+     * When player has strictly less than this amount of hearts (e.g. < 3.0 hearts = < 6.0 HP), it disconnects.
+     * Default: 3.0 hearts (6.0 HP).
+     */
+    public final Setting<Double> disconnectHealthHearts = new Setting<>(3.0D);
+
+    /**
+     * Convenient alias setting for disconnectOnLowHealth in #settings.
+     * When player health drops below 3 hearts (or disconnectHealthHearts), it logs out and turns off.
+     */
+    public final Setting<Boolean> autoLogout = new Setting<>(false);
+
+    /**
+     * Prevents MineProcess from pathing to or breaking blocks directly adjacent to lava.
+     */
+    public final Setting<Boolean> mineAvoidLava = new Setting<>(true);
 
     /**
      * Disallow MineBehavior from using X-Ray to see where the ores are. Turn this option on to force it to mine "legit"
@@ -2074,7 +2140,7 @@ public final class Settings {
 
     // here be dragons
 
-    Settings() {
+    public Settings() {
         Field[] temp = getClass().getFields();
 
         Map<String, Setting<?>> tmpByName = new HashMap<>();

@@ -200,6 +200,7 @@ public final class InventoryBehavior extends Behavior implements Helper {
             if (desired.test(item)) {
                 if (select) {
                     p.getInventory().selected = i;
+                    baritone.getPlayerContext().playerController().syncHeldItem();
                 }
                 return true;
             }
@@ -215,6 +216,7 @@ public final class InventoryBehavior extends Behavior implements Helper {
                 if (item.isEmpty() || item.getItem() instanceof PickaxeItem) {
                     if (select) {
                         p.getInventory().selected = i;
+                        baritone.getPlayerContext().playerController().syncHeldItem();
                     }
                     return true;
                 }
@@ -227,6 +229,7 @@ public final class InventoryBehavior extends Behavior implements Helper {
                     if (select) {
                         requestSwapWithHotBar(i, 7);
                         p.getInventory().selected = 7;
+                        baritone.getPlayerContext().playerController().syncHeldItem();
                     }
                     return true;
                 }

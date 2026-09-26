@@ -9,15 +9,79 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Moduł skanowania rud wokół bota (kostka 11x11x11, czyli promień 5 bloków).
- * Filtruje bloki pod kątem wybranych rud, zasięgu kopania (<=4.5) oraz
- * braku sąsiedztwa lawy/wody (LiquidDetector).
+ *
+ * Dodatkowo zarządza czarną listą rud (blacklistedOres) oraz licznikami nieudanych prób (MAX_FAILED_ATTEMPTS = 3):
+ * - Ruda niemożliwa do wykopania (za daleko, za lawą) trafia na blacklistę i jest pomijana.
+ * - Po 3 nieudanych próbach ruda zostaje zblacklistowana, co pozwala botowi wrócić do TUNNELING.
  */
 public final class OreScanner {
 
+    public static final int MAX_FAILED_ATTEMPTS = 3;
+
+    private static final Set<BlockPos> blacklistedOres = ConcurrentHashMap.newKeySet();
+    private static final Map<BlockPos, Integer> failedAttempts = new ConcurrentHashMap<>();
+
     private OreScanner() {}
+
+    /**
+     * Dodaje pozycję rudy do czarnej listy (nigdy więcej nie próbuj jej kopać).
+     */
+    public static void blacklist(BlockPos pos) {
+        if (pos == null) return;
+        blacklistedOres.add(pos.immutable());
+        failedAttempts.remove(pos);
+    }
+
+    /**
+     * Sprawdza, czy dana ruda znajduje się na czarnej liście.
+     */
+    public static boolean isBlacklisted(BlockPos pos) {
+        return pos != null && blacklistedOres.contains(pos);
+    }
+
+    /**
+     * Czyści czarną listę i liczniki prób.
+     */
+    public static void clearBlacklist() {
+        blacklistedOres.clear();
+        failedAttempts.clear();
+    }
+
+    /**
+     * Rejestruje nieudaną próbę wykopania rudy.
+     * Jeśli liczba prób osiągnie MAX_FAILED_ATTEMPTS (3), automatycznie dodaje rudę do czarnej listy.
+     * Zwraca aktualną liczbę prób.
+     */
+    public static int recordFailedAttempt(BlockPos pos) {
+        if (pos == null) return 0;
+        BlockPos immutable = pos.immutable();
+        int attempts = failedAttempts.compute(immutable, (k, v) -> v == null ? 1 : v + 1);
+        if (attempts >= MAX_FAILED_ATTEMPTS) {
+            blacklist(immutable);
+        }
+        return attempts;
+    }
+
+    /**
+     * Zwraca liczbę dotychczasowych nieudanych prób dla danej rudy.
+     */
+    public static int getFailedAttempts(BlockPos pos) {
+        if (pos == null) return 0;
+        return failedAttempts.getOrDefault(pos, 0);
+    }
+
+    /**
+     * Resetuje licznik prób po udanym zniszczeniu bloku.
+     */
+    public static void resetAttempts(BlockPos pos) {
+        if (pos != null) {
+            failedAttempts.remove(pos);
+        }
+    }
 
     /**
      * Skanuje kostkę 11x11x11 wokół podanego centrum i zwraca listę bezpiecznych pozycji rud,
@@ -34,31 +98,30 @@ public final class OreScanner {
             return oreQueue;
         }
 
-        double reachLimitSq = reachLimit * reachLimit;
         int radius = config.oreRadius; // domyślnie 5
 
-        // Kostka (2*radius + 1)^3 wokół bota (np. 11x11x11 dla radius=5)
+        // Kostka (2*radius + 1)^3 wokół bota
         for (int x = -radius; x <= radius; x++) {
             for (int y = -radius; y <= radius; y++) {
                 for (int z = -radius; z <= radius; z++) {
                     BlockPos pos = center.offset(x, y, z);
+
+                    // Pomiń zblacklistowane pozycje
+                    if (isBlacklisted(pos)) {
+                        continue;
+                    }
+
                     BlockState state = world.getBlockState(pos);
                     Block block = state.getBlock();
 
-                    // Sprawdź czy pasuje do wybranych rud
                     if (selectedOreBlocks.contains(block)) {
-                        // Sprawdź zasięg kopania od oczu gracza
-                        if (eyePos != null) {
-                            Vec3 centerOfBlock = Vec3.atCenterOf(pos);
-                            if (centerOfBlock.distanceToSqr(eyePos) > reachLimitSq) {
-                                // Opcjonalnie ignoruj lub dopuść jeśli bot podejdzie
-                            }
+                        // Sprawdź czy nie za lawą / czy bezpieczny do wykopania
+                        if (!LiquidDetector.isSafeToMine(world, pos)) {
+                            blacklist(pos); // Ruda za płynem/lawą -> natychmiastowa czarna lista
+                            continue;
                         }
 
-                        // Sprawdź czy nie za lawą / czy bezpieczny do wykopania
-                        if (LiquidDetector.isSafeToMine(world, pos)) {
-                            oreQueue.add(pos);
-                        }
+                        oreQueue.add(pos.immutable());
                     }
                 }
             }

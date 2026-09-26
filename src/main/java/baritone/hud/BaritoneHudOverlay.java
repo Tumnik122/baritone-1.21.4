@@ -100,6 +100,9 @@ public final class BaritoneHudOverlay {
                 System.err.println("[BaritoneHUD] błąd renderu #" + errorCount + ": " + t);
             }
         }
+        try {
+            baritone.bypass.BypassHudOverlay.render(guiGraphics, deltaTracker);
+        } catch (Throwable ignored) {}
     }
 
     private static void render0(GuiGraphics g, DeltaTracker deltaTracker) {

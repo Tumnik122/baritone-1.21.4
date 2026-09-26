@@ -92,9 +92,9 @@ public final class BlockBreakHelper {
                 lastTargetPos = currentTarget;
             }
 
+            ctx.playerController().syncHeldItem();
             ctx.playerController().setHittingBlock(wasHitting);
             if (ctx.playerController().hasBrokenBlock()) {
-                ctx.playerController().syncHeldItem();
                 ctx.playerController().clickBlock(((BlockHitResult) trace).getBlockPos(), ((BlockHitResult) trace).getDirection());
                 ctx.player().swing(InteractionHand.MAIN_HAND);
             } else {

@@ -41,6 +41,8 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.FallingBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.level.material.Fluids;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -508,8 +510,33 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             return false;
         }
 
+        if (Baritone.settings().mineAvoidLava.value && isLavaHazard(ctx, pos)) {
+            return false;
+        }
+
         // bedrock above and below makes it implausible, otherwise we're good
         return !(ctx.bsi.get0(pos.above()).getBlock() == Blocks.BEDROCK && ctx.bsi.get0(pos.below()).getBlock() == Blocks.BEDROCK);
+    }
+
+    public static boolean isLavaHazard(CalculationContext ctx, BlockPos pos) {
+        int x = pos.getX();
+        int y = pos.getY();
+        int z = pos.getZ();
+        return isLavaState(ctx.bsi.get0(x, y, z))
+                || isLavaState(ctx.bsi.get0(x, y + 1, z))
+                || isLavaState(ctx.bsi.get0(x, y - 1, z))
+                || isLavaState(ctx.bsi.get0(x + 1, y, z))
+                || isLavaState(ctx.bsi.get0(x - 1, y, z))
+                || isLavaState(ctx.bsi.get0(x, y, z + 1))
+                || isLavaState(ctx.bsi.get0(x, y, z - 1));
+    }
+
+    private static boolean isLavaState(BlockState state) {
+        if (state == null) return false;
+        Block b = state.getBlock();
+        if (b == Blocks.LAVA) return true;
+        FluidState fs = state.getFluidState();
+        return !fs.isEmpty() && (fs.is(Fluids.LAVA) || fs.is(Fluids.FLOWING_LAVA));
     }
 
     @Override

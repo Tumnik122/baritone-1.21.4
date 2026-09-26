@@ -22,7 +22,14 @@ public class BypassConfig {
     public List<String> priority = Arrays.asList("diamond", "gold", "iron", "redstone", "lapis", "emerald", "coal");
     public Map<String, List<String>> oreBlocks = new LinkedHashMap<>();
 
-    // Safety
+    // Safety & ESP Player Detection (GrimAC-safe: cicha detekcja bez obracania celownika)
+    public boolean espPlayerDetect = true;
+    public double playerWarningRadius = 60.0;
+    public double playerDangerRadius = 20.0;
+    public boolean checkCombatLog = true;
+    public List<String> friendList = new ArrayList<>();
+
+    // Moby
     public double mobRadius = 16.0;
     public double mobStop = 8.0;
     public double mobRetreat = 4.0;
@@ -31,6 +38,16 @@ public class BypassConfig {
     public double mobDcDistance = 20.0;
     public boolean lavaAvoid = true;
     public boolean waterAvoid = true;
+
+    // AutoTool & Durability Guard (Ochrona narzędzi z Exosware)
+    public boolean autoTool = true;
+    public int durabilityThreshold = 10;
+
+    // Inventory Cleaner / AutoDrop (Ochrona przed zapchaniem EQ)
+    public boolean autoDropTrash = true;
+    public List<String> trashBlocks = new ArrayList<>(Arrays.asList(
+            "cobblestone", "cobbled_deepslate", "tuff", "dirt", "granite", "diorite", "andesite", "gravel"
+    ));
 
     // Anticheat
     public String rotationStyle = "gcd_smooth";

@@ -77,9 +77,16 @@ public interface IRenderer {
         if (ignoreDepth) {
             RenderSystem.disableDepthTest();
         }
-        RenderSystem.setShader(settings.renderShaderEffects.value
-                ? BaritoneShaderPrograms.PATH_GLOW
-                : CoreShaders.RENDERTYPE_LINES);
+        if (settings.renderShaderEffects.value) {
+            try {
+                RenderSystem.setShader(BaritoneShaderPrograms.PATH_GLOW);
+            } catch (Throwable t) {
+                settings.renderShaderEffects.value = false;
+                RenderSystem.setShader(CoreShaders.RENDERTYPE_LINES);
+            }
+        } else {
+            RenderSystem.setShader(CoreShaders.RENDERTYPE_LINES);
+        }
         return tessellator.begin(VertexFormat.Mode.LINES, DefaultVertexFormat.POSITION_COLOR_NORMAL);
     }
 
@@ -182,9 +189,16 @@ public interface IRenderer {
         if (ignoreDepth) {
             RenderSystem.disableDepthTest();
         }
-        RenderSystem.setShader(settings.renderShaderEffects.value
-                ? (holo ? BaritoneShaderPrograms.GOAL_HOLO : BaritoneShaderPrograms.FILL_GLOW)
-                : CoreShaders.POSITION_COLOR);
+        if (settings.renderShaderEffects.value) {
+            try {
+                RenderSystem.setShader(holo ? BaritoneShaderPrograms.GOAL_HOLO : BaritoneShaderPrograms.FILL_GLOW);
+            } catch (Throwable t) {
+                settings.renderShaderEffects.value = false;
+                RenderSystem.setShader(CoreShaders.POSITION_COLOR);
+            }
+        } else {
+            RenderSystem.setShader(CoreShaders.POSITION_COLOR);
+        }
         return tessellator.begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
     }
 

@@ -16,6 +16,7 @@ import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.RayTraceUtils;
 import baritone.api.utils.Rotation;
+import baritone.api.utils.input.Input;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.builder.BlockStateResolver;
 import baritone.utils.builder.BlockStateResolver.PlacementPlan;
@@ -577,6 +578,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 baritone.getLookBehavior().updateTarget(pendingPlan.rotation, true);
                 if (Baritone.settings().antiCheatCompat.value) {
                     player.setSprinting(false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                 }
             }
             return null;
@@ -645,6 +647,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     private PathingCommand controlPlacement(Level world, LocalPlayer player, PlacementPlan plan) {
         if (Baritone.settings().antiCheatCompat.value) {
             player.setSprinting(false); // GrimAC: no sprint while fine-aiming/placing
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
         }
         this.pendingPlan = plan;
         setSneakHeld(plan.sneak);
@@ -801,6 +804,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     private PathingCommand controlBreak(Level world, LocalPlayer player, Target t) {
         if (Baritone.settings().antiCheatCompat.value) {
             player.setSprinting(false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
         }
         Rotation look = SmoothLookHelper.lookAt(player.getEyePosition(), Vec3.atCenterOf(t.pos));
         float dYaw = Math.abs(Mth.wrapDegrees(look.getYaw() - player.getYRot()));
@@ -810,6 +814,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             return standStill();
         }
         Direction face = breakFace(player, t.pos);
+        baritone.getPlayerContext().playerController().syncHeldItem();
         if (breaking == null || !breaking.equals(t.pos)) {
             stopBreaking();
             breaking = t.pos.immutable();
