@@ -753,12 +753,12 @@ public final class Settings {
      * Startuj kopanie/ruch natychmiast po obliczeniu pierwszego segmentu trasy (kilka bloków),
      * zamiast czekać na pełną trasę (Route 1/33 freeze fix).
      */
-    public final Setting<Boolean> startImmediatelyOnFirstSegment = new Setting<>(true);
+    public final Setting<Boolean> startImmediatelyOnFirstSegment = new Setting<>(false);
 
     /**
      * Ustawienia optymalizacyjne i aliasy dla szybkiego pathfindingu #bypass
      */
-    public final Setting<Long> failureTimeout = new Setting<>(200L);
+    public final Setting<Long> failureTimeout = new Setting<>(6000L);
     public final Setting<Integer> legalitySpamThreshold = new Setting<>(0);
     public final Setting<Integer> planAheadPrimaryAttempts = new Setting<>(2);
     public final Setting<Integer> planAheadAlternativeAttempts = new Setting<>(1);
