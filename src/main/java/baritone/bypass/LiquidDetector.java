@@ -55,7 +55,7 @@ public final class LiquidDetector {
 
             boolean nearOpen = nearState.isAir() || nearState.canBeReplaced();
             if (nearOpen) {
-                if (!check(world, far) || !check(world, near.above())) {
+                if (!check(world, far) || !check(world, near.above()) || !check(world, far.above())) {
                     return false;
                 }
             }

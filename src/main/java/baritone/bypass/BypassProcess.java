@@ -461,7 +461,8 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
         if (getState() == State.RETREATING_MOB) {
             if (enemyDist > config.mobRetreat + 3.0) {
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
-                currentY = ctx.playerFeet().getY();
+                BetterBlockPos feet = ctx.playerFeet();
+                currentY = feet != null ? feet.getY() : (config != null ? config.yLevel : -55);
                 stateMachine.transition(travelState(currentY, config.yLevel));
             } else {
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
@@ -731,10 +732,12 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
         currentTargetBlock = null;
         lastPositionChangeTime = System.currentTimeMillis();
         BlockPos nextOre = getNextVeinOre();
-        if (nextOre == null && miningCooldownTicks <= 0) {
-            nextOre = findBestOreNearby(ctx.playerFeet(), getEffectiveOreRadius());
+        BetterBlockPos feet = ctx.playerFeet();
+        int currentY = feet != null ? feet.getY() : (config != null ? config.yLevel : -55);
+        if (nextOre == null && miningCooldownTicks <= 0 && feet != null) {
+            nextOre = findBestOreNearby(feet, getEffectiveOreRadius());
         }
-        stateMachine.transition(nextOre == null ? travelState(ctx.playerFeet().getY(), config.yLevel) : State.MINING_ORE);
+        stateMachine.transition(nextOre == null ? travelState(currentY, config.yLevel) : State.MINING_ORE);
         currentTargetBlock = nextOre;
     }
 
@@ -760,6 +763,7 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
 
     private PathingCommand handleStaircase(boolean ascending) {
         BlockPos feet = ctx.playerFeet();
+        if (feet == null || ctx.player() == null || ctx.world() == null) return pause();
         releaseMovement();
         if (staircaseStep != null && staircaseStep.hasLanded(feet, ctx.player().onGround())) {
             staircaseStep = null;
@@ -826,6 +830,7 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
     private PathingCommand handleTunneling() {
         Level world = ctx.world();
         BlockPos feet = ctx.playerFeet();
+        if (feet == null || ctx.player() == null || world == null) return pause();
         if (ctx.player().onGround() && feet.getY() != config.yLevel) {
             stateMachine.transition(travelState(feet.getY(), config.yLevel));
             return pause();
@@ -890,6 +895,7 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
 
     private PathingCommand handleMiningOre() {
         BlockPos feet = ctx.playerFeet();
+        if (feet == null || ctx.player() == null || ctx.world() == null) return pause();
         // Keep the vein target while breaking an obstruction. Re-scanning every
         // frame used to replace the ore with the wall (or forget it after break).
         if (currentTargetBlock == null || OreScanner.isBlacklisted(currentTargetBlock)
@@ -944,11 +950,14 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
         if (currentTargetBlock != null) OreScanner.recordFailedAttempt(currentTargetBlock);
         currentTargetBlock = null;
         miningCooldownTicks = MINING_COOLDOWN_AFTER_STUCK;
-        stateMachine.transition(travelState(ctx.playerFeet().getY(), config.yLevel));
+        BetterBlockPos feet = ctx.playerFeet();
+        int currentY = feet != null ? feet.getY() : (config != null ? config.yLevel : -55);
+        stateMachine.transition(travelState(currentY, config.yLevel));
     }
 
     private PathingCommand handlePathfindingReturn() {
         BlockPos feet = ctx.playerFeet();
+        if (feet == null || ctx.player() == null || ctx.world() == null) return pause();
         if (savedReconnectTarget == null || feet.distSqr(savedReconnectTarget) <= 1.0
                 || (pathCalculationFailed && navigationActive)) {
             savedReconnectTarget = null;
