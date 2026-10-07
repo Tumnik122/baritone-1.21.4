@@ -99,6 +99,9 @@ public abstract class MixinMinecraft {
     private long baritone$govEpoch = -1L;
 
     @Unique
+    private static boolean baritone$rshiftWasDown = false;
+
+    @Unique
     private long baritone$govTicks = 0L;
 
     @Inject(method = "tick", at = @At("HEAD"), cancellable = true)
@@ -195,6 +198,20 @@ public abstract class MixinMinecraft {
             baritone.getGameEventHandler().onPostTick(this.tickProvider.apply(EventState.POST, type));
         }
         this.tickProvider = null;
+
+        if (this.screen == null && this.player != null) {
+            long windowHandle = Minecraft.getInstance().getWindow().getWindow();
+            boolean isDown = org.lwjgl.glfw.GLFW.glfwGetKey(
+                    windowHandle,
+                    com.astra.revolution.gui.BaritoneBypassScreen.OPEN_KEY
+            ) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+            if (isDown && !baritone$rshiftWasDown) {
+                Minecraft.getInstance().setScreen(new com.astra.revolution.gui.BaritoneBypassScreen());
+            }
+            baritone$rshiftWasDown = isDown;
+        } else {
+            baritone$rshiftWasDown = false;
+        }
     }
 
     @Inject(

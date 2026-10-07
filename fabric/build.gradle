@@ -33,12 +33,98 @@ unimined.minecraft {
 }
 
 // Fix: java.nio.file.ClosedFileSystemException in Fabric Loader 0.16.x (ZipFS access on Java 17+)
+// Multi-bot: uruchom z -PbotNum=2 (lub 3,4,5) zeby dostac izolowany katalog processedMods
 afterEvaluate {
+    tasks.matching { it.name == "preRunClient" }.configureEach {
+        onlyIf {
+            def glfw = file("${projectDir}/run/client/natives/glfw.dll")
+            return !glfw.exists() || glfw.length() < 100000
+        }
+    }
+
     tasks.named("runClient") {
         jvmArgs(
             "--add-opens", "java.base/java.nio.file=ALL-UNNAMED",
             "--add-opens", "jdk.zipfs/jdk.nio.zipfs=ALL-UNNAMED"
         )
+
+        def botNames = [
+            "Gamer6844", "MocnyZubr80", "Grom_91244", "Krysztal_7821", "ZlotyZabojca145",
+            "SzmaragdowyDuch6", "WilkPlays7497", "Kruk_35789", "SlayerKox0226", "ZabojcaVIP9427",
+            "StalowySzkielet0", "BratMC4061", "Zuk_23540", "RybaTop737", "JablkoHD243",
+            "Ser8092", "MistrzKotel616", "SmoczyCien715", "Dynia2616", "Ptak4417",
+            "SlonecznyWilk34", "Piekny_Cien563", "CebulaXD664", "Burak25350", "Ciastek12110",
+            "Bulka93513", "StormJagoda707", "Hunter43694", "Burak42142", "Chomik0999",
+            "Krolik98433", "KrolewskiZiomecz", "Rycerz_0287", "Wariat38336", "Blaze08173",
+            "PanMisiek07", "Rubinowy_Ninja77", "DyniaPRO1053", "Kotel_43802", "Ghul70968",
+            "Sasiad91126", "Aniol9711", "GhostKotlet09", "KartofelVIP446", "Ciastek05829"
+        ]
+
+        def excludedBots = ["mroz_53947", "kielbasa_1911"]
+
+        def n = project.hasProperty('botNum') ? project.property('botNum').toString().trim() : "1"
+        systemProperty "botNum", n
+        environment "BOT_NUM", n
+
+        def botIndex = 1
+        try {
+            botIndex = Integer.parseInt(n)
+        } catch (Exception ignored) {}
+
+        def chosenNick = (botIndex >= 1 && botIndex <= botNames.size()) ? botNames[botIndex - 1] : "Bot_${n}"
+        if (excludedBots.contains(chosenNick.toLowerCase())) {
+            chosenNick = "Grom_${n}"
+        }
+        def targetDir = (n == "1") ? file("${projectDir}/run/client") : file("${projectDir}/run/client-${n}")
+        workingDir = targetDir
+
+        doFirst {
+            if (!targetDir.exists()) {
+                targetDir.mkdirs()
+                def baseDir = file("${projectDir}/run/client")
+                if (baseDir.exists()) {
+                    project.copy {
+                        from baseDir
+                        into targetDir
+                        exclude ".fabric/processedMods"
+                    }
+                }
+            } else {
+                def targetMods = file("${targetDir}/mods")
+                def baseMods = file("${projectDir}/run/client/mods")
+                if (baseMods.exists() && (!targetMods.exists() || targetMods.list().length == 0)) {
+                    project.copy {
+                        from baseMods
+                        into targetMods
+                    }
+                }
+            }
+        }
+
+        def newArgs = new ArrayList<>(args)
+        boolean userFound = false
+        boolean gameDirFound = false
+        for (int i = 0; i < newArgs.size(); i++) {
+            if (newArgs[i] == "--gameDir" && i + 1 < newArgs.size()) {
+                gameDirFound = true
+                if (n != "1") {
+                    newArgs[i + 1] = targetDir.absolutePath
+                }
+            }
+            if (newArgs[i] == "--username" && i + 1 < newArgs.size()) {
+                newArgs[i + 1] = chosenNick
+                userFound = true
+            }
+        }
+        if (!gameDirFound && n != "1") {
+            newArgs.add("--gameDir")
+            newArgs.add(targetDir.absolutePath)
+        }
+        if (!userFound) {
+            newArgs.add("--username")
+            newArgs.add(chosenNick)
+        }
+        setArgs(newArgs)
     }
 }
 
@@ -59,6 +145,14 @@ dependencies {
     }
     include "dev.babbaj:nether-pathfinder:${project.nether_pathfinder_version}"
     include "org.luaj:luaj-jse:3.0.1"
+
+    // Fabric Language Kotlin - JiJ (Jar-in-Jar) zeby Kotlin runtime byl dostepny bez zewnetrznego moda
+    // Prawidlowe podejscie Fabric zamiast shadowCommon (ktore psuje remapJar)
+    modImplementation include("net.fabricmc:fabric-language-kotlin:1.12.3+kotlin.2.0.21")
+
+    modImplementation "net.fabricmc.fabric-api:fabric-lifecycle-events-v1:2.5.4+bf2a60eb04"
+    modImplementation "net.fabricmc.fabric-api:fabric-resource-loader-v0:3.1.1+360374ac04"
+    modImplementation "net.fabricmc.fabric-api:fabric-screen-api-v1:2.0.38+7feeb73304"
 }
 
 processResources {

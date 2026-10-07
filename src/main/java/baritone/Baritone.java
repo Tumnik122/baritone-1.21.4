@@ -70,6 +70,7 @@ public class Baritone implements IBaritone {
     private final LookBehavior lookBehavior;
     private final InventoryBehavior inventoryBehavior;
     private final InputOverrideHandler inputOverrideHandler;
+    private final GrimTickHandler grimTickHandler;
 
     private final FollowProcess followProcess;
     private final MineProcess mineProcess;
@@ -80,8 +81,14 @@ public class Baritone implements IBaritone {
     private final FarmProcess farmProcess;
     private final InventoryPauserProcess inventoryPauserProcess;
     private final AutoEatProcess autoEatProcess;
+    private final AutoDropProcess autoDropProcess;
+    private final baritone.process.HomeProcess homeProcess;
     private final IElytraProcess elytraProcess;
     private final baritone.bypass.BypassProcess bypassProcess;
+    private final baritone.process.TillProcess tillProcess;
+
+    private final baritone.control.WindowsBotController windowsBotController;
+    private final baritone.process.MobDefenseProcess mobDefenseProcess;
 
     private final PathingControlManager pathingControlManager;
     private final SelectionManager selectionManager;
@@ -111,8 +118,11 @@ public class Baritone implements IBaritone {
             this.pathingBehavior      = this.registerBehavior(PathingBehavior::new);
             this.inventoryBehavior    = this.registerBehavior(InventoryBehavior::new);
             this.inputOverrideHandler = this.registerBehavior(InputOverrideHandler::new);
+            this.grimTickHandler      = this.registerBehavior(GrimTickHandler::new);
             this.registerBehavior(WaypointBehavior::new);
             this.registerBehavior(AutoLogoutBehavior::new);
+            this.registerBehavior(WaterClutchBehavior::new);
+            this.windowsBotController = this.registerBehavior(baritone.control.WindowsBotController::new);
         }
 
         this.pathingControlManager = new PathingControlManager(this);
@@ -126,14 +136,20 @@ public class Baritone implements IBaritone {
             this.farmProcess             = this.registerProcess(FarmProcess::new);
             this.inventoryPauserProcess  = this.registerProcess(InventoryPauserProcess::new);
             this.autoEatProcess          = this.registerProcess(AutoEatProcess::new);
+            this.autoDropProcess         = this.registerProcess(AutoDropProcess::new);
+            this.homeProcess             = this.registerProcess(baritone.process.HomeProcess::new);
             this.elytraProcess           = this.registerProcess(ElytraProcess::create);
             this.bypassProcess           = this.registerProcess(baritone.bypass.BypassProcess::new);
+            this.mobDefenseProcess       = this.registerProcess(baritone.process.MobDefenseProcess::new);
+            this.tillProcess             = this.registerProcess(baritone.process.TillProcess::new);
             this.registerProcess(BackfillProcess::new);
         }
 
         this.worldProvider = new WorldProvider(this);
         this.selectionManager = new SelectionManager(this);
         this.commandManager = new CommandManager(this);
+        this.windowsBotController.start();
+        baritone.utils.BotOptimizer.init(this);
     }
 
     public void registerBehavior(IBehavior behavior) {
@@ -196,6 +212,10 @@ public class Baritone implements IBaritone {
         return this.lookBehavior;
     }
 
+    public GrimTickHandler getGrimTickHandler() {
+        return this.grimTickHandler;
+    }
+
     @Override
     public ExploreProcess getExploreProcess() {
         return this.exploreProcess;
@@ -217,6 +237,26 @@ public class Baritone implements IBaritone {
 
     public AutoEatProcess getAutoEatProcess() {
         return this.autoEatProcess;
+    }
+
+    public AutoDropProcess getAutoDropProcess() {
+        return this.autoDropProcess;
+    }
+
+    public baritone.control.WindowsBotController getWindowsBotController() {
+        return this.windowsBotController;
+    }
+
+    public baritone.process.MobDefenseProcess getMobDefenseProcess() {
+        return this.mobDefenseProcess;
+    }
+
+    public baritone.process.HomeProcess getHomeProcess() {
+        return this.homeProcess;
+    }
+
+    public baritone.process.TillProcess getTillProcess() {
+        return this.tillProcess;
     }
 
     @Override

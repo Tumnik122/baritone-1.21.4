@@ -26,6 +26,7 @@ import com.mojang.blaze3d.vertex.*;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.CoreShaders;
 import net.minecraft.client.renderer.texture.TextureManager;
+import net.minecraft.util.Mth;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -40,12 +41,40 @@ public interface IRenderer {
 
     float[] color = new float[]{1.0F, 1.0F, 1.0F, 255.0F};
 
+    static float getTime() {
+        return (System.currentTimeMillis() % 100000L) / 1000.0f;
+    }
+
     static void glColor(Color color, float alpha) {
         float[] colorComponents = color.getColorComponents(null);
         IRenderer.color[0] = colorComponents[0];
         IRenderer.color[1] = colorComponents[1];
         IRenderer.color[2] = colorComponents[2];
         IRenderer.color[3] = alpha;
+    }
+
+    static Color blendColors(Color c1, Color c2, float ratio) {
+        ratio = Math.max(0, Math.min(1, ratio));
+        int r = (int)(c1.getRed() * (1 - ratio) + c2.getRed() * ratio);
+        int g = (int)(c1.getGreen() * (1 - ratio) + c2.getGreen() * ratio);
+        int b = (int)(c1.getBlue() * (1 - ratio) + c2.getBlue() * ratio);
+        int a = (int)(c1.getAlpha() * (1 - ratio) + c2.getAlpha() * ratio);
+        return new Color(r, g, b, a);
+    }
+
+    static Color getRainbowColor(float offset) {
+        float hue = (getTime() * 0.15f + offset) % 1.0f;
+        return Color.getHSBColor(hue, 0.8f, 1.0f);
+    }
+
+    static Color getPulseColor(Color baseColor, float speed) {
+        float pulse = 0.6f + 0.4f * Mth.sin(getTime() * speed);
+        return new Color(
+            (int)(baseColor.getRed() * pulse),
+            (int)(baseColor.getGreen() * pulse),
+            (int)(baseColor.getBlue() * pulse),
+            baseColor.getAlpha()
+        );
     }
 
     static BufferBuilder startLines(Color color, float alpha, float lineWidth, boolean ignoreDepth) {
@@ -122,49 +151,41 @@ public interface IRenderer {
         emitLine(bufferBuilder, stack, x1, y1, z1, x2, y2, z2, nx, ny, nz);
     }
 
-    static void emitLine(BufferBuilder bufferBuilder, PoseStack stack,
-                         double x1, double y1, double z1,
-                         double x2, double y2, double z2,
-                         double nx, double ny, double nz) {
-        emitLine(bufferBuilder, stack,
-                (float) x1, (float) y1, (float) z1,
-                (float) x2, (float) y2, (float) z2,
-                (float) nx, (float) ny, (float) nz
-        );
-    }
-
-    static void emitLine(BufferBuilder bufferBuilder, PoseStack stack,
-                         float x1, float y1, float z1,
-                         float x2, float y2, float z2,
-                         float nx, float ny, float nz) {
+    static void emitLine(BufferBuilder bufferBuilder, PoseStack stack, double x1, double y1, double z1, double x2, double y2, double z2, float nx, float ny, float nz) {
         PoseStack.Pose pose = stack.last();
-
-        bufferBuilder.addVertex(pose, x1, y1, z1).setColor(color[0], color[1], color[2], color[3]).setNormal(pose, nx, ny, nz);
-        bufferBuilder.addVertex(pose, x2, y2, z2).setColor(color[0], color[1], color[2], color[3]).setNormal(pose, nx, ny, nz);
+        bufferBuilder.addVertex(pose, (float) x1, (float) y1, (float) z1).setColor(color[0], color[1], color[2], color[3]).setNormal(pose, nx, ny, nz);
+        bufferBuilder.addVertex(pose, (float) x2, (float) y2, (float) z2).setColor(color[0], color[1], color[2], color[3]).setNormal(pose, nx, ny, nz);
     }
 
     static void emitAABB(BufferBuilder bufferBuilder, PoseStack stack, AABB aabb) {
-        AABB toDraw = aabb.move(-renderManager.renderPosX(), -renderManager.renderPosY(), -renderManager.renderPosZ());
-
-        // bottom
-        emitLine(bufferBuilder, stack, toDraw.minX, toDraw.minY, toDraw.minZ, toDraw.maxX, toDraw.minY, toDraw.minZ, 1.0, 0.0, 0.0);
-        emitLine(bufferBuilder, stack, toDraw.maxX, toDraw.minY, toDraw.minZ, toDraw.maxX, toDraw.minY, toDraw.maxZ, 0.0, 0.0, 1.0);
-        emitLine(bufferBuilder, stack, toDraw.maxX, toDraw.minY, toDraw.maxZ, toDraw.minX, toDraw.minY, toDraw.maxZ, -1.0, 0.0, 0.0);
-        emitLine(bufferBuilder, stack, toDraw.minX, toDraw.minY, toDraw.maxZ, toDraw.minX, toDraw.minY, toDraw.minZ, 0.0, 0.0, -1.0);
-        // top
-        emitLine(bufferBuilder, stack, toDraw.minX, toDraw.maxY, toDraw.minZ, toDraw.maxX, toDraw.maxY, toDraw.minZ, 1.0, 0.0, 0.0);
-        emitLine(bufferBuilder, stack, toDraw.maxX, toDraw.maxY, toDraw.minZ, toDraw.maxX, toDraw.maxY, toDraw.maxZ, 0.0, 0.0, 1.0);
-        emitLine(bufferBuilder, stack, toDraw.maxX, toDraw.maxY, toDraw.maxZ, toDraw.minX, toDraw.maxY, toDraw.maxZ, -1.0, 0.0, 0.0);
-        emitLine(bufferBuilder, stack, toDraw.minX, toDraw.maxY, toDraw.maxZ, toDraw.minX, toDraw.maxY, toDraw.minZ, 0.0, 0.0, -1.0);
-        // corners
-        emitLine(bufferBuilder, stack, toDraw.minX, toDraw.minY, toDraw.minZ, toDraw.minX, toDraw.maxY, toDraw.minZ, 0.0, 1.0, 0.0);
-        emitLine(bufferBuilder, stack, toDraw.maxX, toDraw.minY, toDraw.minZ, toDraw.maxX, toDraw.maxY, toDraw.minZ, 0.0, 1.0, 0.0);
-        emitLine(bufferBuilder, stack, toDraw.maxX, toDraw.minY, toDraw.maxZ, toDraw.maxX, toDraw.maxY, toDraw.maxZ, 0.0, 1.0, 0.0);
-        emitLine(bufferBuilder, stack, toDraw.minX, toDraw.minY, toDraw.maxZ, toDraw.minX, toDraw.maxY, toDraw.maxZ, 0.0, 1.0, 0.0);
+        emitAABB(bufferBuilder, stack, aabb, .005D);
     }
 
     static void emitAABB(BufferBuilder bufferBuilder, PoseStack stack, AABB aabb, double expand) {
-        emitAABB(bufferBuilder, stack, aabb.inflate(expand, expand, expand));
+        AABB toDraw = aabb.inflate(expand).move(-renderManager.renderPosX(), -renderManager.renderPosY(), -renderManager.renderPosZ());
+
+        double minX = toDraw.minX;
+        double minY = toDraw.minY;
+        double minZ = toDraw.minZ;
+        double maxX = toDraw.maxX;
+        double maxY = toDraw.maxY;
+        double maxZ = toDraw.maxZ;
+        emitAABB(bufferBuilder, stack, minX, minY, minZ, maxX, maxY, maxZ);
+    }
+
+    static void emitAABB(BufferBuilder bufferBuilder, PoseStack stack, double x1, double y1, double z1, double x2, double y2, double z2) {
+        emitLine(bufferBuilder, stack, x1, y1, z1, x2, y1, z1, 0, -1, 0);
+        emitLine(bufferBuilder, stack, x2, y1, z1, x2, y1, z2, 1, 0, 0);
+        emitLine(bufferBuilder, stack, x2, y1, z2, x1, y1, z2, 0, 0, 1);
+        emitLine(bufferBuilder, stack, x1, y1, z2, x1, y1, z1, -1, 0, 0);
+        emitLine(bufferBuilder, stack, x1, y1, z1, x1, y2, z1, 0, 0, -1);
+        emitLine(bufferBuilder, stack, x2, y1, z1, x2, y2, z1, 0, 0, -1);
+        emitLine(bufferBuilder, stack, x2, y1, z2, x2, y2, z2, 0, 0, 1);
+        emitLine(bufferBuilder, stack, x1, y1, z2, x1, y2, z2, 0, 0, 1);
+        emitLine(bufferBuilder, stack, x1, y2, z1, x2, y2, z1, 0, 1, 0);
+        emitLine(bufferBuilder, stack, x2, y2, z1, x2, y2, z2, 1, 0, 0);
+        emitLine(bufferBuilder, stack, x2, y2, z2, x1, y2, z2, 0, 0, 1);
+        emitLine(bufferBuilder, stack, x1, y2, z2, x1, y2, z1, -1, 0, 0);
     }
 
     static void emitLine(BufferBuilder bufferBuilder, PoseStack stack, Vec3 start, Vec3 end) {

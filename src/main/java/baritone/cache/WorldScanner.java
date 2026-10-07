@@ -69,7 +69,7 @@ public enum WorldScanner implements IWorldScanner {
                     foundChunks = true;
                     int chunkX = xoff + playerChunkX;
                     int chunkZ = zoff + playerChunkZ;
-                    LevelChunk chunk = chunkProvider.getChunk(chunkX, chunkZ, null, false);
+                    LevelChunk chunk = chunkProvider.getChunk(chunkX, chunkZ, false);
                     if (chunk == null) {
                         continue;
                     }
@@ -80,8 +80,8 @@ public enum WorldScanner implements IWorldScanner {
                 }
             }
             if ((allUnloaded && foundChunks)
-                    || (res.size() >= max
-                    && (searchRadiusSq > maxSearchRadiusSq || (searchRadiusSq > 1 && foundWithinY)))
+                    || searchRadiusSq > maxSearchRadiusSq
+                    || (res.size() >= max && (searchRadiusSq > 1 && foundWithinY))
             ) {
                 return res;
             }
@@ -96,7 +96,7 @@ public enum WorldScanner implements IWorldScanner {
         }
 
         ClientChunkCache chunkProvider = (ClientChunkCache) ctx.world().getChunkSource();
-        LevelChunk chunk = chunkProvider.getChunk(pos.x, pos.z, null, false);
+        LevelChunk chunk = chunkProvider.getChunk(pos.x, pos.z, false);
         int playerY = ctx.playerFeet().getY();
 
         if (chunk == null || chunk.isEmpty()) {
@@ -147,6 +147,9 @@ public enum WorldScanner implements IWorldScanner {
         LevelChunkSection[] chunkInternalStorageArray = chunk.getSections();
         boolean foundWithinY = false;
         for (int y0 : coordinateIterationOrder) {
+            if (y0 < 0 || y0 >= chunkInternalStorageArray.length) {
+                continue;
+            }
             LevelChunkSection section = chunkInternalStorageArray[y0];
             if (section == null || section.hasOnlyAir()) {
                 continue;
@@ -158,7 +161,7 @@ public enum WorldScanner implements IWorldScanner {
                     for (int x = 0; x < 16; x++) {
                         BlockState state = bsc.get(x, yy, z);
                         if (filter.has(state)) {
-                            int y = yReal | yy;
+                            int y = yReal + yy;
                             if (result.size() >= max) {
                                 if (Math.abs(y - playerY) < yLevelThreshold) {
                                     foundWithinY = true;
@@ -170,7 +173,7 @@ public enum WorldScanner implements IWorldScanner {
                                     }
                                 }
                             }
-                            result.add(new BlockPos(chunkX | x, y + minY, chunkZ | z));
+                            result.add(new BlockPos(chunkX + x, y + minY, chunkZ + z));
                         }
                     }
                 }

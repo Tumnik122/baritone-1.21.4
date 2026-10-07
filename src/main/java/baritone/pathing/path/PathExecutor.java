@@ -130,6 +130,20 @@ public class PathExecutor implements IPathExecutor, Helper {
                     }
                 }
             }
+            // 3. Jeśli cel bieżącego ruchu prowadzi do wody, a gracz jest na lądzie - natychmiast anuluj ścieżkę
+            if (Baritone.settings().mineAvoidWater.value && !ctx.player().isInWater() && !Baritone.settings().assumeWalkOnWater.value && movement != null) {
+                BetterBlockPos dest = movement.getDest();
+                if (dest != null) {
+                    BlockState destState = bsiLava.get0(dest);
+                    BlockState destBelow = bsiLava.get0(dest.below());
+                    if (MovementHelper.isWater(destState) || (MovementHelper.isWater(destBelow) && !MovementHelper.canWalkOn(bsiLava, dest.x, dest.y - 1, dest.z, destBelow))) {
+                        logDirect("§e[Baritone Safety] Wykryto wodę na trasie [" + dest.x + ", " + dest.y + ", " + dest.z + "]! Omijanie wody.");
+                        clearKeys();
+                        cancel();
+                        return false;
+                    }
+                }
+            }
         }
         if (!movement.getValidPositions().contains(whereAmI)) {
             for (int i = 0; i < pathPosition && i < path.length(); i++) {//this happens for example when you lag out and get teleported back a couple blocks
@@ -277,9 +291,6 @@ public class PathExecutor implements IPathExecutor, Helper {
         } else {
             sprintNextTick = shouldSprintNextTick();
             behavior.baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, sprintNextTick);
-            if (!sprintNextTick && ctx.player().isSprinting()) {
-                ctx.player().setSprinting(false);
-            }
             ticksOnCurrent++;
             if (ticksOnCurrent > currentMovementOriginalCostEstimate + Baritone.settings().movementTimeoutTicks.value) {
                 // only cancel if the total time has exceeded the initial estimate
@@ -349,6 +360,12 @@ public class PathExecutor implements IPathExecutor, Helper {
             if (path.movements().get(pathPosition) instanceof MovementFall) {
                 BlockPos fallDest = path.positions().get(pathPosition + 1); // .get(pathPosition) is the block we fell off of
                 return VecUtils.entityFlatDistanceToCenter(ctx.player(), fallDest) >= leniency; // ignore Y by using flat distance
+            } else if (ctx.player().isInWater() || MovementHelper.isLiquid(ctx, ctx.playerFeet())) {
+                // When swimming/in water, vertical depth changes frequently. Don't cancel path if horizontal distance is within leniency
+                if (status.getB() != null) {
+                    return VecUtils.entityFlatDistanceToCenter(ctx.player(), status.getB()) >= leniency;
+                }
+                return true;
             } else {
                 return true;
             }
@@ -406,6 +423,15 @@ public class PathExecutor implements IPathExecutor, Helper {
             return false;
         }
         if (!behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD)) {
+            return false;
+        }
+        // 5. Cannot sprint while breaking blocks (mining in vanilla cancels sprint)
+        if (behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT)) {
+            return false;
+        }
+        // 6. Strict anticheat guard: Do not sprint if the current movement has unbroken blocks directly ahead to break
+        IMovement cur = path.movements().get(pathPosition);
+        if (cur instanceof Movement && ((Movement) cur).hasUnbrokenPositionsToBreak()) {
             return false;
         }
         IMovement current = path.movements().get(pathPosition);
@@ -635,7 +661,26 @@ public class PathExecutor implements IPathExecutor, Helper {
     }
 
     private void onChangeInPathPosition() {
-        clearKeys();
+        boolean keepForward = false;
+        if (pathPosition < path.movements().size()) {
+            IMovement nextM = path.movements().get(pathPosition);
+            if (nextM instanceof Movement m) {
+                if (!m.hasUnbrokenPositionsToBreak()) {
+                    keepForward = true;
+                }
+            }
+        }
+        if (keepForward && behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD)) {
+            // Zachowaj płynny bieg w przód bez 1-tickowego szarpnięcia na granicy bloków
+            behavior.baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
+            behavior.baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
+            behavior.baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
+            behavior.baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
+            behavior.baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            behavior.baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
+        } else {
+            clearKeys();
+        }
         ticksOnCurrent = 0;
     }
 

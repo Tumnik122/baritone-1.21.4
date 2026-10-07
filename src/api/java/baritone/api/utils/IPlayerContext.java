@@ -125,6 +125,6 @@ public interface IPlayerContext {
     }
 
     default boolean isLookingAt(BlockPos pos) {
-        return getSelectedBlock().equals(Optional.of(pos));
+        return pos != null && getSelectedBlock().equals(Optional.of(pos));
     }
 }

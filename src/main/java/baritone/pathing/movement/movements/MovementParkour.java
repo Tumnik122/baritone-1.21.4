@@ -128,8 +128,14 @@ public class MovementParkour extends Movement {
                 break;
             }
 
-            if (Baritone.settings().mineAvoidLava.value) {
-                if (MovementHelper.isLavaPitBelow(context.bsi, destX, y - 1, destZ)) {
+            if (context.mineAvoidLava) {
+                if (MovementHelper.isLavaPitBelow(context.bsi, destX, y - 1, destZ)
+                        || MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y - 1, destZ)) {
+                    break;
+                }
+            }
+            if (context.mineAvoidWater) {
+                if (MovementHelper.isWater(context.bsi.get0(destX, y - 1, destZ))) {
                     break;
                 }
             }
@@ -142,6 +148,9 @@ public class MovementParkour extends Movement {
                     res.y = y + 1;
                     res.z = destZ;
                     res.cost = i * SPRINT_ONE_BLOCK_COST + context.jumpPenalty;
+                    if (context.avoidFluidProximity) {
+                        res.cost += MovementHelper.getFluidProximityPenalty(context, destX, y + 1, destZ);
+                    }
                     return;
                 }
                 break;
@@ -159,6 +168,9 @@ public class MovementParkour extends Movement {
                     res.y = y;
                     res.z = destZ;
                     res.cost = costFromJumpDistance(i) + context.jumpPenalty;
+                    if (context.avoidFluidProximity) {
+                        res.cost += MovementHelper.getFluidProximityPenalty(context, destX, y, destZ);
+                    }
                     return;
                 }
                 break;

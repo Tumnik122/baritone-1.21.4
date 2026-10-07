@@ -42,4 +42,23 @@ public interface IFarmProcess extends IBaritoneProcess {
      * @param range The distance to search for crops to farm
      */
     default void farm(int range) {farm(range, null);}
+
+    /**
+     * Rozpoczyna tryb wyłącznie sadzenia (nie zbiera dojrzałych plonów, tylko obsadza puste grządki).
+     *
+     * @param range Zasięg od pozycji początkowej (0 = cała farma)
+     * @param pos   Pozycja centralna
+     */
+    void plant(int range, BlockPos pos);
+
+    default void plant() {plant(0, null);}
+
+    default void plant(int range) {plant(range, null);}
+
+    boolean isPlantOnly();
+
+    default void farmPraca(int range, BlockPos pos) {
+        farm(range, pos);
+    }
 }
+

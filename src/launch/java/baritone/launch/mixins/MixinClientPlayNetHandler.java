@@ -161,6 +161,13 @@ public abstract class MixinClientPlayNetHandler extends ClientCommonPacketListen
             at = @At("RETURN")
     )
     private void postHandleBlockChange(ClientboundBlockUpdatePacket packetIn, CallbackInfo ci) {
+        for (IBaritone ibaritone : BaritoneAPI.getProvider().getAllBaritones()) {
+            LocalPlayer player = ibaritone.getPlayerContext().player();
+            if (player != null && player.connection == (ClientPacketListener) (Object) this) {
+                List<Pair<BlockPos, BlockState>> list = List.of(new Pair<>(packetIn.getPos(), packetIn.getBlockState()));
+                ibaritone.getGameEventHandler().onBlockChange(new BlockChangeEvent(new ChunkPos(packetIn.getPos()), list));
+            }
+        }
         if (!Baritone.settings().repackOnAnyBlockChange.value) {
             return;
         }

@@ -21,11 +21,15 @@ import baritone.utils.accessor.IPlayerControllerMP;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
 import net.minecraft.core.BlockPos;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.gen.Accessor;
 import org.spongepowered.asm.mixin.gen.Invoker;
 
 @Mixin(MultiPlayerGameMode.class)
 public abstract class MixinPlayerController implements IPlayerControllerMP {
+
+    @Shadow
+    private int destroyDelay;
 
     @Accessor("isDestroying")
     @Override
@@ -46,4 +50,73 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
     @Accessor("destroyDelay")
     @Override
     public abstract void setDestroyDelay(int destroyDelay);
+
+    /**
+     * Zeroes destroyDelay at the HEAD of startDestroyBlock so that the
+     * vanilla check (destroyDelay > 0 → skip mining) does NOT fire for
+     * blocks where we have already confirmed instamine locally.
+     *
+     * NOTE: we do NOT touch destroyDelay in a RETURN inject on destroyBlock,
+     * because after destruction the block position contains AIR (hardness 0),
+     * which would make canInstaBreak() return true for *every* position and
+     * remove the inter-block cooldown GrimAC requires.  Inter-block timing is
+     * handled by BlockBreakHelper instead.
+     */
+    @org.spongepowered.asm.mixin.injection.Inject(
+            method = "startDestroyBlock",
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"))
+    private void onStartDestroyBlockHead(
+            BlockPos pos,
+            net.minecraft.core.Direction direction,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
+        if (baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
+            this.destroyDelay = 0;
+        }
+    }
+
+
+    /**
+     * Same zero-out at the HEAD of continueDestroyBlock.
+     * This allows mining progress to be computed on every tick without the
+     * 5-tick vanilla countdown stalling instamine blocks.
+     */
+    @org.spongepowered.asm.mixin.injection.Inject(
+            method = "continueDestroyBlock",
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"))
+    private void onContinueDestroyBlockHead(
+            BlockPos pos,
+            net.minecraft.core.Direction direction,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
+        if (baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
+            this.destroyDelay = 0;
+        }
+    }
+
+    @org.spongepowered.asm.mixin.injection.ModifyVariable(
+            method = "startDestroyBlock",
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
+            argsOnly = true)
+    private net.minecraft.core.Direction fixStartDestroyDirection(
+            net.minecraft.core.Direction direction,
+            BlockPos pos) {
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.player != null && (baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value || baritone.api.BaritoneAPI.getSettings().grimCompat.value || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value)) {
+            return baritone.utils.player.BaritonePlayerController.getSafeBreakFace(mc.player, pos, direction);
+        }
+        return direction;
+    }
+
+    @org.spongepowered.asm.mixin.injection.ModifyVariable(
+            method = "continueDestroyBlock",
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
+            argsOnly = true)
+    private net.minecraft.core.Direction fixContinueDestroyDirection(
+            net.minecraft.core.Direction direction,
+            BlockPos pos) {
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.player != null && (baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value || baritone.api.BaritoneAPI.getSettings().grimCompat.value || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value)) {
+            return baritone.utils.player.BaritonePlayerController.getSafeBreakFace(mc.player, pos, direction);
+        }
+        return direction;
+    }
 }

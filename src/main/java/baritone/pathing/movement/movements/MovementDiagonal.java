@@ -100,12 +100,12 @@ public class MovementDiagonal extends Movement {
         BetterBlockPos diagA = new BetterBlockPos(src.x, src.y, dest.z);
         BetterBlockPos diagB = new BetterBlockPos(dest.x, src.y, src.z);
         if (dest.y < src.y) {
-            return ImmutableSet.of(src, dest.above(), diagA, diagB, dest, diagA.below(), diagB.below());
+            return ImmutableSet.of(src, dest.above(), diagA, diagB, dest, diagA.below(), diagB.below(), src.above());
         }
         if (dest.y > src.y) {
-            return ImmutableSet.of(src, src.above(), diagA, diagB, dest, diagA.above(), diagB.above());
+            return ImmutableSet.of(src, src.above(), diagA, diagB, dest, diagA.above(), diagB.above(), dest.above());
         }
-        return ImmutableSet.of(src, dest, diagA, diagB);
+        return ImmutableSet.of(src, dest, diagA, diagB, src.above(), dest.above());
     }
 
     public static void cost(CalculationContext context, int x, int y, int z, int destX, int destZ, MutableMoveResult res) {
@@ -149,7 +149,11 @@ public class MovementDiagonal extends Movement {
         } else if (frostWalker) {
             // frostwalker lets us walk on water without the penalty
         } else if (destWalkOn.getBlock() == Blocks.WATER) {
-            multiplier += context.walkOnWaterOnePenalty * SQRT_2;
+            if (context.mineAvoidWater) {
+                multiplier += (context.walkOnWaterOnePenalty + Baritone.settings().waterAvoidPenalty.value) * SQRT_2;
+            } else {
+                multiplier += context.walkOnWaterOnePenalty * SQRT_2;
+            }
         }
         Block fromDownBlock = fromDown.getBlock();
         if (MovementHelper.isClimbable(fromDownBlock)) {
@@ -169,8 +173,12 @@ public class MovementDiagonal extends Movement {
         if ((!context.allowWalkOnMagmaBlocks && cuttingOver2.is(Blocks.MAGMA_BLOCK)) || MovementHelper.isLava(cuttingOver2)) {
             return;
         }
-        if (Baritone.settings().mineAvoidLava.value) {
-            if (MovementHelper.isLavaPitBelow(context.bsi, destX, y - 1, destZ)) {
+        if (context.mineAvoidWater && (MovementHelper.isWater(cuttingOver1) || MovementHelper.isWater(cuttingOver2))) {
+            return;
+        }
+        if (context.mineAvoidLava) {
+            if (MovementHelper.isLavaPitBelow(context.bsi, destX, y - 1, destZ)
+                    || MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y - 1, destZ)) {
                 return;
             }
         }
@@ -181,10 +189,16 @@ public class MovementDiagonal extends Movement {
             if (ascend) {
                 return;
             }
-            // Ignore previous multiplier
-            // Whatever we were walking on (possibly soul sand) doesn't matter as we're actually floating on water
-            // Not even touching the blocks below
-            multiplier = context.waterWalkSpeed;
+            if (context.mineAvoidWater) {
+                boolean inWater = MovementHelper.isWater(startState);
+                if (!inWater) {
+                    multiplier = context.waterWalkSpeed + Baritone.settings().waterAvoidPenalty.value * 2;
+                } else {
+                    multiplier = context.waterWalkSpeed + Baritone.settings().waterAvoidPenalty.value;
+                }
+            } else {
+                multiplier = context.waterWalkSpeed;
+            }
             water = true;
         }
         BlockState pb0 = context.get(x, y, destZ);
@@ -262,6 +276,9 @@ public class MovementDiagonal extends Movement {
         }
         res.x = destX;
         res.z = destZ;
+        if (context.avoidFluidProximity) {
+            res.cost += MovementHelper.getFluidProximityPenalty(context, destX, res.y, destZ);
+        }
     }
 
     @Override
@@ -271,9 +288,10 @@ public class MovementDiagonal extends Movement {
             return state;
         }
 
-        if (ctx.playerFeet().equals(dest)) {
+        boolean inWater = MovementHelper.isLiquid(ctx, dest) || MovementHelper.isLiquid(ctx, src) || MovementHelper.isLiquid(ctx, ctx.playerFeet()) || ctx.player().isInWater();
+        if (ctx.playerFeet().equals(dest) || (inWater && (ctx.playerFeet().equals(dest.above()) || (ctx.playerFeet().getX() == dest.getX() && ctx.playerFeet().getZ() == dest.getZ() && Math.abs(ctx.player().position().y - dest.getY()) < 1.8)))) {
             return state.setStatus(MovementStatus.SUCCESS);
-        } else if (!playerInValidPosition() && !(MovementHelper.isLiquid(ctx, src) && getValidPositions().contains(ctx.playerFeet().above()))) {
+        } else if (!playerInValidPosition() && !inWater && !(MovementHelper.isLiquid(ctx, src) && getValidPositions().contains(ctx.playerFeet().above()))) {
             return state.setStatus(MovementStatus.UNREACHABLE);
         }
         if (dest.y > src.y && ctx.player().position().y < src.y + 0.1 && ctx.player().horizontalCollision) {
@@ -288,7 +306,10 @@ public class MovementDiagonal extends Movement {
     }
 
     private boolean sprint() {
-        if (MovementHelper.isLiquid(ctx, ctx.playerFeet()) && !Baritone.settings().sprintInWater.value) {
+        if (hasUnbrokenPositionsToBreak()) {
+            return false;
+        }
+        if (MovementHelper.isLiquid(ctx, ctx.playerFeet()) || ctx.player().isInWater()) {
             return false;
         }
         for (int i = 0; i < 4; i++) {
@@ -312,6 +333,9 @@ public class MovementDiagonal extends Movement {
         List<BlockPos> result = new ArrayList<>();
         for (int i = 4; i < 6; i++) {
             if (!MovementHelper.canWalkThrough(bsi, positionsToBreak[i].x, positionsToBreak[i].y, positionsToBreak[i].z)) {
+                if (!bsi.get0(positionsToBreak[i].x, positionsToBreak[i].y, positionsToBreak[i].z).getFluidState().isEmpty()) {
+                    continue;
+                }
                 result.add(positionsToBreak[i]);
             }
         }

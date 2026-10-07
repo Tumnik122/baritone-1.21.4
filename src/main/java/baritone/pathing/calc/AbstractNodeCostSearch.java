@@ -205,6 +205,11 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
             return Optional.empty();
         }
         double bestDist = 0;
+        double targetDist = (startNode != null && !Double.isNaN(startNode.estimatedCostToGoal))
+                ? startNode.estimatedCostToGoal : MIN_DIST_PATH;
+        double minThreshold = Math.min(MIN_DIST_PATH, Math.max(1.0, targetDist - 1.0));
+        double minThresholdSq = minThreshold * minThreshold;
+
         for (int i = 0; i < COEFFICIENTS.length; i++) {
             if (bestSoFar[i] == null) {
                 continue;
@@ -213,7 +218,9 @@ public abstract class AbstractNodeCostSearch implements IPathFinder, Helper {
             if (dist > bestDist) {
                 bestDist = dist;
             }
-            if (dist > MIN_DIST_PATH * MIN_DIST_PATH) { // square the comparison since distFromStartSq is squared
+            boolean inGoal = goal != null && goal.isInGoal(bestSoFar[i].x, bestSoFar[i].y, bestSoFar[i].z);
+            boolean nearGoal = bestSoFar[i].estimatedCostToGoal <= 1.5;
+            if (dist > minThresholdSq || inGoal || nearGoal) { // dynamic threshold so close goals don't fail
                 if (logInfo) {
                     if (COEFFICIENTS[i] >= 3) {
                         logDebug("Warning: cost coefficient is greater than three! Probably means that the path I found is pretty terrible (like sneak-bridging for dozens of blocks)");

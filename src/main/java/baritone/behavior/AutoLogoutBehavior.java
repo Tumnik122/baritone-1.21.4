@@ -55,8 +55,9 @@ public class AutoLogoutBehavior extends Behavior implements Helper {
         }
 
         // Sprawdź czy którakolwiek opcja auto-logoutu jest włączona w #settings
-        boolean isEnabled = Baritone.settings().disconnectOnLowHealth.value || Baritone.settings().autoLogout.value;
-        if (!isEnabled) {
+        boolean healthEnabled = Baritone.settings().disconnectOnLowHealth.value || Baritone.settings().autoLogout.value;
+        boolean fallEnabled = Baritone.settings().disconnectOnFall.value;
+        if (!healthEnabled && !fallEnabled) {
             return;
         }
 
@@ -70,13 +71,115 @@ public class AutoLogoutBehavior extends Behavior implements Helper {
             return;
         }
 
-        // 1 serce = 2 HP. Domyślny próg to 3 serca = 6 HP.
-        double hearts = health / 2.0D;
-        double thresholdHearts = Baritone.settings().disconnectHealthHearts.value;
+        // 1 serce = 2 HP. Domyślny próg to 3 serca = 6 HP (lub 6 serc w trybie Anarchia).
+        if (healthEnabled) {
+            double hearts = health / 2.0D;
+            double thresholdHearts = Baritone.settings().disconnectHealthHearts.value;
+            if (Baritone.settings().anarchiaMode.value && thresholdHearts < 6.0D) {
+                thresholdHearts = 6.0D;
+            }
 
-        // Jeśli ma mniej niż 3 serca (nie 3 HP, tylko serca!)
-        if (hearts < thresholdHearts) {
-            triggerAutoLogout(hearts, thresholdHearts, health);
+            // Jeśli ma mniej niż próg serc
+            if (hearts < thresholdHearts) {
+                triggerAutoLogout(hearts, thresholdHearts, health);
+                return;
+            }
+        }
+
+        // Sprawdź czy auto-logout przy upadku z wysokości jest włączony (Anarchia / FallProtect)
+        if (fallEnabled && !ctx.player().isFallFlying()) {
+            // Jeśli bot ma wiadro z wodą i włączony MLG Water Clutch, pozwól mu bezpiecznie wylądować
+            boolean canWaterClutch = (Baritone.settings().autoWaterClutch.value || Baritone.settings().allowWaterBucketFall.value)
+                    && ctx.world().dimension() != net.minecraft.world.level.Level.NETHER
+                    && WaterClutchBehavior.findWaterBucketSlot(ctx.player()) != -1;
+
+            if (!canWaterClutch) {
+                double maxFall = Baritone.settings().disconnectFallDistance.value;
+
+                // 1. Rzeczywisty fallDistance w Minecraftcie
+                if (ctx.player().fallDistance >= (float) maxFall) {
+                    triggerFallAutoLogout(ctx.player().fallDistance, maxFall);
+                    return;
+                }
+
+                // 2. Predykcja upadku w locie: gracz w powietrzu, ujemna prędkość pionowa i przepaść pod stopami
+                if (!ctx.player().onGround() && !ctx.player().isInWater() && ctx.player().getDeltaMovement().y < -0.35) {
+                    double groundDrop = calculateDistanceToGround(ctx.player());
+                    if (groundDrop >= maxFall) {
+                        triggerFallAutoLogout(groundDrop, maxFall);
+                    }
+                }
+            }
+        }
+    }
+
+    private double calculateDistanceToGround(net.minecraft.world.entity.player.Player player) {
+        if (ctx.world() == null || player == null) return 0.0;
+        int px = player.getBlockX();
+        int py = player.getBlockY();
+        int pz = player.getBlockZ();
+
+        for (int y = py; y >= ctx.world().getMinY() && (py - y) <= 40; y--) {
+            net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(px, y, pz);
+            net.minecraft.world.level.block.state.BlockState state = ctx.world().getBlockState(pos);
+
+            // Woda, pajęczyna, slime, liany, drabiny neutralizują obrażenia z upadku
+            if (state.getFluidState().getType() instanceof net.minecraft.world.level.material.WaterFluid
+                    || state.is(net.minecraft.world.level.block.Blocks.COBWEB)
+                    || state.is(net.minecraft.world.level.block.Blocks.SLIME_BLOCK)
+                    || state.is(net.minecraft.world.level.block.Blocks.HAY_BLOCK)
+                    || state.is(net.minecraft.world.level.block.Blocks.LADDER)
+                    || state.is(net.minecraft.world.level.block.Blocks.VINE)) {
+                return 0.0;
+            }
+
+            if (!state.isAir() && state.blocksMotion()) {
+                double groundY = y + 1.0;
+                return Math.max(0.0, player.getY() - groundY);
+            }
+        }
+        return 0.0;
+    }
+
+    private void triggerFallAutoLogout(double fallDist, double maxFall) {
+        Baritone.settings().disconnectOnFall.value = false;
+        wasAutoLoggedOut = true;
+        joinReminderDelay = 40;
+
+        try {
+            SettingsUtil.save(Baritone.settings());
+        } catch (Throwable t) {
+            t.printStackTrace();
+        }
+
+        logDirect(String.format(Locale.ROOT,
+                "§c[AutoLogout] KRYTYCZNY UPADEK: %.1f kratek >= próg %.1f kratek!",
+                fallDist, maxFall));
+        logDirect("§e[AutoLogout] Opcja FallProtect została przestawiona na OFF, aby nie logało ciągle po ponownym wejściu!");
+
+        saveBypassSessionIfActive();
+
+        baritone.getPathingControlManager().cancelEverything();
+        baritone.getInputOverrideHandler().clearAllKeys();
+
+        Component reason = Component.literal(String.format(Locale.ROOT,
+                "§c[Baritone Anarchia] Upadek z wysokości: %.1f kratek (próg %.1f). Ochrona Anarchia rozłączyła bota!",
+                fallDist, maxFall));
+
+        if (ctx.player().connection != null && ctx.player().connection.getConnection() != null) {
+            ctx.player().connection.getConnection().disconnect(reason);
+        }
+    }
+
+    private void saveBypassSessionIfActive() {
+        if (baritone.getBypassProcess() != null && baritone.getBypassProcess().isActive()) {
+            try {
+                BypassProcess bp = baritone.getBypassProcess();
+                BypassConfig cfg = bp.getConfig();
+                Path savePath = baritone.getDirectory().resolve(cfg.saveFile);
+                String dir = bp.getTunnelDirection() != null ? bp.getTunnelDirection().name() : "NORTH";
+                ReconnectData.save(savePath, ctx.player(), new ArrayList<>(bp.getTargetOres()), dir, bp.getState().name(), bp.getOresMined());
+            } catch (Throwable ignored) {}
         }
     }
 
@@ -101,15 +204,7 @@ public class AutoLogoutBehavior extends Behavior implements Helper {
         logDirect("§e[AutoLogout] Opcja została automatycznie przestawiona na OFF, aby nie logało ciągle po ponownym wejściu!");
 
         // 4. Zapisanie sesji bypass/kopania jeśli proces był aktywny (do wznowienia przez #reconnect)
-        if (baritone.getBypassProcess() != null && baritone.getBypassProcess().isActive()) {
-            try {
-                BypassProcess bp = baritone.getBypassProcess();
-                BypassConfig cfg = bp.getConfig();
-                Path savePath = baritone.getDirectory().resolve(cfg.saveFile);
-                String dir = bp.getTunnelDirection() != null ? bp.getTunnelDirection().name() : "NORTH";
-                ReconnectData.save(savePath, ctx.player(), new ArrayList<>(bp.getTargetOres()), dir, bp.getState().name(), bp.getOresMined());
-            } catch (Throwable ignored) {}
-        }
+        saveBypassSessionIfActive();
 
         // 5. Zatrzymanie ruchu i anulowanie operacji
         baritone.getPathingControlManager().cancelEverything();

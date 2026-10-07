@@ -1,17 +1,22 @@
 # dev-start.ps1 - Baritone Fabric dev-client launcher (processedMods fix)
 # Usage:
-#   .\dev-start.ps1            # smart kill dev JVMs + Gradle daemons
+#   .\dev-start.ps1            # smart kill: tylko Gradle daemony, NIE zabija dzialajacych botow
 #   .\dev-start.ps1 -AllJava   # nuclear: kill ALL java.exe / javaw.exe
 param(
     [switch]$AllJava,
-    [string]$ClientDir = ""
+    [string]$ClientDir = "",
+    [int]$InstanceNum = 1
 )
 
 $ErrorActionPreference = "Continue"
 
 $repo = $PSScriptRoot
 if (-not $ClientDir) {
-    $ClientDir = Join-Path $repo "fabric\run\client"
+    if ($InstanceNum -le 1) {
+        $ClientDir = Join-Path $repo "fabric\run\client"
+    } else {
+        $ClientDir = Join-Path $repo "fabric\run\client-${InstanceNum}"
+    }
 }
 $processed = Join-Path $ClientDir ".fabric\processedMods"
 
@@ -26,6 +31,7 @@ Write-Host ""
 
 # --- STEP 1: Kill Java processes that may hold processedMods locks ----------
 Write-Host "[1/3] Killing Java processes that may lock processedMods..." -ForegroundColor Yellow
+Write-Host "  (Tryb multi-bot: dzialajace instancje Minecrafta sa zachowane)" -ForegroundColor Cyan
 
 $clientDirNorm = $ClientDir.Replace("/", "\")
 $repoNorm      = $repo.Replace("/", "\")
@@ -45,18 +51,21 @@ foreach ($p in $allJavaProcs) {
     }
     $cl = $p.CommandLine
     if (-not $cl) { continue }
+
+    # WAZNE: NIE zabijamy dzialajacych klientow Minecrafta (KnotClient) - tryb multi-bot!
+    # Zabijamy tylko: devlaunchinjector (startujace) i Gradle daemony
+    if ($cl -match '(?i)knot\.KnotClient')           { continue }  # <-- bot juz dziala, zostaw!
+    if ($cl -match '(?i)knot\.Knot\b')               { continue }  # <-- bot juz dziala, zostaw!
     if ($cl -match '(?i)devlaunchinjector')          { $toKill += $p; continue }
-    if ($cl -match '(?i)knot\.KnotClient')           { $toKill += $p; continue }
-    if ($cl -match '(?i)knot\.Knot\b')               { $toKill += $p; continue }
     if ($cl -match '(?i)gradle.*daemon')             { $toKill += $p; continue }
-    if ($cl -match [regex]::Escape($repoNorm))       { $toKill += $p; continue }
-    if ($cl -match [regex]::Escape($clientDirNorm))  { $toKill += $p; continue }
+    # Procesy z repo w cmdline ktore NIE sa KnotClient (np. zawieszony Gradle)
+    if ($cl -match [regex]::Escape($repoNorm) -and $cl -notmatch '(?i)knot\.')  { $toKill += $p; continue }
 }
 
 if ($toKill.Count -eq 0) {
-    Write-Host "  No matching Java processes found." -ForegroundColor Green
+    Write-Host "  Brak procesow do ubicia (boty dzialaja dalej)." -ForegroundColor Green
 } else {
-    Write-Host "  Found $($toKill.Count) Java process(es) to kill:" -ForegroundColor Red
+    Write-Host "  Found $($toKill.Count) process(es) to kill (Gradle/starters only):" -ForegroundColor Red
     foreach ($j in $toKill) {
         $snip = $j.CommandLine
         if ($snip.Length -gt 100) { $snip = $snip.Substring(0, 100) + "..." }
@@ -137,10 +146,52 @@ if (-not (Test-Path -LiteralPath $processed)) {
     }
 }
 
-# --- STEP 3: Launch Minecraft client ----------------------------------------
+# --- STEP 3: Ensure In-Game Account Switcher (IAS) is installed in mods -----
 Write-Host ""
-Write-Host "[3/3] Launching: gradlew.bat :fabric:runClient" -ForegroundColor Yellow
+Write-Host "[3/4] Checking mods (In-Game Account Switcher)..." -ForegroundColor Yellow
+
+$modsDir = Join-Path $ClientDir "mods"
+if (-not (Test-Path $modsDir)) {
+    New-Item -ItemType Directory -Path $modsDir -Force | Out-Null
+}
+
+$iasCandidates = @(
+    "C:\Users\Administrator\Desktop\IAS-9.0.8+1.21.4-fabric.jar",
+    "C:\Users\Administrator\Downloads\IAS-9.0.8+1.21.4-fabric.jar"
+)
+$iasDest = Join-Path $modsDir "IAS-9.0.8+1.21.4-fabric.jar"
+if (-not (Test-Path $iasDest)) {
+    foreach ($cand in $iasCandidates) {
+        if (Test-Path $cand) {
+            Copy-Item $cand $iasDest -Force
+            Write-Host "  [IAS] In-Game Account Switcher zainstalowany w folderze mods!" -ForegroundColor Green
+            break
+        }
+    }
+} else {
+    Write-Host "  [IAS] In-Game Account Switcher aktywny w mods." -ForegroundColor Green
+}
+
+$fapiInMods = Get-ChildItem -Path $modsDir -Filter "fabric-api-*.jar" -ErrorAction SilentlyContinue
+if ($fapiInMods) {
+    $fapiInMods | Remove-Item -Force -ErrorAction SilentlyContinue
+    Write-Host "  [Fabric API] Usunieto fat-jar z mods (Fabric API ladowany jest natywnie i re-mapowany przez Gradle)." -ForegroundColor Green
+}
+
+# --- STEP 4: Launch Minecraft client ----------------------------------------
+Write-Host ""
+Write-Host "[4/4] Launching: gradlew.bat :fabric:runClient${InstanceNum}" -ForegroundColor Yellow
+Write-Host ""
+
+$gradleArgs = if ($InstanceNum -le 1) {
+    @(":fabric:runClient")
+} else {
+    @(":fabric:runClient", "-PbotNum=${InstanceNum}")
+}
+
+Write-Host "[4/4] Launching: gradlew.bat $($gradleArgs -join ' ')" -ForegroundColor Yellow
 Write-Host ""
 
 Set-Location $repo
-& (Join-Path $repo "gradlew.bat") :fabric:runClient
+& (Join-Path $repo "gradlew.bat") @gradleArgs
+

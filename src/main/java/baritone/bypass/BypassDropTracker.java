@@ -47,16 +47,24 @@ final class BypassDropTracker {
     static Set<String> itemsForOre(String name) {
         String ore = name.startsWith("deepslate_") ? name.substring("deepslate_".length()) : name;
         String drop = switch (ore) {
-            case "diamond_ore" -> "diamond";
-            case "gold_ore" -> "raw_gold";
-            case "iron_ore" -> "raw_iron";
-            case "redstone_ore" -> "redstone";
-            case "lapis_ore" -> "lapis_lazuli";
-            case "emerald_ore" -> "emerald";
-            case "coal_ore" -> "coal";
+            case "diamond_ore", "diamond" -> "diamond";
+            case "gold_ore", "gold" -> "raw_gold";
+            case "iron_ore", "iron" -> "raw_iron";
+            case "copper_ore", "copper" -> "raw_copper";
+            case "redstone_ore", "redstone" -> "redstone";
+            case "lapis_ore", "lapis", "lapis_lazuli" -> "lapis_lazuli";
+            case "emerald_ore", "emerald" -> "emerald";
+            case "coal_ore", "coal" -> "coal";
+            case "nether_gold_ore" -> "gold_nugget";
+            case "nether_quartz_ore", "quartz" -> "quartz";
+            case "ancient_debris" -> "ancient_debris";
             default -> ore;
         };
-        // Include Silk Touch drops as well as ordinary/Fortune drops.
-        return Set.copyOf(java.util.List.of(drop, ore, "deepslate_" + ore));
+        // Include Silk Touch drops as well as ordinary/Fortune drops (set avoids duplicates)
+        Set<String> set = new java.util.HashSet<>();
+        set.add(drop);
+        set.add(ore);
+        set.add("deepslate_" + ore);
+        return Set.copyOf(set);
     }
 }

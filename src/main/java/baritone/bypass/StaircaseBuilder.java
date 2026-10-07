@@ -8,6 +8,7 @@ import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Helper;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
+import baritone.api.utils.ObstructionHelper;
 import baritone.api.utils.input.Input;
 import baritone.utils.ContinuousBreakController;
 import net.minecraft.core.BlockPos;
@@ -102,37 +103,42 @@ public class StaircaseBuilder {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // 2. Kolejność kopania: dół (stopy) -> góra (głowa) -> stopień pod stopami (zejście)
+        // 2. Kolejność kopania: góra (głowa) -> dół (stopy) -> stopień pod stopami (zejście)
         BlockPos toBreak = null;
-        if (!isPassable(world, frontFeet)) {
-            toBreak = frontFeet;
-        } else if (!isPassable(world, frontHead)) {
+        if (!isPassable(world, frontHead)) {
             toBreak = frontHead;
+        } else if (!isPassable(world, frontFeet)) {
+            toBreak = frontFeet;
         } else if (!isPassable(world, frontStepDown)) {
             toBreak = frontStepDown;
         }
 
         if (toBreak != null) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            double distH = Math.hypot(ctx.player().getX() - (frontFeet.getX() + 0.5D), ctx.player().getZ() - (frontFeet.getZ() + 0.5D));
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, distH > 0.82);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
             if (!toBreak.equals(currentTarget)) {
                 currentTarget = toBreak;
-                RotationEngine.reset();
             }
             Vec3 targetCenter = Vec3.atCenterOf(toBreak);
             Rotation rot = RotationEngine.lookAt(ctx.player().getEyePosition(), targetCenter);
-            RotationEngine.apply(ctx.player(), rot, baritone.settings());
+            RotationEngine.apply(ctx.player(), rot, baritone.settings(), true);
 
-            // Wymagane min. 2 ticki ustabilizowania celownika przed rozpoczęciem łamania bloku
-            if (RotationEngine.isSettled(config.preRotationTicks)) {
+            int requiredSettle = Baritone.settings().fastBreak.value ? 0 : config.preRotationTicks;
+            if (RotationEngine.isSettled(requiredSettle)) {
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
                 ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(toBreak));
 
                 if (world.getBlockState(toBreak).isAir()) {
                     RotationEngine.notifyBlockBroken(toBreak);
-                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                    boolean continuous = ContinuousBreakController.shouldHoldThrough(ctx, new BetterBlockPos(frontFeet), null);
+                    if (!continuous) {
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                        this.breakCooldownTicks = Baritone.settings().fastBreak.value ? 0 : (int) (Math.random() * 2);
+                    } else {
+                        this.breakCooldownTicks = 0;
+                    }
                     currentTarget = null;
-                    // Losowy offset 0-50ms do czasu następnego bloku
-                    this.breakCooldownTicks = (int) (Math.random() * 2);
                 }
             }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -161,6 +167,9 @@ public class StaircaseBuilder {
 
     private boolean isPassable(Level world, BlockPos pos) {
         BlockState state = world.getBlockState(pos);
+        if (ObstructionHelper.isClearableObstruction(state)) {
+            return false;
+        }
         return state.isAir() || state.canBeReplaced();
     }
 }

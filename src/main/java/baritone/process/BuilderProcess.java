@@ -27,6 +27,7 @@ import baritone.utils.builder.SmoothLookHelper;
 import baritone.utils.schematic.SchematicSystem;
 import baritone.utils.schematic.litematica.LitematicaHelper;
 import baritone.utils.schematic.schematica.SchematicaHelper;
+import baritone.utils.player.BaritonePlayerController;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
@@ -501,13 +502,6 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             for (int y = yStart; y < yEnd; y++) {
                 for (int z = 0; z < schematic.length(); z++) {
                     for (int x = 0; x < schematic.width(); x++) {
-                        BlockState want = schematic.desiredState(x, y, z);
-                        if (isUnplaceable(want)) {
-                            continue; // air, fluids, bubble column, portals, etc.
-                        }
-                        if (isAutoPlacedSecondaryPart(want)) {
-                            continue; // door upper half / bed head appear automatically
-                        }
                         BetterBlockPos pos = new BetterBlockPos(ox + x, oy + y, oz + z);
                         if (resigned.contains(pos) || !world.hasChunkAt(pos)) {
                             continue;
@@ -515,7 +509,18 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                         if (scheduler.isRecentlyPlaced(pos)) {
                             continue;
                         }
-                        if (BlockStateResolver.statesMatch(want, world.getBlockState(pos))) {
+                        BlockState cur = world.getBlockState(pos);
+                        if (!schematic.inSchematic(x, y, z, cur)) {
+                            continue;
+                        }
+                        BlockState want = schematic.desiredState(x, y, z, cur, Collections.emptyList());
+                        if (want == null || isUnplaceable(want)) {
+                            continue; // air, fluids, bubble column, portals, etc.
+                        }
+                        if (isAutoPlacedSecondaryPart(want)) {
+                            continue; // door upper half / bed head appear automatically
+                        }
+                        if (BlockStateResolver.statesMatch(want, cur)) {
                             continue;
                         }
                         fresh.add(new Target(pos, want));
@@ -675,8 +680,8 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             return standStill();
         }
 
-        // Snap client rotation to match planned rotation exactly for raycast consistency
-        player.setYRot(plan.rotation.getYaw());
+        // Snap client rotation to match planned rotation exactly for raycast consistency (continuous yaw)
+        player.setYRot(player.getYRot() + Mth.wrapDegrees(plan.rotation.getYaw() - player.getYRot()));
         player.setXRot(plan.rotation.getPitch());
 
         // GrimAC guard 2: Active raycast verification with current player eye position and view angles
@@ -726,8 +731,8 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             }
         }
 
-        // Set player rotation directly so vanilla tick sends movement packet naturally without extra flying packet
-        player.setYRot(plan.rotation.getYaw());
+        // Set player rotation directly so vanilla tick sends movement packet naturally without extra flying packet (continuous yaw)
+        player.setYRot(player.getYRot() + Mth.wrapDegrees(plan.rotation.getYaw() - player.getYRot()));
         player.setXRot(plan.rotation.getPitch());
         if (player.connection != null && plan.sneak) {
             player.connection.send(new ServerboundPlayerCommandPacket(
@@ -850,7 +855,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 best = d;
             }
         }
-        return best.getOpposite();
+        return BaritonePlayerController.getSafeBreakFace(player, pos, best.getOpposite());
     }
 
     // =====================================================================

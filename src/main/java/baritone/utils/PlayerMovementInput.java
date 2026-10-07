@@ -38,12 +38,21 @@ public class PlayerMovementInput extends ClientInput {
             ScreenInputGate.tickDown();
         }
 
-        // (2) Screen otwarty: false (default, Grim-safe) → zero input;
-        //     Gdy aktywny anty-cheat, zawsze wyzeruj input przy otwartym kontenerze (InventoryMove / OpenScreen)
+        // (2) Screen otwarty lub czyszczenie ekwipunku AutoDrop: zawsze zero input (GrimAC MultiActions safe)
         boolean screenOpen = Minecraft.getInstance().screen != null;
         boolean isContainerScreen = screenOpen && Minecraft.getInstance().screen instanceof net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
         boolean strictAntiCheat = Baritone.settings().antiCheatCompat.value || Baritone.settings().antiCheatCompatibility.value;
-        if (chatSuppressed || (screenOpen && (!Baritone.settings().inputWhileScreenOpen.value || (strictAntiCheat && isContainerScreen)))) {
+        boolean autoDropCleaning = handler != null && handler.baritone != null
+                && handler.baritone.getAutoDropProcess() != null
+                && handler.baritone.getAutoDropProcess().isCleaning();
+        boolean homeTeleporting = handler != null && handler.baritone != null
+                && handler.baritone.getHomeProcess() != null
+                && handler.baritone.getHomeProcess().isActive();
+        boolean autoEatSuppress = handler != null && handler.baritone != null
+                && handler.baritone.getAutoEatProcess() != null
+                && handler.baritone.getAutoEatProcess().isSuppressingMovement();
+
+        if (chatSuppressed || autoDropCleaning || homeTeleporting || autoEatSuppress || (screenOpen && (!Baritone.settings().inputWhileScreenOpen.value || (strictAntiCheat && isContainerScreen)))) {
             this.keyPresses = new net.minecraft.world.entity.player.Input(
                     false, false, false, false, false, false, false);
             this.forwardImpulse = 0.0F;
@@ -60,6 +69,31 @@ public class PlayerMovementInput extends ClientInput {
         boolean jump     = handler.isInputForcedDown(Input.JUMP);
         boolean sneak    = handler.isInputForcedDown(Input.SNEAK);
         boolean sprint   = handler.isInputForcedDown(Input.SPRINT);
+
+        boolean isBreaking = handler != null && handler.isInputForcedDown(Input.CLICK_LEFT);
+        if (isBreaking) {
+            sprint = false;
+        }
+
+        net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
+
+        // Niemal natychmiastowy sprint przy chodzeniu (zgodny z fizyką Vanilla i GrimAC):
+        // Jeśli bot idzie w przód i dozwolony jest sprint, włącz sprint natychmiast w 1. ticku (jak wciśnięty klawisz sprintu w MC)
+        if (forward && !backward && !sneak && !isBreaking && Baritone.settings().allowSprint.value) {
+            if (player != null && player.getFoodData().getFoodLevel() > 6
+                    && !player.hasEffect(net.minecraft.world.effect.MobEffects.BLINDNESS)
+                    && (!player.horizontalCollision || player.minorHorizontalCollision)) {
+                boolean inWater = player.isInWater() && !player.isUnderWater();
+                if (!inWater || Baritone.settings().sprintInWater.value) {
+                    sprint = true;
+                }
+            }
+        }
+
+        // GrimAC / Vanilla physics: Nigdy nie sprintuj na powierzchni wody bez sprintInWater
+        if (player != null && player.isInWater() && !player.isUnderWater() && !Baritone.settings().sprintInWater.value) {
+            sprint = false;
+        }
 
         this.keyPresses = new net.minecraft.world.entity.player.Input(
                 forward, backward, left, right, jump, sneak, sprint);

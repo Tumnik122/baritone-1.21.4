@@ -30,7 +30,7 @@ public final class SmoothLookHelper {
     }
 
     public static void apply(LocalPlayer player, Rotation target, Settings settings, boolean blockInteract) {
-        if (settings.antiCheatCompat.value) {
+        if (settings == null || settings.antiCheatCompat.value || settings.smoothRotation.value) {
             baritone.bypass.RotationEngine.apply(player, target, settings, blockInteract);
             return;
         }
@@ -49,7 +49,7 @@ public final class SmoothLookHelper {
         if (Math.abs(dYaw) <= (blockInteract ? 0.35f : 1.0f) && Math.abs(dPitch) <= (blockInteract ? 0.35f : 1.0f)) {
             float ny = (!blockInteract && noise > 0) ? (float) rng.nextDouble(-0.05, 0.05) : 0f;
             float np = (!blockInteract && noise > 0) ? (float) rng.nextDouble(-0.05, 0.05) : 0f;
-            player.setYRot(Mth.wrapDegrees(target.getYaw() + ny));
+            player.setYRot(curYaw + dYaw + ny);
             player.setXRot(Mth.clamp(target.getPitch() + np, -90.0f, 90.0f));
             return;
         }
@@ -63,7 +63,7 @@ public final class SmoothLookHelper {
         float noiseYaw = (!blockInteract && noise > 0) ? (float) rng.nextDouble(-noise, noise) : 0f;
         float noisePitch = (!blockInteract && noise > 0) ? (float) rng.nextDouble(-noise, noise) : 0f;
 
-        player.setYRot(Mth.wrapDegrees(curYaw + yawStep + noiseYaw));
+        player.setYRot(curYaw + yawStep + noiseYaw);
         player.setXRot(Mth.clamp(curPitch + pitchStep + noisePitch, -90.0f, 90.0f));
     }
 

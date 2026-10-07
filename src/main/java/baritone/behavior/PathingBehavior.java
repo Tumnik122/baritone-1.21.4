@@ -132,6 +132,9 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     public void onPlayerSprintState(SprintStateEvent event) {
         if (isPathing() && current != null) {
             boolean sprint = current.isSprinting();
+            if (baritone.getFarmProcess().isActive()) {
+                sprint = false;
+            }
             event.setSprinting(sprint);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, sprint);
         } else if (baritone.getInputOverrideHandler().isInputForcedDown(Input.SPRINT)) {
@@ -180,11 +183,16 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     }
 
     private boolean handlePauseRequest() {
-        if (pauseRequestedLastTick && safeToCancel) {
+        if (pauseRequestedLastTick && (safeToCancel || ctx.player().onGround())) {
             pauseRequestedLastTick = false;
             if (unpausedLastTick) {
+                boolean wasBreaking = baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT);
                 baritone.getInputOverrideHandler().clearAllKeys();
-                baritone.getInputOverrideHandler().getBlockBreakHelper().stopBreakingBlock();
+                if (wasBreaking) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+                } else {
+                    baritone.getInputOverrideHandler().getBlockBreakHelper().stopBreakingBlock();
+                }
             }
             unpausedLastTick = false;
             pausedThisTick = true;

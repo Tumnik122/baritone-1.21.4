@@ -38,7 +38,7 @@ public class BypassConfig {
     public double mobStop = 8.0;
     public double mobRetreat = 4.0;
     public double mobResume = 12.0;
-    public double healthThreshold = 10.0;
+    public double healthThreshold = 12.0; // 6 serc (12 HP)
     public double mobDcDistance = 20.0;
     public boolean lavaAvoid = true;
     public boolean waterAvoid = true;
@@ -49,6 +49,8 @@ public class BypassConfig {
 
     // Inventory Cleaner / AutoDrop (Ochrona przed zapchaniem EQ)
     public boolean autoDropTrash = true;
+    public boolean autoLockSlots = true;
+    public String lockItem = "raw_iron";
     public List<String> trashBlocks = new ArrayList<>(Arrays.asList(
             "cobblestone", "cobbled_deepslate", "tuff", "dirt", "granite", "diorite", "andesite", "gravel"
     ));

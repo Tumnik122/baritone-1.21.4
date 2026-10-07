@@ -31,18 +31,28 @@ import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.MovementState;
 import baritone.utils.BlockStateInterface;
 import com.google.common.collect.ImmutableSet;
-import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.level.block.*;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.SlabType;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Set;
 
 public class MovementPillar extends Movement {
 
+    private int pillarJumpTicks = 0;
+
     public MovementPillar(IBaritone baritone, BetterBlockPos start, BetterBlockPos end) {
         super(baritone, start, end, new BetterBlockPos[]{start.above(2)}, start);
+    }
+
+    @Override
+    public void reset() {
+        super.reset();
+        pillarJumpTicks = 0;
     }
 
     @Override
@@ -82,6 +92,11 @@ public class MovementPillar extends Movement {
         }
         double placeCost = 0;
         if (!ladder) {
+            // Jeśli bot ścina drzewa (#mine log), całkowity ZAKAZ stawiania klocków pod sobą w powietrzu!
+            // Chroni przed budowaniem wież z ziemi w korony drzew i zacinaniem się bota.
+            if (context.getBaritone() != null && context.getBaritone().getMineProcess() != null && context.getBaritone().getMineProcess().isCuttingLogs()) {
+                return COST_INF;
+            }
             // we need to place a block where we started to jump on it
             placeCost = context.costOfPlacingAt(x, y, z, fromState);
             if (placeCost >= COST_INF) {
@@ -128,11 +143,16 @@ public class MovementPillar extends Movement {
                 //}
             }
         }
+        double total;
         if (ladder) {
-            return LADDER_UP_ONE_COST + hardness * 5;
+            total = LADDER_UP_ONE_COST + hardness * 5;
         } else {
-            return JUMP_ONE_BLOCK_COST + placeCost + context.jumpPenalty + hardness;
+            total = JUMP_ONE_BLOCK_COST + placeCost + context.jumpPenalty + hardness;
         }
+        if (context.avoidFluidProximity) {
+            total += MovementHelper.getFluidProximityPenalty(context, x, y + 1, z);
+        }
+        return total;
     }
 
     @Override
@@ -161,11 +181,11 @@ public class MovementPillar extends Movement {
         }
         boolean ladder = MovementHelper.isClimbable(fromDown.getBlock());
 
-        Rotation rotation = RotationUtils.calcRotationFromVec3d(ctx.playerHead(),
-                VecUtils.getBlockPosCenter(positionToPlace),
-                ctx.playerRotations());
+        // Podsadzanie pod siebie: celuj DOKŁADNIE w swoje nogi/stopy (Pitch = 90.0F)
+        // Zachowaj obecny Yaw gracza, aby głowa nie skręcała gwałtownie w prawo/lewo ani w sufit!
+        Rotation downRotation = new Rotation(ctx.playerRotations().getYaw(), 90.0F);
         if (!ladder) {
-            state.setTarget(new MovementState.MovementTarget(ctx.playerRotations().withPitch(rotation.getPitch()), true));
+            state.setTarget(new MovementState.MovementTarget(downRotation, true));
         }
 
         boolean blockIsThere = MovementHelper.canWalkOn(ctx, src) || ladder;
@@ -178,46 +198,52 @@ public class MovementPillar extends Movement {
             state.setInput(Input.JUMP, true);
             return state;
         } else {
-            // Get ready to place a throwaway block
+            // Przygotuj blok do podsadzenia
             if (!((Baritone) baritone).getInventoryBehavior().selectThrowawayForLocation(true, src.x, src.y, src.z)) {
                 return state.setStatus(MovementStatus.UNREACHABLE);
             }
 
-            state.setInput(Input.SNEAK, true);
-            // since (lower down) we only right click once player.isSneaking, and that happens the tick after we request to sneak
-
-            double diffX = ctx.player().position().x - (dest.getX() + 0.5);
-            double diffZ = ctx.player().position().z - (dest.getZ() + 0.5);
+            // Centrujemy gracza na środku bloku
+            double diffX = (dest.getX() + 0.5) - ctx.player().position().x;
+            double diffZ = (dest.getZ() + 0.5) - ctx.player().position().z;
             double dist = Math.sqrt(diffX * diffX + diffZ * diffZ);
-            double flatMotion = Math.sqrt(ctx.player().getDeltaMovement().x * ctx.player().getDeltaMovement().x + ctx.player().getDeltaMovement().z * ctx.player().getDeltaMovement().z);
-            if (dist > 0.17) {//why 0.17? because it seemed like a good number, that's why
-                //[explanation added after baritone port lol] also because it needs to be less than 0.2 because of the 0.3 sneak limit
-                //and 0.17 is reasonably less than 0.2
 
-                // If it's been more than forty ticks of trying to jump and we aren't done yet, go forward, maybe we are stuck
-                state.setInput(Input.MOVE_FORWARD, true);
-
-                // revise our target to both yaw and pitch if we're going to be moving forward
-                state.setTarget(new MovementState.MovementTarget(rotation, true));
-            } else if (flatMotion < 0.05) {
-                // If our Y coordinate is above our goal, stop jumping
-                state.setInput(Input.JUMP, ctx.player().position().y < dest.getY());
+            if (dist > 0.15) {
+                MovementHelper.moveTowards(ctx, state, dest);
             }
 
+            // Skaczemy pionowo w górę - bez niepotrzebnego croucha!
+            state.setInput(Input.JUMP, ctx.player().position().y < dest.getY() + 0.15);
 
             if (!blockIsThere) {
+                pillarJumpTicks++;
+                if (pillarJumpTicks > 30) {
+                    return state.setStatus(MovementStatus.FAILED);
+                }
                 BlockState frState = BlockStateInterface.get(ctx, src);
                 Block fr = frState.getBlock();
-                // TODO: Evaluate usage of getMaterial().isReplaceable()
                 if (!(fr instanceof AirBlock || frState.canBeReplaced())) {
                     RotationUtils.reachable(ctx, src, ctx.playerController().getBlockReachDistance())
                             .map(rot -> new MovementState.MovementTarget(rot, true))
                             .ifPresent(state::setTarget);
-                    state.setInput(Input.JUMP, false); // breaking is like 5x slower when you're jumping
+                    state.setInput(Input.JUMP, false);
                     state.setInput(Input.CLICK_LEFT, true);
                     blockIsThere = false;
-                } else if (ctx.player().isCrouching() && (ctx.isLookingAt(src.below()) || ctx.isLookingAt(src)) && ctx.player().position().y > dest.getY() + 0.1) {
-                    state.setInput(Input.CLICK_RIGHT, true);
+                } else {
+                    // Skieruj wzrok prosto w dół pod stopy gracza w trakcie skoku (GrimAC-safe)
+                    state.setTarget(new MovementState.MovementTarget(new Rotation(ctx.playerRotations().getYaw(), 89.5F), true));
+
+                    if (ctx.player().position().y >= src.getY() + 1.05) {
+                        // Kiedy stopy gracza są ponad poziomem docelowego bloku, postaw blok pod sobą
+                        state.setInput(Input.CLICK_RIGHT, true);
+                        BlockHitResult hit = new BlockHitResult(
+                                new Vec3(src.getX() + 0.5, src.getY(), src.getZ() + 0.5),
+                                Direction.UP,
+                                src.below(),
+                                false
+                        );
+                        ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, hit);
+                    }
                 }
             }
         }

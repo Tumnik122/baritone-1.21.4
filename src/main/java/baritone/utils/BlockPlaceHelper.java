@@ -116,7 +116,7 @@ public class BlockPlaceHelper {
         rightClickTimer = Math.max(0, baseSpeed + jitter - BASE_PLACE_DELAY);
 
         for (InteractionHand hand : InteractionHand.values()) {
-            if (ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), hand, (BlockHitResult) mouseOver) == InteractionResult.SUCCESS) {
+            if (ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), hand, (BlockHitResult) mouseOver).consumesAction()) {
                 ctx.player().swing(hand);
                 lastPlaceTarget = null; // reset so next placement also gets delay
                 return;

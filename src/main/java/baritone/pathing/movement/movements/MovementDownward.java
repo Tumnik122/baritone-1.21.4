@@ -63,12 +63,17 @@ public class MovementDownward extends Movement {
         }
         BlockState down = context.get(x, y - 1, z);
         Block downBlock = down.getBlock();
+        double total;
         if (downBlock == Blocks.LADDER || downBlock == Blocks.VINE) {
-            return LADDER_DOWN_ONE_COST;
+            total = LADDER_DOWN_ONE_COST;
         } else {
             // we're standing on it, while it might be block falling, it'll be air by the time we get here in the movement
-            return FALL_N_BLOCKS_COST[1] + MovementHelper.getMiningDurationTicks(context, x, y - 1, z, down, false);
+            total = FALL_N_BLOCKS_COST[1] + MovementHelper.getMiningDurationTicks(context, x, y - 1, z, down, false);
         }
+        if (context.avoidFluidProximity) {
+            total += MovementHelper.getFluidProximityPenalty(context, x, y - 1, z);
+        }
+        return total;
     }
 
     @Override

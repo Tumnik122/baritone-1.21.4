@@ -170,9 +170,19 @@ public final class Settings {
 
     /**
      * Allow Baritone to fall arbitrary distances and place a water bucket beneath it.
-     * Reliability: questionable.
      */
     public final Setting<Boolean> allowWaterBucketFall = new Setting<>(true);
+
+    /**
+     * Automatyczny MLG Water Clutch (ratunkowe stawianie wody pod sobą przy każdym upadku z wysokości).
+     * Błyskawiczny pre-aim w dół (pitch=90), dobór wiadra z wodą z hotbara/EQ i bezpieczne lądowanie.
+     */
+    public final Setting<Boolean> autoWaterClutch = new Setting<>(true);
+
+    /**
+     * Automatyczne podnoszenie wody wiadrem natychmiast po udanym water clutchu.
+     */
+    public final Setting<Boolean> autoWaterClutchPickup = new Setting<>(true);
 
     /**
      * Allow Baritone to assume it can walk on still water just like any other block.
@@ -243,7 +253,7 @@ public final class Settings {
      * <p>
      * Turn this off to force it to make more staircases and less shafts
      */
-    public final Setting<Boolean> allowDownward = new Setting<>(true);
+    public final Setting<Boolean> allowDownward = new Setting<>(false);
 
     /**
      * Blocks that Baritone is allowed to place (as throwaway, for sneak bridging, pillaring, etc.)
@@ -524,13 +534,24 @@ public final class Settings {
     /**
      * Block reach distance
      */
-    public final Setting<Float> blockReachDistance = new Setting<>(4.0f);
+    public final Setting<Float> blockReachDistance = new Setting<>(3.9f);
 
     /**
      * How many ticks between breaking a block and starting to break the next block. Default in game is 6 ticks.
      * Values under 1 will be clamped. The delay only applies to non-instant (1-tick) breaks.
      */
     public final Setting<Integer> blockBreakSpeed = new Setting<>(6);
+
+    /**
+     * Szybkie niszczenie bloków (FastBreak) dla kilofów z wysokim enchantem (Wydajność 10) lub instamine.
+     * Likwiduje 5-tickowe (250ms) opóźnienie vanilla oraz pauzy między kolejnymi blokami.
+     */
+    public final Setting<Boolean> fastBreak = new Setting<>(true);
+
+    /**
+     * Automatyczne wykrywanie kilofa z Wydajnością >= 10 i natychmiastowe dostosowanie prędkości kopania.
+     */
+    public final Setting<Boolean> autoDetectEfficiency10 = new Setting<>(true);
 
     /**
      * How many degrees to randomize the pitch and yaw every tick. Set to 0 to disable
@@ -680,9 +701,9 @@ public final class Settings {
     public final Setting<Integer> pathCutoffMinimumLength = new Setting<>(30);
 
     /**
-     * Start planning the next path once the remaining movements tick estimates sum up to less than this value
+     * Start planning the next path once the remaining movements tick estimates sum up to less than this value (40 ticks = 2s)
      */
-    public final Setting<Integer> planningTickLookahead = new Setting<>(150);
+    public final Setting<Integer> planningTickLookahead = new Setting<>(40);
 
     /**
      * Default size of the Long2ObjectOpenHashMap used in pathing
@@ -742,16 +763,17 @@ public final class Settings {
      * <p>
      * If no valid path (length above the minimum) has been found, pathing continues up until the failure timeout
      */
-    public final Setting<Long> primaryTimeoutMS = new Setting<>(2500L);
+    public final Setting<Long> primaryTimeoutMS = new Setting<>(1000L);
 
     /**
      * Pathing can never take longer than this, even if that means failing to find any path at all
      */
-    public final Setting<Long> failureTimeoutMS = new Setting<>(6000L);
+    public final Setting<Long> failureTimeoutMS = new Setting<>(3000L);
 
     /**
      * Startuj kopanie/ruch natychmiast po obliczeniu pierwszego segmentu trasy (kilka bloków),
-     * zamiast czekać na pełną trasę (Route 1/33 freeze fix).
+     * zamiast czekać na pełną trasę (Route 1/33 freeze fix). Domyślnie wyłączone, aby A*
+     * nie urywał tras na 8 krokach i nie zawieszał bota.
      */
     public final Setting<Boolean> startImmediatelyOnFirstSegment = new Setting<>(false);
 
@@ -1000,7 +1022,7 @@ public final class Settings {
      * Maximum rotation speed in degrees per tick when humanizedRotations is enabled.
      * Realistic human turning speed is between 15° and 35° per tick.
      */
-    public final Setting<Float> maxRotationSpeedPerTick = new Setting<>(28.0F);
+    public final Setting<Float> maxRotationSpeedPerTick = new Setting<>(140.0F);
 
     /**
      * Subtle micro-noise amplitude added to smooth aim trajectories while strictly adhering to GCD.
@@ -1023,6 +1045,37 @@ public final class Settings {
      * Introduce humanized reaction delays (1-2 ticks) and jittered click intervals for bridging and breaking.
      */
     public final Setting<Boolean> humanizedInteractDelay = new Setting<>(true);
+
+    /**
+     * Włącz pełną kompatybilność z GrimAC.
+     * Gdy true: rotations są kwantyzowane do GCD, movement jest walidowany,
+     * kopanie używa bezpiecznego reach i poprawnej sekwencji pakietów.
+     */
+    public final Setting<Boolean> grimCompat = new Setting<>(true);
+
+    /**
+     * Czułość myszki dla obliczenia GCD rotacji.
+     * Musi odpowiadać rzeczywistej czułości w opcjach Minecraft.
+     * Zakres: 0.0 - 1.0 (vanilla slider)
+     */
+    public final Setting<Float> grimMouseSensitivity = new Setting<>(0.5F);
+
+    /**
+     * Bezpieczny zasięg interakcji (kratki).
+     * Waniliowy to 4.5, ale Grim sprawdza więcej niż 4.0.
+     */
+    public final Setting<Double> grimSafeReach = new Setting<>(4.0);
+
+    /**
+     * Czy wymuszać sprint tylko zgodnie z logiką waniliową.
+     */
+    public final Setting<Boolean> grimStrictSprint = new Setting<>(true);
+
+    /**
+     * Opóźnienie między blokami przy budowaniu (ticki).
+     * Zapobiega podejrzanemu instant-place.
+     */
+    public final Setting<Integer> grimBlockPlaceDelay = new Setting<>(2);
 
     /**
      * Display a modern on-screen HUD overlay showing Baritone's current status and live gathered block counters.
@@ -1228,7 +1281,7 @@ public final class Settings {
      * Note that the number of locations retrieved from cache is additionaly
      * limited by {@link #maxCachedWorldScanCount}.
      */
-    public final Setting<Integer> mineMaxOreLocationsCount = new Setting<>(64);
+    public final Setting<Integer> mineMaxOreLocationsCount = new Setting<>(256);
 
     /**
      * Sets the minimum y level whilst mining - set to 0 to turn off.
@@ -1291,6 +1344,46 @@ public final class Settings {
      * Farming will scan for at most this many blocks.
      */
     public final Setting<Integer> farmMaxScanSize = new Setting<>(256);
+
+    /**
+     * Seconds without gaining any harvested items in inventory before triggering the failsafe command (e.g. /home 2).
+     * Default: 120 (2 minutes). Set to 0 to disable.
+     */
+    public final Setting<Integer> farmNoGainTimeoutSeconds = new Setting<>(120);
+
+    /**
+     * Command to execute when the farm failsafe triggers (without leading slash).
+     * Default: "home 2"
+     */
+    public final Setting<String> farmNoGainCommand = new Setting<>("home 2");
+
+    /**
+     * Tryb maksymalnej prędkości farmy i sadzenia (Full Odpal / Co Tick Bypass).
+     * Gdy włączone:
+     * - Błyskawiczna rotacja GCD bez opóźnień i bez zacięć.
+     * - Zbiór plonów i ponowne zasianie w tym samym ticku (1 tick = zbiór + replant).
+     * - Omijanie kolizji roślin i bezpośrednia interakcja z blokami w zasięgu.
+     * - Sadzenie nasion co każdy tick (20 bloków/s) w pełnym sprincie.
+     * Gdy wyłączone: tryb Legit ze stopniowym C2 smootherstep.
+     */
+    public final Setting<Boolean> farmFastMode = new Setting<>(true);
+
+    /**
+     * Eksperymentalny tryb #praca / farm: zbieranie przedmiotów leżących na ziemi,
+     * gdy w promieniu farmLowCropRadius (domyślnie 100) jest mniej niż farmLowCropThreshold (domyślnie 200) dojrzałych plonów.
+     */
+    public final Setting<Boolean> farmCollectDropsWhenLowCrops = new Setting<>(false);
+
+    /**
+     * Próg liczby dojrzałych plonów w promieniu skanowania (domyślnie 200), poniżej którego włącza się zbieranie z ziemi.
+     */
+    public final Setting<Integer> farmLowCropThreshold = new Setting<>(200);
+
+    /**
+     * Promień sprawdzania liczby dojrzałych plonów dla trybu zbierania z ziemi (domyślnie 100 bloków).
+     */
+    public final Setting<Integer> farmLowCropRadius = new Setting<>(100);
+
 
     /**
      * When the cache scan gives less blocks than the maximum threshold (but still above zero), scan the main world too.
@@ -1502,9 +1595,106 @@ public final class Settings {
     public final Setting<Boolean> autoLogout = new Setting<>(false);
 
     /**
+     * Tryb Anarchia: kompleksowy profil dla serwerów Anarchia (np. Anarchy, Crystal, Survival bez zasad).
+     * Automatycznie aktywuje:
+     * 1. AutoDrop Trash (wyrzucanie śmieci: bruk, ziemia, łupek itp.)
+     * 2. AutoSort Inventory (automatyczne segregowanie i układanie ekwipunku)
+     * 3. AutoLogout przy zdrowiu poniżej 6 serc (< 12 HP)
+     * 4. AutoLogout przy spadaniu z wysokości powyżej 5 kratek (> 5 bloków)
+     */
+    public final Setting<Boolean> anarchiaMode = new Setting<>(false);
+
+    /**
+     * Automatyczne segregowanie ekwipunku (AutoSort).
+     * Uruchamiane natychmiast po czyszczeniu ekwipunku (AutoDrop) lub na żądanie (#sort / #segreguj).
+     * Łączy niepełne stacki, sortuje minerały i surowce, porządkuje hotbar pod kątem GrimAC (safe pacing).
+     */
+    public final Setting<Boolean> autoSortInventory = new Setting<>(true);
+
+    /**
+     * Czy AutoSort ma reorganizować pasek podręczny Hotbar (sloty 0-8).
+     * Domyślnie false, aby bot NIE przestawiał graczowi własnoręcznie ułożonych narzędzi, plonów i jedzenia.
+     */
+    public final Setting<Boolean> autoSortHotbar = new Setting<>(false);
+
+    /**
+     * Opóźnienie między kliknięciami w tickach podczas segregowania ekwipunku (GrimAC-safe pacing).
+     * Domyślnie 1 tick (50 ms) dla maksymalnej szybkości segregowania.
+     */
+    public final Setting<Integer> autoSortDelayTicks = new Setting<>(1);
+
+    /**
+     * Minimalny odstęp czasu w milisekundach między automatycznymi cyklami czyszczenia (#clean) i segregowania (#sort).
+     * Domyślnie 120 000 ms (2 minuty), aby bot nie zapętlał się w ciągłym wyrzucaniu i sortowaniu przedmiotów.
+     */
+    public final Setting<Long> cleanSortCooldownMs = new Setting<>(120000L);
+
+    /**
+     * Automatyczny powrót do bazy (#home 1) po zapełnieniu ekwipunku surowcami,
+     * oddanie wydobytych surowców do skrzynki i powrót do kopalni (#home 2)
+     * z automatycznym wznowieniem poprzedniego zadania (#mine).
+     */
+    public final Setting<Boolean> autoHomeOnFull = new Setting<>(true);
+
+    /**
+     * Czas oczekiwania w tickach na teleportację serwerową (domyślnie 140 ticków = 7 sekund,
+     * aby uwzględnić serwerowy warmup 5 sekund bez ruchu oraz załadowanie chunków po /home 1 i /home 2).
+     */
+    public final Setting<Integer> homeTeleportDelayTicks = new Setting<>(140);
+
+    /**
+     * Drastyczna optymalizacja zużycia RAM/CPU/GPU dla wielu instancji botów (5+ botów):
+     * zmniejsza render distance do 2 chunków, ogranicza FPS do 20 (10 w tle), wyłącza cienie, chmury,
+     * wyłącza zbędne renderowanie ścieżek 3D Baritone na ekranie i zwalnia RAM.
+     */
+    public final Setting<Boolean> botOptimizer = new Setting<>(false);
+
+    /**
+     * Auto-disconnect / logout gdy bot spada z wysokości lub wykryje przepaść głębszą niż disconnectFallDistance (domyślnie 5 kratek).
+     * Po rozłączeniu automatycznie przestawia się na false, aby zapobiec pętli rozłączeń.
+     */
+    public final Setting<Boolean> disconnectOnFall = new Setting<>(false);
+
+    /**
+     * Maksymalna dopuszczalna wysokość upadku w kratkach przed automatycznym rozłączeniem (domyślnie 5.0 kratek).
+     */
+    public final Setting<Double> disconnectFallDistance = new Setting<>(5.0D);
+
+    /**
      * Prevents MineProcess from pathing to or breaking blocks directly adjacent to lava.
      */
     public final Setting<Boolean> mineAvoidLava = new Setting<>(true);
+
+    /**
+     * Całkowity zakaz wchodzenia do wody (AI Negative Reward / Water Avoidance).
+     * Gdy włączone:
+     * - Wchodzenie do wody z lądu jest traktowane jako ruch niedozwolony (ActionCosts.COST_INF).
+     * - A* pathfinder wyznacza trasy wyłącznie suchym lądem, mostami i tunelami.
+     * - Jeśli gracz wpadnie do wody, trasy do wyjścia z wody są faworyzowane, a ruchy w głąb karane.
+     * - Real-time Safety Guard w PathExecutor natychmiast anuluje ruch, jeśli ścieżka prowadzi do wody.
+     */
+    public final Setting<Boolean> mineAvoidWater = new Setting<>(true);
+
+    /**
+     * Współczynnik kary (negative reward) za zbliżenie się do wody w algorytmie A*.
+     */
+    public final Setting<Double> waterAvoidPenalty = new Setting<>(5000.0D);
+
+    /**
+     * Współczynnik kary (negative reward) za zbliżenie się do lawy w algorytmie A*.
+     */
+    public final Setting<Double> lavaAvoidPenalty = new Setting<>(8000.0D);
+
+    /**
+     * Włącza dynamiczny bufor bezpieczeństwa (potential field) wokół wody i lawy.
+     * Pathfinder aktywnie wyznacza trasy z dala od brzegów wody i zbiorników lawy.
+     */
+    public final Setting<Boolean> avoidFluidProximity = new Setting<>(true);
+
+    /**
+     * Zasięg bufora bezpieczeństwa w blokach od wody i lawy (domyślnie 3 bloki).
+     */
+    public final Setting<Integer> fluidAvoidDistance = new Setting<>(3);
 
     /**
      * Zezwala na desperackie, ryzykowne ścieżki A* (współczynnik kosztu >= 3.0),
@@ -1538,6 +1728,21 @@ public final class Settings {
      * do that lol, so thats one reason why its disabled
      */
     public final Setting<Boolean> legitMineIncludeDiagonals = new Setting<>(false);
+
+    /**
+     * Co ile tickow skanowac otoczenie w poszukiwaniu rud ujawnionych przez Anti-Xray (10 tickow = 0.5s).
+     */
+    public final Setting<Integer> antiXrayScanIntervalTicks = new Setting<>(10);
+
+    /**
+     * Promien sprawdzania rud wokol gracza dla systemu Anti-Xray (w kratkach/blokach). Domyslnie 7.
+     */
+    public final Setting<Integer> antiXrayScanRadius = new Setting<>(7);
+
+    /**
+     * Automatyczny tryb poszukiwania i omijania anty-xraya, gdy poczatkowy skan chunkow nie znajdzie zadnych rud.
+     */
+    public final Setting<Boolean> antiXrayBypass = new Setting<>(true);
 
     /**
      * When mining block of a certain type, try to mine two at once instead of one.
@@ -1955,12 +2160,13 @@ public final class Settings {
     /**
      * Automatically pause Baritone, select food, eat until full/healed, and resume pathing
      */
-    public final Setting<Boolean> autoEat = new Setting<>(false);
+    public final Setting<Boolean> autoEat = new Setting<>(true);
 
     /**
-     * Minimum hunger level before autoEat triggers eating (max 20)
+     * Minimum hunger level before autoEat triggers eating (max 20).
+     * Domyślnie 10 (czyli 5 udek / 50% paska głodu).
      */
-    public final Setting<Integer> autoEatThreshold = new Setting<>(16);
+    public final Setting<Integer> autoEatThreshold = new Setting<>(10);
 
     /**
      * Health threshold below which autoEat will trigger even if hunger is above autoEatThreshold
@@ -2015,6 +2221,37 @@ public final class Settings {
     public final Setting<Boolean> autoEatSearchInventory = new Setting<>(true);
 
     /**
+     * Automatically drop trash blocks (cobblestone, deepslate, dirt, etc.) leaving only resources, pickaxes, and food.
+     */
+    public final Setting<Boolean> autoDropTrash = new Setting<>(true);
+
+    /**
+     * Threshold of free slots (0..35) below or equal to which AutoDrop will trigger (default: 1 free slot).
+     */
+    public final Setting<Integer> autoDropThreshold = new Setting<>(1);
+
+    /**
+     * Delay in milliseconds between dropping individual stacks (default 100ms = 2 ticks, GrimAC safe).
+     */
+    public final Setting<Integer> autoDropDelayMs = new Setting<>(100);
+
+    /**
+     * Automatically fill empty inventory slots with 1 item of raw iron or target resource (Slot Locking),
+     * preventing garbage blocks (cobblestone, deepslate, dirt, etc.) from ever being picked up while mining.
+     */
+    public final Setting<Boolean> autoLockResource = new Setting<>(true);
+
+    /**
+     * Preferred item name for slot locking (default: "raw_iron").
+     */
+    public final Setting<String> autoLockItemName = new Setting<>("raw_iron");
+
+    /**
+     * Delay in ticks between distributing resource items into empty slots during slot locking (default: 1 tick = 50ms, GrimAC safe).
+     */
+    public final Setting<Integer> autoLockDelayTicks = new Setting<>(1);
+
+    /**
      * Display player health and hunger on the HUD
      */
     public final Setting<Boolean> hudShowHealth = new Setting<>(true);
@@ -2063,6 +2300,41 @@ public final class Settings {
      * Scale multiplier for the HUD overlay
      */
     public final Setting<Double> hudScale = new Setting<>(1.0D);
+
+    /**
+     * Automatically attack hostile mobs (monsters) within reach to defend the bot.
+     */
+    public final Setting<Boolean> mobDefense = new Setting<>(true);
+
+    /**
+     * Maximum reach distance in blocks for mob defense attacks (default: 4.2, GrimAC safe).
+     */
+    public final Setting<Double> mobDefenseRange = new Setting<>(4.2D);
+
+    /**
+     * Automatically switch to the best weapon (sword/axe/mace/pickaxe) in the hotbar during mob defense.
+     */
+    public final Setting<Boolean> mobDefenseSwitchWeapon = new Setting<>(true);
+
+    /**
+     * Attack creepers during mob defense.
+     */
+    public final Setting<Boolean> mobDefenseAttackCreepers = new Setting<>(true);
+
+    /**
+     * When a creeper is detected nearby, disconnect (Auto-Logout) immediately to protect against explosions.
+     */
+    public final Setting<Boolean> mobDefenseLogoutOnCreeper = new Setting<>(false);
+
+    /**
+     * Enable Windows HTTP controller & Web Dashboard for controlling the bot externally from Windows.
+     */
+    public final Setting<Boolean> windowsControllerEnabled = new Setting<>(true);
+
+    /**
+     * Base HTTP port for the Windows controller (default: 21420; offset by botNum).
+     */
+    public final Setting<Integer> windowsControllerPort = new Setting<>(21420);
 
     /**
      * A map of lowercase setting field names to their respective setting

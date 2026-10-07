@@ -23,13 +23,19 @@ import baritone.api.pathing.movement.MovementStatus;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
+import baritone.api.utils.RayTraceUtils;
+import baritone.api.utils.ObstructionHelper;
 import baritone.api.utils.VecUtils;
 import baritone.api.utils.input.Input;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.MovementState;
 import baritone.utils.BlockStateInterface;
+import baritone.utils.ContinuousBreakController;
+import baritone.utils.FastBreakHelper;
 import com.google.common.collect.ImmutableSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.AirBlock;
@@ -53,6 +59,7 @@ public class MovementTraverse extends Movement {
      * Did we have to place a bridge block or was it always there
      */
     private boolean wasTheBridgeBlockAlwaysThere = true;
+    private int wrongYTicks = 0;
 
     public MovementTraverse(IBaritone baritone, BetterBlockPos from, BetterBlockPos to) {
         super(baritone, from, to, new BetterBlockPos[]{to.above(), to}, to.below());
@@ -62,6 +69,7 @@ public class MovementTraverse extends Movement {
     public void reset() {
         super.reset();
         wasTheBridgeBlockAlwaysThere = true;
+        wrongYTicks = 0;
     }
 
     @Override
@@ -71,7 +79,7 @@ public class MovementTraverse extends Movement {
 
     @Override
     protected Set<BetterBlockPos> calculateValidPositions() {
-        return ImmutableSet.of(src, dest); // src.above means that we don't get caught in an infinite loop in water
+        return ImmutableSet.of(src, dest, src.above(), dest.above()); // src.above and dest.above mean that we don't get caught in an infinite loop in water
     }
 
     public static double cost(CalculationContext context, int x, int y, int z, int destX, int destZ) {
@@ -87,7 +95,16 @@ public class MovementTraverse extends Movement {
             boolean water = false;
             boolean sneaking = false;
             if (MovementHelper.isWater(pb0) || MovementHelper.isWater(pb1)) {
-                WC = context.waterWalkSpeed;
+                if (context.mineAvoidWater) {
+                    boolean inWater = MovementHelper.isWater(context.get(x, y, z));
+                    if (!inWater) {
+                        WC = context.waterWalkSpeed + Baritone.settings().waterAvoidPenalty.value * 2;
+                    } else {
+                        WC = context.waterWalkSpeed + Baritone.settings().waterAvoidPenalty.value;
+                    }
+                } else {
+                    WC = context.waterWalkSpeed;
+                }
                 water = true;
             } else {
                 if (destOn.getBlock() == Blocks.SOUL_SAND) {
@@ -95,7 +112,11 @@ public class MovementTraverse extends Movement {
                 } else if (frostWalker) {
                     // with frostwalker we can walk on water without the penalty, if we are sure we won't be using jesus
                 } else if (destOn.getBlock() == Blocks.WATER) {
-                    WC += context.walkOnWaterOnePenalty;
+                    if (context.mineAvoidWater) {
+                        WC += context.walkOnWaterOnePenalty + Baritone.settings().waterAvoidPenalty.value;
+                    } else {
+                        WC += context.walkOnWaterOnePenalty;
+                    }
                 }
                 if (srcDownBlock == Blocks.SOUL_SAND) {
                     WC += (WALK_ONE_OVER_SOUL_SAND_COST - WALK_ONE_BLOCK_COST) / 2;
@@ -116,13 +137,20 @@ public class MovementTraverse extends Movement {
                     // Don't check for soul sand, since we can sprint on that too
                     WC *= SPRINT_MULTIPLIER;
                 }
+                if (context.avoidFluidProximity) {
+                    WC += MovementHelper.getFluidProximityPenalty(context, destX, y, destZ);
+                }
                 return WC;
             }
             if (MovementHelper.isClimbable(srcDownBlock)) {
                 hardness1 *= 5;
                 hardness2 *= 5;
             }
-            return WC + hardness1 + hardness2;
+            double totalWalk = WC + hardness1 + hardness2;
+            if (context.avoidFluidProximity) {
+                totalWalk += MovementHelper.getFluidProximityPenalty(context, destX, y, destZ);
+            }
+            return totalWalk;
         } else {//this is a bridge, so we need to place a block
             if (MovementHelper.isClimbable(srcDownBlock)) {
                 return COST_INF;
@@ -132,8 +160,7 @@ public class MovementTraverse extends Movement {
             }
             if (MovementHelper.isReplaceable(destX, y - 1, destZ, destOn, context.bsi)) {
                 boolean throughWater = MovementHelper.isWater(pb0) || MovementHelper.isWater(pb1);
-                if (MovementHelper.isWater(destOn) && throughWater) {
-                    // this happens when assume walk on water is true and this is a traverse in water, which isn't allowed
+                if (MovementHelper.isWater(destOn) && throughWater && Baritone.settings().assumeWalkOnWater.value) {
                     return COST_INF;
                 }
                 double placeCost = context.costOfPlacingAt(destX, y - 1, destZ, destOn);
@@ -154,7 +181,11 @@ public class MovementTraverse extends Movement {
                         continue;
                     }
                     if (MovementHelper.canPlaceAgainst(context.bsi, againstX, againstY, againstZ)) { // found a side place option
-                        return WC + placeCost + hardness1 + hardness2;
+                        double totalBridge = WC + placeCost + hardness1 + hardness2;
+                        if (context.avoidFluidProximity) {
+                            totalBridge += MovementHelper.getFluidProximityPenalty(context, destX, y, destZ);
+                        }
+                        return totalBridge;
                     }
                 }
                 // now that we've checked all possible directions to side place, we actually need to backplace
@@ -169,7 +200,11 @@ public class MovementTraverse extends Movement {
                     return COST_INF; // we can stand on these but can't place against them
                 }
                 WC = WC * (SNEAK_ONE_BLOCK_COST / WALK_ONE_BLOCK_COST);//since we are sneak backplacing, we are sneaking lol
-                return WC + placeCost + hardness1 + hardness2;
+                double totalBridge = WC + placeCost + hardness1 + hardness2;
+                if (context.avoidFluidProximity) {
+                    totalBridge += MovementHelper.getFluidProximityPenalty(context, destX, y, destZ);
+                }
+                return totalBridge;
             }
             return COST_INF;
         }
@@ -196,28 +231,23 @@ public class MovementTraverse extends Movement {
             if (MovementHelper.avoidWalkingInto(pb1)) {
                 return state;
             }
-            // and we aren't already pressed up against the block
+            // and we aren't already pressed up against the block (chyba że szybki kilof - wtedy biegniemy ciągle)
             double dist = Math.max(Math.abs(ctx.player().position().x - (dest.getX() + 0.5D)), Math.abs(ctx.player().position().z - (dest.getZ() + 0.5D)));
-            if (dist < 0.83) {
+            if (dist < 0.83 && !FastBreakHelper.isFastPickaxe(ctx)) {
                 return state;
             }
-            if (!state.getTarget().getRotation().isPresent()) {
+            if (!state.getTarget().getRotation().isPresent() && !FastBreakHelper.isFastPickaxe(ctx)) {
                 // this can happen rarely when the server lags and doesn't send the falling sand entity until you've already walked through the block and are now mining the next one
                 return state;
             }
 
-            // combine the yaw to the center of the destination, and the pitch to the specific block we're trying to break
-            // it's safe to do this since the two blocks we break (in a traverse) are right on top of each other and so will have the same yaw
-            float yawToDest = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), VecUtils.calculateBlockCenter(ctx.world(), dest), ctx.playerRotations()).getYaw();
-            float pitchToBreak = state.getTarget().getRotation().get().getPitch();
-            if ((MovementHelper.isBlockNormalCube(pb0) || pb0.getBlock() instanceof AirBlock && (MovementHelper.isBlockNormalCube(pb1) || pb1.getBlock() instanceof AirBlock))) {
-                // in the meantime, before we're right up against the block, we can break efficiently at this angle
-                pitchToBreak = 26;
+            // Keep the exact block-aiming rotation established by prepared(state).
+            // Overriding pitch with 26 breaks line-of-sight and prevents CLICK_LEFT from triggering.
+            state.setInput(Input.MOVE_FORWARD, true);
+            if (FastBreakHelper.isFastPickaxe(ctx)) {
+                state.setInput(Input.SPRINT, true);
             }
-
-            return state.setTarget(new MovementState.MovementTarget(new Rotation(yawToDest, pitchToBreak), true))
-                    .setInput(Input.MOVE_FORWARD, true)
-                    .setInput(Input.SPRINT, true);
+            return state;
         }
 
         Block fd = BlockStateInterface.get(ctx, src.below()).getBlock();
@@ -248,22 +278,40 @@ public class MovementTraverse extends Movement {
             }
         }
 
-        boolean isTheBridgeBlockThere = MovementHelper.canWalkOn(ctx, positionToPlace) || ladder || MovementHelper.canUseFrostWalker(ctx, positionToPlace);
-        BlockPos feet = ctx.playerFeet();
-        if (feet.getY() != dest.getY() && !ladder) {
+        boolean inWater = MovementHelper.isLiquid(ctx, dest) || MovementHelper.isLiquid(ctx, src) || MovementHelper.isLiquid(ctx, ctx.playerFeet()) || ctx.player().isInWater();
+        boolean isTheBridgeBlockThere = inWater || MovementHelper.isLiquid(ctx, positionToPlace) || MovementHelper.canWalkOn(ctx, positionToPlace) || ladder || MovementHelper.canUseFrostWalker(ctx, positionToPlace);
+        BetterBlockPos feet = ctx.playerFeet();
+
+        // In water, swimming bot can be at dest or dest.above() (floating on surface)
+        if (inWater) {
+            if (feet.equals(dest) || feet.equals(dest.above()) || (feet.getX() == dest.getX() && feet.getZ() == dest.getZ() && Math.abs(ctx.player().position().y - dest.getY()) < 1.8)) {
+                return state.setStatus(MovementStatus.SUCCESS);
+            }
+        }
+
+        if (feet.getY() != dest.getY() && !ladder && !inWater) {
             if (MovementHelper.isLava(BlockStateInterface.get(ctx, feet)) || MovementHelper.isLava(BlockStateInterface.get(ctx, feet.below()))) {
                 return state.setStatus(MovementStatus.FAILED);
             }
             logDebug("Wrong Y coordinate");
             if (feet.getY() < dest.getY()) {
+                wrongYTicks++;
+                if (wrongYTicks > 15) {
+                    return state.setStatus(MovementStatus.FAILED);
+                }
                 logDebug("In movement traverse");
-                return state.setInput(Input.JUMP, true);
+                MovementHelper.moveTowards(ctx, state, dest);
+                if (MovementHelper.canWalkThrough(ctx, feet.above(2))) {
+                    state.setInput(Input.JUMP, true);
+                }
+                return state;
             }
+            MovementHelper.moveTowards(ctx, state, dest);
             return state;
         }
 
         if (isTheBridgeBlockThere) {
-            if (feet.equals(dest)) {
+            if (feet.equals(dest) || (inWater && (feet.equals(dest.above()) || (feet.getX() == dest.getX() && feet.getZ() == dest.getZ() && Math.abs(ctx.player().position().y - dest.getY()) < 1.8)))) {
                 return state.setStatus(MovementStatus.SUCCESS);
             }
             if (Baritone.settings().overshootTraverse.value && (feet.equals(dest.offset(getDirection())) || feet.equals(dest.offset(getDirection()).offset(getDirection())))) {
@@ -279,12 +327,16 @@ public class MovementTraverse extends Movement {
             BlockPos into = dest.subtract(src).offset(dest);
             BlockState intoBelow = BlockStateInterface.get(ctx, into);
             BlockState intoAbove = BlockStateInterface.get(ctx, into.above());
-            if (wasTheBridgeBlockAlwaysThere && (!MovementHelper.isLiquid(ctx, feet) || Baritone.settings().sprintInWater.value) && (!MovementHelper.avoidWalkingInto(intoBelow) || MovementHelper.isWater(intoBelow)) && !MovementHelper.avoidWalkingInto(intoAbove)) {
+            if (!inWater && (FastBreakHelper.isFastPickaxe(ctx) || !hasUnbrokenPositionsToBreak()) && wasTheBridgeBlockAlwaysThere && (!MovementHelper.isLiquid(ctx, feet) || Baritone.settings().sprintInWater.value) && (!MovementHelper.avoidWalkingInto(intoBelow) || MovementHelper.isWater(intoBelow)) && !MovementHelper.avoidWalkingInto(intoAbove)) {
                 state.setInput(Input.SPRINT, true);
             }
 
             BlockState destDown = BlockStateInterface.get(ctx, dest.below());
             if (feet.getY() != dest.getY() && ladder && MovementHelper.isClimbable(destDown.getBlock())) {
+                state.setInput(Input.JUMP, true);
+            }
+            if (inWater && !MovementHelper.isLiquid(ctx, dest) && MovementHelper.canWalkOn(ctx, dest.below())) {
+                // Stepping out of water onto land ledge requires jump in vanilla
                 state.setInput(Input.JUMP, true);
             }
             MovementHelper.moveTowards(ctx, state, positionsToBreak[0]);
@@ -378,6 +430,36 @@ public class MovementTraverse extends Movement {
                 state.setInput(Input.SNEAK, true);
             }
         }
+
+        // Gdy gracz posiada szybki kilof i kopie prosto w korytarzu:
+        // Blokujemy celownik prosto wzdłuż korytarza (yaw = kierunek ruchu, pitch = 11.5° obejmujący oba bloki),
+        // trzymamy ciągły bieg w przód i sprint.
+        if (FastBreakHelper.isFastPickaxe(ctx)) {
+            boolean headSolid = !MovementHelper.canWalkThrough(ctx, dest.above());
+            boolean feetSolid = !MovementHelper.canWalkThrough(ctx, dest);
+            if (headSolid || feetSolid) {
+                float yaw = (float) Math.toDegrees(Math.atan2(-(dest.getX() - src.getX()), dest.getZ() - src.getZ()));
+                double dist = Math.max(Math.abs(ctx.player().position().x - (dest.getX() + 0.5D)), Math.abs(ctx.player().position().z - (dest.getZ() + 0.5D)));
+                float pitch = (feetSolid && dist < 0.95) ? 26.0f : 11.5f;
+                Rotation straightRot = new Rotation(yaw, pitch);
+
+                BetterBlockPos toBreak = headSolid ? dest.above() : dest;
+                HitResult hit = RayTraceUtils.rayTraceTowards(ctx.player(), ctx.playerRotations(), ctx.playerController().getBlockReachDistance(), false);
+                BlockPos hitBlock = (hit instanceof BlockHitResult bhr && hit.getType() == HitResult.Type.BLOCK) ? bhr.getBlockPos() : null;
+                BetterBlockPos actualTarget = toBreak;
+                if (hitBlock != null && ObstructionHelper.isClearableObstruction(ctx.world().getBlockState(hitBlock))) {
+                    actualTarget = new BetterBlockPos(hitBlock);
+                }
+                MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, actualTarget));
+                state.setTarget(new MovementState.MovementTarget(straightRot, true));
+                state.setInput(Input.CLICK_LEFT, true);
+                state.setInput(Input.MOVE_FORWARD, true);
+                state.setInput(Input.SPRINT, true);
+                ContinuousBreakController.notifyBreaking(ctx, actualTarget);
+                return false;
+            }
+        }
+
         return super.prepared(state);
     }
 }

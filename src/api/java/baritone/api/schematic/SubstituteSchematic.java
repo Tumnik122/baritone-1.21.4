@@ -48,21 +48,29 @@ public class SubstituteSchematic extends AbstractSchematic {
     @Override
     public BlockState desiredState(int x, int y, int z, BlockState current, List<BlockState> approxPlaceable) {
         BlockState desired = schematic.desiredState(x, y, z, current, approxPlaceable);
+        if (desired == null) {
+            return Blocks.AIR.defaultBlockState();
+        }
         Block desiredBlock = desired.getBlock();
-        if (!substitutions.containsKey(desiredBlock)) {
+        if (substitutions == null || !substitutions.containsKey(desiredBlock)) {
             return desired;
         }
         List<Block> substitutes = substitutions.get(desiredBlock);
-        if (substitutes.contains(current.getBlock()) && !(current.getBlock() instanceof AirBlock)) {// don't preserve air, it's almost always there and almost never wanted
+        if (substitutes == null || substitutes.isEmpty()) {
+            return desired;
+        }
+        if (current != null && substitutes.contains(current.getBlock()) && !(current.getBlock() instanceof AirBlock)) {// don't preserve air, it's almost always there and almost never wanted
             return withBlock(desired, current.getBlock());
         }
         for (Block substitute : substitutes) {
             if (substitute instanceof AirBlock) {
-                return current.getBlock() instanceof AirBlock ? current : Blocks.AIR.defaultBlockState(); // can always "place" air
+                return (current != null && current.getBlock() instanceof AirBlock) ? current : Blocks.AIR.defaultBlockState(); // can always "place" air
             }
-            for (BlockState placeable : approxPlaceable) {
-                if (substitute.equals(placeable.getBlock())) {
-                    return withBlock(desired, placeable.getBlock());
+            if (approxPlaceable != null) {
+                for (BlockState placeable : approxPlaceable) {
+                    if (placeable != null && substitute.equals(placeable.getBlock())) {
+                        return withBlock(desired, placeable.getBlock());
+                    }
                 }
             }
         }

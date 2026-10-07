@@ -47,6 +47,7 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.CustomSpawner;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.level.dimension.LevelStem;
@@ -166,16 +167,22 @@ public final class BlockOptionalMeta {
         return block;
     }
 
-    public boolean matches(@Nonnull Block block) {
-        return block == this.block;
+    public boolean matches(Block block) {
+        return block != null && block == this.block;
     }
 
-    public boolean matches(@Nonnull BlockState blockstate) {
+    public boolean matches(BlockState blockstate) {
+        if (blockstate == null) {
+            return false;
+        }
         Block block = blockstate.getBlock();
         return block == this.block && stateHashes.contains(blockstate.hashCode());
     }
 
     public boolean matches(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
         //noinspection ConstantConditions
         int hash = ((IItemStack) (Object) stack).getBaritoneHash();
 
@@ -190,11 +197,11 @@ public final class BlockOptionalMeta {
     }
 
     public BlockState getAnyBlockState() {
-        if (blockstates.size() > 0) {
+        if (blockstates != null && !blockstates.isEmpty()) {
             return blockstates.iterator().next();
         }
 
-        return null;
+        return block != null ? block.defaultBlockState() : null;
     }
 
     public Set<BlockState> getAllBlockStates() {
@@ -222,13 +229,37 @@ public final class BlockOptionalMeta {
         return null;
     }
 
+    private static Item getKnownOreDrop(Block b) {
+        if (b == Blocks.IRON_ORE || b == Blocks.DEEPSLATE_IRON_ORE || b == Blocks.RAW_IRON_BLOCK) return Items.RAW_IRON;
+        if (b == Blocks.GOLD_ORE || b == Blocks.DEEPSLATE_GOLD_ORE || b == Blocks.RAW_GOLD_BLOCK) return Items.RAW_GOLD;
+        if (b == Blocks.COPPER_ORE || b == Blocks.DEEPSLATE_COPPER_ORE || b == Blocks.RAW_COPPER_BLOCK) return Items.RAW_COPPER;
+        if (b == Blocks.DIAMOND_ORE || b == Blocks.DEEPSLATE_DIAMOND_ORE) return Items.DIAMOND;
+        if (b == Blocks.COAL_ORE || b == Blocks.DEEPSLATE_COAL_ORE) return Items.COAL;
+        if (b == Blocks.EMERALD_ORE || b == Blocks.DEEPSLATE_EMERALD_ORE) return Items.EMERALD;
+        if (b == Blocks.LAPIS_ORE || b == Blocks.DEEPSLATE_LAPIS_ORE) return Items.LAPIS_LAZULI;
+        if (b == Blocks.REDSTONE_ORE || b == Blocks.DEEPSLATE_REDSTONE_ORE) return Items.REDSTONE;
+        if (b == Blocks.NETHER_GOLD_ORE) return Items.GOLD_NUGGET;
+        if (b == Blocks.NETHER_QUARTZ_ORE) return Items.QUARTZ;
+        if (b == Blocks.ANCIENT_DEBRIS) return Items.ANCIENT_DEBRIS;
+        return null;
+    }
+
     private static synchronized List<Item> drops(Block b) {
         return drops.computeIfAbsent(b, block -> {
+            List<Item> items = new ArrayList<>();
+            Item known = getKnownOreDrop(block);
+            if (known != null && !items.contains(known)) {
+                items.add(known);
+            }
+            Item selfItem = block.asItem();
+            if (selfItem != Items.AIR && !items.contains(selfItem)) {
+                items.add(selfItem);
+            }
+
             Optional<ResourceKey<LootTable>> optionalLootTableKey = block.getLootTable();
             if (optionalLootTableKey.isEmpty()) {
-                return Collections.emptyList();
+                return items;
             } else {
-                List<Item> items = new ArrayList<>();
                 try {
                     ServerLevel lv2 = ServerLevelStub.fastCreate();
 
@@ -236,9 +267,9 @@ public final class BlockOptionalMeta {
                         .withParameter(LootContextParams.ORIGIN, Vec3.ZERO)
                         .withParameter(LootContextParams.BLOCK_STATE, b.defaultBlockState())
                         .withParameter(LootContextParams.TOOL, new ItemStack(Items.NETHERITE_PICKAXE, 1));
-                    getDrops(block, lv5).stream().map(ItemStack::getItem).forEach(items::add);
+                    getDrops(block, lv5).stream().map(ItemStack::getItem).filter(it -> !items.contains(it)).forEach(items::add);
                 } catch (Throwable e) {
-                    e.printStackTrace();
+                    // Ignored - fallback already added above
                 }
                 return items;
             }

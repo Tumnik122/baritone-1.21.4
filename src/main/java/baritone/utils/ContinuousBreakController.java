@@ -40,23 +40,38 @@ public final class ContinuousBreakController {
      * (czyli: nie puszczać między blokami)
      */
     public static boolean shouldHoldThrough(IPlayerContext ctx, BetterBlockPos nextTarget, Rotation nextRot) {
-        if (!Baritone.settings().continuousBreaking.value) {
-            return false;
-        }
-        if (lastBreakPos == null || ctx == null || ctx.player() == null) {
+        if (lastBreakPos == null || ctx == null || ctx.player() == null || nextTarget == null) {
             return false;
         }
         int since = ctx.player().tickCount - lastBreakTick;
-        // ujemne = zmiana świata/relog — zeruj lepkość
-        if (since < 0 || since > Baritone.settings().breakHoldTicks.value) {
+        if (since < 0) {
             return false;
         }
         double dist = Math.sqrt(lastBreakPos.distSqr(nextTarget));
+        double angle = nextRot != null ? angleBetween(ctx.playerRotations(), nextRot) : 0.0;
+
+        if (FastBreakHelper.isFastBreakActive(ctx) || FastBreakHelper.isFastPickaxe(ctx)) {
+            if (since > 6) {
+                return false;
+            }
+            return dist <= 4.5 && (nextRot == null || angle <= 90.0);
+        }
+
+        // Natychmiastowe przejście między sąsiadującymi blokami (np. góra/dół w tunelu 1x2, dist <= 1.8 bloku)
+        if (dist <= 2.0 && since <= 4) {
+            return nextRot == null || angle <= 75.0;
+        }
+
+        if (!Baritone.settings().continuousBreaking.value) {
+            return false;
+        }
+        if (since > Baritone.settings().breakHoldTicks.value) {
+            return false;
+        }
         if (dist > Baritone.settings().breakHoldMaxDistance.value) {
             return false; // następne drzewo za daleko → normalne celowanie
         }
-        return angleBetween(ctx.playerRotations(), nextRot)
-                <= Baritone.settings().breakHoldMaxAngle.value;
+        return nextRot == null || angle <= Baritone.settings().breakHoldMaxAngle.value;
     }
 
     /** Zeruj przy: braku celu, końcu procesu, zmianie świata. */

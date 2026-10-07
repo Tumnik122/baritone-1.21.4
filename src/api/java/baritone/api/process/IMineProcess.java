@@ -113,4 +113,11 @@ public interface IMineProcess extends IBaritoneProcess {
     default void cancel() {
         onLostControl();
     }
+
+    /**
+     * Returns true if the active mining task is mining tree logs/wood.
+     */
+    default boolean isCuttingLogs() {
+        return false;
+    }
 }

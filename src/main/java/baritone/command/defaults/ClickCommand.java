@@ -22,6 +22,9 @@ import baritone.api.command.Command;
 import baritone.api.command.argument.IArgConsumer;
 import baritone.api.command.exception.CommandException;
 
+import com.astra.revolution.gui.BaritoneBypassScreen;
+import net.minecraft.client.Minecraft;
+
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Stream;
@@ -29,14 +32,15 @@ import java.util.stream.Stream;
 public class ClickCommand extends Command {
 
     public ClickCommand(IBaritone baritone) {
-        super(baritone, "click");
+        super(baritone, "click", "gui", "astra", "menu");
     }
 
     @Override
     public void execute(String label, IArgConsumer args) throws CommandException {
         args.requireMax(0);
-        baritone.openClick();
-        logDirect("aight dude");
+        Minecraft mc = Minecraft.getInstance();
+        mc.execute(() -> mc.setScreen(new BaritoneBypassScreen()));
+        logDirect("Otwarto Baritone Astra // Revolution GUI (v2.4). Klawisz: Prawy Shift (Right Shift)");
     }
 
     @Override
@@ -46,16 +50,20 @@ public class ClickCommand extends Command {
 
     @Override
     public String getShortDesc() {
-        return "Open click";
+        return "Open Astra Revolution GUI";
     }
 
     @Override
     public List<String> getLongDesc() {
         return Arrays.asList(
-                "Opens click dude",
+                "Otwiera nowoczesne GUI Baritone Astra // Revolution (v2.4).",
+                "Możesz także użyć klawisza Prawy Shift (Right Shift) w grze.",
                 "",
-                "Usage:",
-                "> click"
+                "Użycie:",
+                "> #click",
+                "> #gui",
+                "> #astra",
+                "> #menu"
         );
     }
 }

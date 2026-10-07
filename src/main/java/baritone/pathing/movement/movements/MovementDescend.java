@@ -74,7 +74,7 @@ public class MovementDescend extends Movement {
 
     @Override
     protected Set<BetterBlockPos> calculateValidPositions() {
-        return ImmutableSet.of(src, dest.above(), dest);
+        return ImmutableSet.of(src, dest.above(), dest, src.above());
     }
 
     public static void cost(CalculationContext context, int x, int y, int z, int destX, int destZ, MutableMoveResult res) {
@@ -109,6 +109,9 @@ public class MovementDescend extends Movement {
         //C, D, etc determine the length of the fall
 
         BlockState below = context.get(destX, y - 2, destZ);
+        if (context.mineAvoidWater && (MovementHelper.isWater(destDown) || MovementHelper.isWater(below))) {
+            totalCost += Baritone.settings().waterAvoidPenalty.value;
+        }
         if (!MovementHelper.canWalkOn(context, destX, y - 2, destZ, below)) {
             dynamicFallCost(context, x, y, z, destX, destZ, totalCost, below, res);
             return;
@@ -131,6 +134,9 @@ public class MovementDescend extends Movement {
         res.x = destX;
         res.y = y - 1;
         res.z = destZ;
+        if (context.avoidFluidProximity) {
+            totalCost += MovementHelper.getFluidProximityPenalty(context, destX, res.y, destZ);
+        }
         res.cost = totalCost;
     }
 
@@ -157,7 +163,13 @@ public class MovementDescend extends Movement {
             BlockState ontoBlock = context.get(destX, newY, destZ);
             int unprotectedFallHeight = fallHeight - (y - effectiveStartHeight); // equal to fallHeight - y + effectiveFallHeight, which is equal to -newY + effectiveFallHeight, which is equal to effectiveFallHeight - newY
             double tentativeCost = WALK_OFF_BLOCK_COST + FALL_N_BLOCKS_COST[unprotectedFallHeight] + frontBreak + costSoFar;
+            if (context.avoidFluidProximity) {
+                tentativeCost += MovementHelper.getFluidProximityPenalty(context, destX, newY, destZ);
+            }
             if (reachedMinimum && MovementHelper.isWater(ontoBlock)) {
+                if (context.mineAvoidWater) {
+                    tentativeCost += Baritone.settings().waterAvoidPenalty.value;
+                }
                 if (!MovementHelper.canWalkThrough(context, destX, newY, destZ, ontoBlock)) {
                     return false;
                 }
@@ -232,7 +244,8 @@ public class MovementDescend extends Movement {
 
         BlockPos playerFeet = ctx.playerFeet();
         BlockPos fakeDest = new BlockPos(dest.getX() * 2 - src.getX(), dest.getY(), dest.getZ() * 2 - src.getZ());
-        if ((playerFeet.equals(dest) || playerFeet.equals(fakeDest)) && (MovementHelper.isLiquid(ctx, dest) || ctx.player().position().y - dest.getY() < 0.5)) { // lilypads
+        boolean inLiquid = MovementHelper.isLiquid(ctx, dest) || MovementHelper.isLiquid(ctx, playerFeet) || ctx.player().isInWater();
+        if ((playerFeet.equals(dest) || playerFeet.equals(fakeDest) || (inLiquid && (playerFeet.equals(dest.above()) || (playerFeet.getX() == dest.getX() && playerFeet.getZ() == dest.getZ())))) && (inLiquid || ctx.player().position().y - dest.getY() < 0.5)) { // lilypads
             // Wait until we're actually on the ground before saying we're done because sometimes we continue to fall if the next action starts immediately
             return state.setStatus(MovementStatus.SUCCESS);
             /* else {

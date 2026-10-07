@@ -21,6 +21,7 @@ import baritone.api.IBaritone;
 import baritone.api.command.Command;
 import baritone.api.command.argument.IArgConsumer;
 import baritone.api.command.exception.CommandException;
+import baritone.process.HomeProcess;
 import baritone.api.command.exception.CommandInvalidStateException;
 import baritone.api.process.IBaritoneProcess;
 import baritone.api.process.PathingCommand;
@@ -182,6 +183,9 @@ public class ExecutionControlCommands {
                 baritone.getPathingBehavior().cancelEverything();
                 if (baritone instanceof baritone.Baritone baritoneImpl) {
                     baritoneImpl.getBypassProcess().stop();
+                }
+                if (!HomeProcess.isAutoHomeTriggered()) {
+                    HomeProcess.clearSavedMiningCommand();
                 }
                 logDirect("ok canceled");
             }

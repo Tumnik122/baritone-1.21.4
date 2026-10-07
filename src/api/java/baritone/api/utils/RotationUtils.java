@@ -56,7 +56,7 @@ public final class RotationUtils {
     /**
      * Offsets from the root block position to the center of each side.
      */
-    private static final Vec3[] BLOCK_SIDE_MULTIPLIERS = new Vec3[]{
+    public static final Vec3[] BLOCK_SIDE_MULTIPLIERS = new Vec3[]{
             new Vec3(0.5, 0, 0.5), // Down
             new Vec3(0.5, 1, 0.5), // Up
             new Vec3(0.5, 0.5, 0), // North
@@ -111,6 +111,12 @@ public final class RotationUtils {
      * @see #wrapAnglesToRelative(Rotation, Rotation)
      */
     public static Rotation calcRotationFromVec3d(Vec3 orig, Vec3 dest, Rotation current) {
+        double dx = orig.x - dest.x;
+        double dz = orig.z - dest.z;
+        if (dx * dx + dz * dz < 0.04D && current != null) {
+            // Zapobiega "tańczeniu" / gwałtownym obrotom w kółko gdy gracz stoi w punkcie docelowym
+            return new Rotation(current.getYaw(), current.getPitch());
+        }
         return wrapAnglesToRelative(current, calcRotationFromVec3d(orig, dest));
     }
 
@@ -186,7 +192,14 @@ public final class RotationUtils {
         if (pos instanceof BetterBlockPos) {
             pos = new BlockPos(pos.getX(), pos.getY(), pos.getZ());
         }
-        if (BaritoneAPI.getSettings().remainWithExistingLookDirection.value && ctx.isLookingAt(pos)) {
+        boolean alreadyLooking = ctx.isLookingAt(pos);
+        if (!alreadyLooking && ctx.getSelectedBlock().isPresent()) {
+            BlockPos sel = ctx.getSelectedBlock().get();
+            if (ObstructionHelper.isClearableObstruction(ctx.world().getBlockState(sel)) && ObstructionHelper.isCoveringOrAdjacent(sel, pos)) {
+                alreadyLooking = true;
+            }
+        }
+        if (BaritoneAPI.getSettings().remainWithExistingLookDirection.value && alreadyLooking) {
             /*
              * why add 0.0001?
              * to indicate that we actually have a desired pitch
@@ -198,14 +211,12 @@ public final class RotationUtils {
              * or if you're a normal person literally all this does it ensure that we don't nudge the pitch to a normal level
              */
             Rotation hypothetical = ctx.playerRotations().add(new Rotation(0, 0.0001F));
-            if (wouldSneak) {
-                // the concern here is: what if we're looking at it now, but as soon as we start sneaking we no longer are
-                HitResult result = RayTraceUtils.rayTraceTowards(ctx.player(), hypothetical, blockReachDistance, true);
-                if (result != null && result.getType() == HitResult.Type.BLOCK && ((BlockHitResult) result).getBlockPos().equals(pos)) {
-                    return Optional.of(hypothetical); // yes, if we sneaked we would still be looking at the block
+            HitResult result = RayTraceUtils.rayTraceTowards(ctx.player(), hypothetical, blockReachDistance, wouldSneak);
+            if (result != null && result.getType() == HitResult.Type.BLOCK) {
+                BlockPos rPos = ((BlockHitResult) result).getBlockPos();
+                if (rPos.equals(pos) || (ObstructionHelper.isClearableObstruction(ctx.world().getBlockState(rPos)) && ObstructionHelper.isCoveringOrAdjacent(rPos, pos))) {
+                    return Optional.of(hypothetical);
                 }
-            } else {
-                return Optional.of(hypothetical);
             }
         }
         Optional<Rotation> possibleRotation = reachableCenter(ctx, pos, blockReachDistance, wouldSneak);
@@ -254,10 +265,15 @@ public final class RotationUtils {
         Rotation rotation = calcRotationFromVec3d(eyes, offsetPos, ctx.playerRotations());
         HitResult result = RayTraceUtils.rayTraceTowards(ctx.player(), rotation, blockReachDistance, wouldSneak);
         if (result != null && result.getType() == HitResult.Type.BLOCK) {
-            if (((BlockHitResult) result).getBlockPos().equals(pos)) {
+            BlockPos hitPos = ((BlockHitResult) result).getBlockPos();
+            if (hitPos.equals(pos)) {
                 return Optional.of(rotation);
             }
-            if (ctx.world().getBlockState(pos).getBlock() instanceof BaseFireBlock && ((BlockHitResult) result).getBlockPos().equals(pos.below())) {
+            if (ctx.world().getBlockState(pos).getBlock() instanceof BaseFireBlock && hitPos.equals(pos.below())) {
+                return Optional.of(rotation);
+            }
+            BlockState hitState = ctx.world().getBlockState(hitPos);
+            if (ObstructionHelper.isClearableObstruction(hitState) && ObstructionHelper.isCoveringOrAdjacent(hitPos, pos)) {
                 return Optional.of(rotation);
             }
         }
@@ -276,12 +292,13 @@ public final class RotationUtils {
     public static Optional<Rotation> reachableCenter(IPlayerContext ctx, BlockPos pos, double blockReachDistance, boolean wouldSneak) {
         Vec3 center = VecUtils.calculateBlockCenter(ctx.world(), pos);
         if (BaritoneAPI.getSettings().randomizeBlockHitPoints.value) {
-            // Offset the target within the block face using a truncated Gaussian,
-            // simulating the natural imprecision of human mouse movements.
-            // Standard deviation of 0.1 blocks, clamped to ±0.15 so we stay on the face.
-            double offsetX = Mth.clamp(RANDOM.nextGaussian() * 0.10, -0.15, 0.15);
-            double offsetY = Mth.clamp(RANDOM.nextGaussian() * 0.08, -0.12, 0.12);
-            double offsetZ = Mth.clamp(RANDOM.nextGaussian() * 0.10, -0.15, 0.15);
+            // Offset the target within the block face using a deterministic seed from the block pos,
+            // simulating natural human hit points without shaking the crosshair on every tick.
+            long seed = ((long) pos.getX() * 3129871L) ^ ((long) pos.getY() * 116129781L) ^ ((long) pos.getZ());
+            Random posRng = new Random(seed);
+            double offsetX = Mth.clamp(posRng.nextGaussian() * 0.08, -0.12, 0.12);
+            double offsetY = Mth.clamp(posRng.nextGaussian() * 0.06, -0.10, 0.10);
+            double offsetZ = Mth.clamp(posRng.nextGaussian() * 0.08, -0.12, 0.12);
             center = center.add(offsetX, offsetY, offsetZ);
         }
         return reachableOffset(ctx, pos, center, blockReachDistance, wouldSneak);

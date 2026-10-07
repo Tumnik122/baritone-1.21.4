@@ -124,12 +124,12 @@ public class Rotation {
      * @return are they really close
      */
     public boolean isReallyCloseTo(Rotation other) {
-        return yawIsReallyClose(other) && Math.abs(this.pitch - other.pitch) < 0.01;
+        return yawIsReallyClose(other) && Math.abs(this.pitch - other.pitch) < 3.5F;
     }
 
     public boolean yawIsReallyClose(Rotation other) {
         float yawDiff = Math.abs(normalizeYaw(yaw) - normalizeYaw(other.yaw)); // you cant fool me
-        return (yawDiff < 0.01 || yawDiff > 359.99);
+        return (yawDiff < 3.5F || yawDiff > 356.5F);
     }
 
     /**

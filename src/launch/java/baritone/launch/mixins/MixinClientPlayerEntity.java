@@ -24,6 +24,7 @@ import baritone.api.event.events.SprintStateEvent;
 import baritone.api.event.events.type.EventState;
 import baritone.behavior.LookBehavior;
 import baritone.api.utils.input.Input;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.entity.player.Abilities;
 import org.spongepowered.asm.mixin.Mixin;
@@ -36,6 +37,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
+import baritone.api.utils.LastSent;
+import org.spongepowered.asm.mixin.Shadow;
 import java.lang.invoke.MethodType;
 
 /**
@@ -43,7 +46,47 @@ import java.lang.invoke.MethodType;
  * @since 8/1/2018
  */
 @Mixin(LocalPlayer.class)
-public class MixinClientPlayerEntity {
+public class MixinClientPlayerEntity implements LastSent {
+
+    @Shadow
+    private double xLast;
+
+    @Shadow
+    private double yLast;
+
+    @Shadow
+    private double zLast;
+
+    @Shadow
+    private float yRotLast;
+
+    @Shadow
+    private float xRotLast;
+
+    @Override
+    public double mine$lastX() {
+        return this.xLast;
+    }
+
+    @Override
+    public double mine$lastY() {
+        return this.yLast;
+    }
+
+    @Override
+    public double mine$lastZ() {
+        return this.zLast;
+    }
+
+    @Override
+    public float mine$lastYaw() {
+        return this.yRotLast;
+    }
+
+    @Override
+    public float mine$lastPitch() {
+        return this.xRotLast;
+    }
 
     @Unique
     private static final MethodHandle MAY_FLY = baritone$resolveMayFly();
@@ -88,44 +131,31 @@ public class MixinClientPlayerEntity {
         }
     }
 
-    @Inject(
+    @Redirect(
             method = "aiStep",
-            at = @At("HEAD")
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/client/KeyMapping;isDown()Z"
+            )
     )
-    private void synchronizeSprintState(CallbackInfo ci) {
-        LocalPlayer self = (LocalPlayer) (Object) this;
+    private boolean isKeyDown(KeyMapping keyBinding) {
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.options != null && keyBinding != mc.options.keySprint) {
+            return keyBinding.isDown();
+        }
         IBaritone baritone = this.baritone$getBaritone();
         if (baritone == null) {
-            return;
+            return keyBinding.isDown();
         }
-
-        SprintStateEvent event = new SprintStateEvent(self.isSprinting());
+        SprintStateEvent event = new SprintStateEvent();
         baritone.getGameEventHandler().onPlayerSprintState(event);
-
-        if (event.isModified()) {
-            boolean targetSprint = event.isSprinting();
-            if (targetSprint) {
-                // Strict vanilla physical simulation validation (GrimAC / PolarAC compatibility):
-                // 1. Cannot sprint while sneaking/crouching
-                // 2. Cannot sprint without enough food (hunger > 6 or mayfly)
-                // 3. Cannot sprint if horizontally colliding (wall bump)
-                // 4. Cannot sprint if in water (unless underwater swimming)
-                // 5. Cannot sprint without forward movement input
-                boolean canSprint = !self.isCrouching()
-                        && (self.getAbilities().mayfly || self.getFoodData().getFoodLevel() > 6.0F)
-                        && !(self.isInWater() && !self.isUnderWater())
-                        && !(self.horizontalCollision && !self.minorHorizontalCollision)
-                        && (self.input == null || self.input.hasForwardImpulse() || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD));
-                if (!canSprint) {
-                    targetSprint = false;
-                    baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-                }
-            }
-
-            if (targetSprint != self.isSprinting()) {
-                self.setSprinting(targetSprint);
-            }
+        if (event.getState() != null) {
+            return event.getState();
         }
+        if (baritone != BaritoneAPI.getProvider().getPrimaryBaritone()) {
+            return false;
+        }
+        return keyBinding.isDown();
     }
 
     @Redirect(

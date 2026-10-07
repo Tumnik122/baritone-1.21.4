@@ -17,7 +17,9 @@
 
 package baritone.pathing.movement.movements;
 
+import baritone.Baritone;
 import baritone.api.IBaritone;
+import baritone.behavior.WaterClutchBehavior;
 import baritone.api.pathing.movement.MovementStatus;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Rotation;
@@ -36,7 +38,9 @@ import java.util.Set;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Vec3i;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
@@ -45,6 +49,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.LadderBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.WaterFluid;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
 public class MovementFall extends Movement {
@@ -101,19 +106,44 @@ public class MovementFall extends Movement {
 
         boolean isWater = destState.getFluidState().getType() instanceof WaterFluid;
         if (!isWater && willPlaceBucket() && !playerFeet.equals(dest)) {
-            if (!Inventory.isHotbarSlot(ctx.player().getInventory().findSlotMatchingItem(STACK_BUCKET_WATER)) || ctx.world().dimension() == Level.NETHER) {
+            int bucketSlot = ctx.player().getInventory().findSlotMatchingItem(STACK_BUCKET_WATER);
+            if (!Inventory.isHotbarSlot(bucketSlot)) {
+                // Sprawdź czy wiadro jest w głównym EQ i przenieś do hotbara
+                int invSlot = WaterClutchBehavior.findWaterBucketSlot(ctx.player());
+                if (invSlot != -1 && invSlot >= 9) {
+                    try {
+                        ctx.playerController().windowClick(ctx.player().inventoryMenu.containerId, invSlot, ctx.player().getInventory().selected, ClickType.SWAP, ctx.player());
+                        bucketSlot = ctx.player().getInventory().selected;
+                    } catch (Throwable ignored) {}
+                }
+            }
+
+            if (bucketSlot == -1 || ctx.world().dimension() == Level.NETHER) {
                 return state.setStatus(MovementStatus.UNREACHABLE);
             }
 
-            if (ctx.player().position().y - dest.getY() < ctx.playerController().getBlockReachDistance() && !ctx.player().onGround()) {
-                ctx.player().getInventory().selected = ctx.player().getInventory().findSlotMatchingItem(STACK_BUCKET_WATER);
-                ctx.playerController().syncHeldItem();
+            // PRE-AIM: Natychmiast celuj prosto w dół w miejsce lądowania (Pitch = 90.0F)!
+            targetRotation = new Rotation(toDest.getYaw(), 90.0F);
 
-                targetRotation = new Rotation(toDest.getYaw(), 90.0F);
-
-                if (ctx.isLookingAt(dest) || ctx.isLookingAt(dest.below())) {
-                    state.setInput(Input.CLICK_RIGHT, true);
+            double distToLanding = ctx.player().position().y - dest.getY();
+            if (distToLanding < 3.8D && !ctx.player().onGround()) {
+                if (Inventory.isHotbarSlot(bucketSlot)) {
+                    ctx.player().getInventory().selected = bucketSlot;
+                    ctx.playerController().syncHeldItem();
                 }
+
+                state.setInput(Input.CLICK_RIGHT, true);
+                BlockHitResult hit = new BlockHitResult(
+                        new Vec3(dest.getX() + 0.5D, dest.getY(), dest.getZ() + 0.5D),
+                        Direction.UP,
+                        dest.below(),
+                        false
+                );
+                net.minecraft.world.InteractionResult res = ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, hit);
+                if (!res.consumesAction()) {
+                    ctx.playerController().processRightClick(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND);
+                }
+                ctx.player().swing(InteractionHand.MAIN_HAND);
             }
         }
         if (targetRotation != null) {
@@ -121,20 +151,44 @@ public class MovementFall extends Movement {
         } else {
             state.setTarget(new MovementTarget(toDest, false));
         }
-        if (playerFeet.equals(dest) && (ctx.player().position().y - playerFeet.getY() < 0.094 || isWater)) { // 0.094 because lilypads
+        if ((playerFeet.equals(dest) || (isWater && (playerFeet.equals(dest.above()) || (playerFeet.getX() == dest.getX() && playerFeet.getZ() == dest.getZ() && Math.abs(ctx.player().position().y - dest.getY()) < 1.8)))) && (ctx.player().position().y - playerFeet.getY() < 0.094 || isWater)) { // 0.094 because lilypads
             if (isWater) { // only match water, not flowing water (which we cannot pick up with a bucket)
-                if (Inventory.isHotbarSlot(ctx.player().getInventory().findSlotMatchingItem(STACK_BUCKET_EMPTY))) {
-                    ctx.player().getInventory().selected = ctx.player().getInventory().findSlotMatchingItem(STACK_BUCKET_EMPTY);
+                state.setInput(Input.JUMP, true); // Swim up immediately in water
+                int emptyBucketSlot = ctx.player().getInventory().findSlotMatchingItem(STACK_BUCKET_EMPTY);
+                if (emptyBucketSlot != -1 && !Inventory.isHotbarSlot(emptyBucketSlot)) {
+                    // Przenieś puste wiadro z głównego EQ do wybranego slotu hotbara
+                    try {
+                        ctx.playerController().windowClick(ctx.player().inventoryMenu.containerId, emptyBucketSlot, ctx.player().getInventory().selected, ClickType.SWAP, ctx.player());
+                        emptyBucketSlot = ctx.player().getInventory().selected;
+                    } catch (Throwable ignored) {}
+                }
+                if (Inventory.isHotbarSlot(emptyBucketSlot)) {
+                    ctx.player().getInventory().selected = emptyBucketSlot;
                     ctx.playerController().syncHeldItem();
-                    if (ctx.player().getDeltaMovement().y >= 0) {
-                        return state.setInput(Input.CLICK_RIGHT, true);
-                    } else {
-                        return state;
-                    }
-                } else {
-                    if (ctx.player().getDeltaMovement().y >= 0) {
+
+                    Rotation downRot = new Rotation(ctx.playerRotations().getYaw(), 89.5F);
+                    state.setTarget(new MovementTarget(downRot, true));
+
+                    BlockHitResult hit = new BlockHitResult(
+                            new Vec3(dest.getX() + 0.5D, dest.getY() + 0.5D, dest.getZ() + 0.5D),
+                            Direction.UP,
+                            dest,
+                            false
+                    );
+                    ctx.playerController().processRightClick(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND);
+                    ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, hit);
+                    ctx.player().swing(InteractionHand.MAIN_HAND);
+
+                    // Poczekaj aż woda faktycznie zniknie zanim zakończysz ruch
+                    boolean waterStillThere = MovementHelper.isWater(ctx.world().getBlockState(dest));
+                    if (!waterStillThere || ctx.player().getInventory().contains(STACK_BUCKET_WATER)) {
                         return state.setStatus(MovementStatus.SUCCESS);
-                    } // don't else return state; we need to stay centered because this water might be flowing under the surface
+                    }
+                    return state; // Kontynuuj zbieranie wody
+                } else {
+                    if (ctx.player().getDeltaMovement().y >= 0 || ctx.player().position().y >= dest.getY()) {
+                        return state.setStatus(MovementStatus.SUCCESS);
+                    }
                 }
             } else {
                 return state.setStatus(MovementStatus.SUCCESS);

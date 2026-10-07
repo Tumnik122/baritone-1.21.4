@@ -56,6 +56,8 @@ public interface IPlayerController {
     void setHittingBlock(boolean hittingBlock);
 
     default double getBlockReachDistance() {
-        return this.getGameType().isCreative() ? 5.0F : BaritoneAPI.getSettings().blockReachDistance.value;
+        return this.getGameType().isCreative() ? 5.0F : Math.min(3.9F, BaritoneAPI.getSettings().blockReachDistance.value);
     }
+
+    void attack(Player player, net.minecraft.world.entity.Entity target);
 }

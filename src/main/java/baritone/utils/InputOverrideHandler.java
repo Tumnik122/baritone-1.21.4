@@ -87,6 +87,13 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         if (event.getType() == TickEvent.Type.OUT) {
             return;
         }
+        boolean autoEatActive = baritone.getAutoEatProcess() != null && baritone.getAutoEatProcess().isActive();
+        if (autoEatActive) {
+            setInputForceState(Input.CLICK_LEFT, false);
+            setInputForceState(Input.CLICK_RIGHT, false);
+            blockBreakHelper.stopBreakingBlock();
+        }
+
         if (isInputForcedDown(Input.CLICK_LEFT)) {
             setInputForceState(Input.CLICK_RIGHT, false);
         }
@@ -111,6 +118,15 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             if (isInputForcedDown(input)) {
                 return true;
             }
+        }
+        if (baritone.getAutoDropProcess() != null && baritone.getAutoDropProcess().isActive()) {
+            return true;
+        }
+        if (baritone.getHomeProcess() != null && baritone.getHomeProcess().isActive()) {
+            return true;
+        }
+        if (baritone.getAutoEatProcess() != null && baritone.getAutoEatProcess().isActive()) {
+            return true;
         }
         // if we are not primary (a bot) we should set the movementinput even when idle (not pathing)
         return baritone.getPathingBehavior().isPathing() || baritone != BaritoneAPI.getProvider().getPrimaryBaritone();

@@ -23,6 +23,7 @@ import baritone.api.pathing.movement.ActionCosts;
 import baritone.cache.WorldData;
 import baritone.pathing.precompute.PrecomputedData;
 import baritone.utils.BlockStateInterface;
+import baritone.utils.FastBreakHelper;
 import baritone.utils.ToolSet;
 import baritone.utils.pathing.BetterWorldBorder;
 import net.minecraft.client.player.LocalPlayer;
@@ -83,6 +84,12 @@ public class CalculationContext {
     public double jumpPenalty;
     public final double walkOnWaterOnePenalty;
     public final boolean allowWalkOnMagmaBlocks;
+    public final boolean mineAvoidWater;
+    public final boolean mineAvoidLava;
+    public final double waterAvoidPenalty;
+    public final double lavaAvoidPenalty;
+    public final boolean avoidFluidProximity;
+    public final int fluidAvoidDistance;
     public final BetterWorldBorder worldBorder;
 
     public final PrecomputedData precomputedData;
@@ -128,7 +135,8 @@ public class CalculationContext {
         this.frostWalker = frostWalkerLevel;
         this.allowDiagonalDescend = Baritone.settings().allowDiagonalDescend.value;
         this.allowDiagonalAscend = Baritone.settings().allowDiagonalAscend.value;
-        this.allowDownward = Baritone.settings().allowDownward.value;
+        this.allowDownward = Baritone.settings().allowDownward.value
+                && !FastBreakHelper.isFastBreakActive(baritone.getPlayerContext());
         this.minFallHeight = 3; // Minimum fall height used by MovementFall
         {
             int baseFall = Baritone.settings().maxFallHeightNoWater.value;
@@ -167,6 +175,12 @@ public class CalculationContext {
         this.jumpPenalty = Baritone.settings().jumpPenalty.value;
         this.walkOnWaterOnePenalty = Baritone.settings().walkOnWaterOnePenalty.value;
         this.allowWalkOnMagmaBlocks = Baritone.settings().allowWalkOnMagmaBlocks.value;
+        this.mineAvoidWater = Baritone.settings().mineAvoidWater.value;
+        this.mineAvoidLava = Baritone.settings().mineAvoidLava.value;
+        this.waterAvoidPenalty = Baritone.settings().waterAvoidPenalty.value;
+        this.lavaAvoidPenalty = Baritone.settings().lavaAvoidPenalty.value;
+        this.avoidFluidProximity = Baritone.settings().avoidFluidProximity.value;
+        this.fluidAvoidDistance = Baritone.settings().fluidAvoidDistance.value;
         // why cache these things here, why not let the movements just get directly from settings?
         // because if some movements are calculated one way and others are calculated another way,
         // then you get a wildly inconsistent path that isn't optimal for either scenario.
@@ -210,8 +224,14 @@ public class CalculationContext {
             return COST_INF;
         }
         if (Baritone.settings().mineAvoidLava.value) {
-            if (MovementHelper.isLava(current) || MovementHelper.isLavaPitBelow(bsi, x, y, z)) {
+            if (MovementHelper.isLava(current) || MovementHelper.isLavaPitBelow(bsi, x, y, z)
+                    || MovementHelper.isLavaHazardBelowOrAdjacent(bsi, x, y, z)) {
                 return COST_INF;
+            }
+        }
+        if (mineAvoidWater) {
+            if (MovementHelper.isWater(current)) {
+                return placeBlockCost + Baritone.settings().waterAvoidPenalty.value;
             }
         }
         return placeBlockCost;

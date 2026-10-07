@@ -24,6 +24,7 @@ import baritone.api.command.argument.IArgConsumer;
 import baritone.api.command.datatypes.ForBlockOptionalMeta;
 import baritone.api.command.exception.CommandException;
 import baritone.api.utils.BlockOptionalMeta;
+import baritone.process.HomeProcess;
 import net.minecraft.core.registries.BuiltInRegistries;
 
 import java.util.*;
@@ -61,20 +62,97 @@ public class MineCommand extends Command {
     );
 
     static {
-        // Rudy / Ores
-        ORE_ALIASES.put("diamond", List.of("diamond_ore", "deepslate_diamond_ore"));
-        ORE_ALIASES.put("diamonds", List.of("diamond_ore", "deepslate_diamond_ore"));
-        ORE_ALIASES.put("iron", List.of("iron_ore", "deepslate_iron_ore"));
-        ORE_ALIASES.put("gold", List.of("gold_ore", "deepslate_gold_ore", "nether_gold_ore"));
-        ORE_ALIASES.put("coal", List.of("coal_ore", "deepslate_coal_ore"));
-        ORE_ALIASES.put("copper", List.of("copper_ore", "deepslate_copper_ore"));
-        ORE_ALIASES.put("lapis", List.of("lapis_ore", "deepslate_lapis_ore"));
-        ORE_ALIASES.put("redstone", List.of("redstone_ore", "deepslate_redstone_ore"));
-        ORE_ALIASES.put("emerald", List.of("emerald_ore", "deepslate_emerald_ore"));
-        ORE_ALIASES.put("emeralds", List.of("emerald_ore", "deepslate_emerald_ore"));
-        ORE_ALIASES.put("debris", List.of("ancient_debris"));
-        ORE_ALIASES.put("netherite", List.of("ancient_debris"));
-        ORE_ALIASES.put("quartz", List.of("nether_quartz_ore"));
+        // Rudy / Ores (English + Polish + Raw Ore blocks)
+        List<String> ironBlocks = List.of("iron_ore", "deepslate_iron_ore", "raw_iron_block");
+        ORE_ALIASES.put("iron", ironBlocks);
+        ORE_ALIASES.put("irons", ironBlocks);
+        ORE_ALIASES.put("zelazo", ironBlocks);
+        ORE_ALIASES.put("zelaza", ironBlocks);
+        ORE_ALIASES.put("żelazo", ironBlocks);
+        ORE_ALIASES.put("żelaza", ironBlocks);
+        ORE_ALIASES.put("ruda_zelaza", ironBlocks);
+        ORE_ALIASES.put("ruda_żelaza", ironBlocks);
+        ORE_ALIASES.put("raw_iron", ironBlocks);
+
+        List<String> diamondBlocks = List.of("diamond_ore", "deepslate_diamond_ore");
+        ORE_ALIASES.put("diamond", diamondBlocks);
+        ORE_ALIASES.put("diamonds", diamondBlocks);
+        ORE_ALIASES.put("diament", diamondBlocks);
+        ORE_ALIASES.put("diamenty", diamondBlocks);
+        ORE_ALIASES.put("diamentow", diamondBlocks);
+        ORE_ALIASES.put("ruda_diamentu", diamondBlocks);
+
+        List<String> goldBlocks = List.of("gold_ore", "deepslate_gold_ore", "nether_gold_ore", "raw_gold_block");
+        ORE_ALIASES.put("gold", goldBlocks);
+        ORE_ALIASES.put("zloto", goldBlocks);
+        ORE_ALIASES.put("zlota", goldBlocks);
+        ORE_ALIASES.put("złoto", goldBlocks);
+        ORE_ALIASES.put("złota", goldBlocks);
+        ORE_ALIASES.put("ruda_zlota", goldBlocks);
+        ORE_ALIASES.put("ruda_złota", goldBlocks);
+        ORE_ALIASES.put("raw_gold", goldBlocks);
+
+        List<String> coalBlocks = List.of("coal_ore", "deepslate_coal_ore");
+        ORE_ALIASES.put("coal", coalBlocks);
+        ORE_ALIASES.put("wegiel", coalBlocks);
+        ORE_ALIASES.put("wegla", coalBlocks);
+        ORE_ALIASES.put("węgiel", coalBlocks);
+        ORE_ALIASES.put("węgla", coalBlocks);
+        ORE_ALIASES.put("ruda_wegla", coalBlocks);
+        ORE_ALIASES.put("ruda_węgla", coalBlocks);
+
+        List<String> copperBlocks = List.of("copper_ore", "deepslate_copper_ore", "raw_copper_block");
+        ORE_ALIASES.put("copper", copperBlocks);
+        ORE_ALIASES.put("miedz", copperBlocks);
+        ORE_ALIASES.put("miedzi", copperBlocks);
+        ORE_ALIASES.put("miedź", copperBlocks);
+        ORE_ALIASES.put("ruda_miedzi", copperBlocks);
+        ORE_ALIASES.put("raw_copper", copperBlocks);
+
+        List<String> lapisBlocks = List.of("lapis_ore", "deepslate_lapis_ore");
+        ORE_ALIASES.put("lapis", lapisBlocks);
+        ORE_ALIASES.put("lapisu", lapisBlocks);
+        ORE_ALIASES.put("ruda_lapisu", lapisBlocks);
+
+        List<String> redstoneBlocks = List.of("redstone_ore", "deepslate_redstone_ore");
+        ORE_ALIASES.put("redstone", redstoneBlocks);
+        ORE_ALIASES.put("ruda_redstone", redstoneBlocks);
+
+        List<String> emeraldBlocks = List.of("emerald_ore", "deepslate_emerald_ore");
+        ORE_ALIASES.put("emerald", emeraldBlocks);
+        ORE_ALIASES.put("emeralds", emeraldBlocks);
+        ORE_ALIASES.put("szmaragd", emeraldBlocks);
+        ORE_ALIASES.put("szmaragdy", emeraldBlocks);
+        ORE_ALIASES.put("ruda_szmaragdu", emeraldBlocks);
+
+        List<String> debrisBlocks = List.of("ancient_debris");
+        ORE_ALIASES.put("debris", debrisBlocks);
+        ORE_ALIASES.put("netherite", debrisBlocks);
+        ORE_ALIASES.put("netheryt", debrisBlocks);
+        ORE_ALIASES.put("ancient_debris", debrisBlocks);
+
+        List<String> quartzBlocks = List.of("nether_quartz_ore");
+        ORE_ALIASES.put("quartz", quartzBlocks);
+        ORE_ALIASES.put("kwarc", quartzBlocks);
+        ORE_ALIASES.put("kwarcu", quartzBlocks);
+
+        // Zbiorcze skróty na wszystkie rodzaje rud
+        List<String> allOres = new ArrayList<>();
+        allOres.addAll(ironBlocks);
+        allOres.addAll(diamondBlocks);
+        allOres.addAll(goldBlocks);
+        allOres.addAll(coalBlocks);
+        allOres.addAll(copperBlocks);
+        allOres.addAll(lapisBlocks);
+        allOres.addAll(redstoneBlocks);
+        allOres.addAll(emeraldBlocks);
+        allOres.addAll(debrisBlocks);
+        allOres.addAll(quartzBlocks);
+        List<String> allOresUnique = allOres.stream().distinct().toList();
+        ORE_ALIASES.put("ore", allOresUnique);
+        ORE_ALIASES.put("ores", allOresUnique);
+        ORE_ALIASES.put("ruda", allOresUnique);
+        ORE_ALIASES.put("rudy", allOresUnique);
 
         // Drewno / Logs (ogólne skróty ścinające wszystkie pnie)
         ORE_ALIASES.put("log", BASE_LOGS);
@@ -137,17 +215,24 @@ public class MineCommand extends Command {
         if (!args.hasAny()) {
             logDirect("§b=== INTELIGENTNE KOPANIE / ŚCINANIE (#MINE) ===");
             logDirect("§fUżycie: §e#mine [ilość] <blok/skrót_rudy/log> [kolejne_bloki...]");
-            logDirect("§fInteligentne skróty:");
-            logDirect("  §e#mine log / logs §7- ścina wszystkie rodzaje drewna (oak, birch, spruce...)");
-            logDirect("  §e#mine diamond   §7- kopie diamond_ore + deepslate_diamond_ore");
-            logDirect("  §e#mine iron      §7- kopie iron_ore + deepslate_iron_ore");
-            logDirect("  §e#mine gold      §7- kopie gold_ore + deepslate + nether_gold");
-            logDirect("  §e#mine coal / copper / lapis / redstone / emerald");
-            logDirect("  §e#mine debris    §7- kopie ancient_debris (netheryt)");
-            logDirect("  §e#mine 64 log    §7- ścina 64 sztuki drewna i kończy");
-            logDirect("  §e#mine 64 diamond §7- wykopuje 64 sztuki i kończy");
+            logDirect("§fInteligentne skróty (PL / EN):");
+            logDirect("  §e#mine iron / zelazo   §7- kopie iron_ore, deepslate oraz raw_iron_block");
+            logDirect("  §e#mine diamond / diament §7- kopie diamond_ore + deepslate_diamond_ore");
+            logDirect("  §e#mine gold / zloto     §7- kopie gold_ore + deepslate + nether_gold + raw");
+            logDirect("  §e#mine coal / wegiel    §7- kopie węgiel (stone + deepslate)");
+            logDirect("  §e#mine copper / miedz   §7- kopie miedź (stone + deepslate + raw)");
+            logDirect("  §e#mine debris / netheryt §7- kopie ancient_debris");
+            logDirect("  §e#mine rudy / ores      §7- automatycznie szuka i kopie WSZYSTKIE rudy");
+            logDirect("  §e#mine log / drewno     §7- ścina wszystkie rodzaje drewna");
+            logDirect("  §e#mine 64 zelazo        §7- wykopuje 64 sztuki żelaza i kończy");
+            logDirect("§a[Anti-Xray] §7Aktywne dynamiczne skanowanie 7 kratek co 0.5s z automatycznym wykrywaniem nowo ujawnionych złóż!");
             logDirect("§7Ochrona: unikanie lawy (#set mineAvoidLava true), auto-logout (#autologout on).");
             return;
+        }
+
+        String rawArgs = args.rawRest();
+        if (rawArgs != null && !rawArgs.trim().isEmpty()) {
+            HomeProcess.setSavedMiningCommand("mine " + rawArgs.trim());
         }
 
         int quantity = args.getAsOrDefault(Integer.class, 0);

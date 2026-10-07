@@ -39,6 +39,12 @@ public class GoalComposite implements Goal {
 
     @Override
     public boolean isInGoal(int x, int y, int z) {
+        if (goals.length == 0) {
+            return false;
+        }
+        if (goals.length == 1) {
+            return goals[0].isInGoal(x, y, z);
+        }
         for (Goal goal : goals) {
             if (goal.isInGoal(x, y, z)) {
                 return true;
@@ -49,20 +55,36 @@ public class GoalComposite implements Goal {
 
     @Override
     public double heuristic(int x, int y, int z) {
+        if (goals.length == 0) {
+            return Double.MAX_VALUE;
+        }
+        if (goals.length == 1) {
+            return goals[0].heuristic(x, y, z);
+        }
         double min = Double.MAX_VALUE;
         for (Goal g : goals) {
-            // TODO technically this isn't admissible...?
-            min = Math.min(min, g.heuristic(x, y, z)); // whichever is closest
+            double h = g.heuristic(x, y, z);
+            if (h < min) {
+                min = h;
+            }
         }
         return min;
     }
 
     @Override
     public double heuristic() {
+        if (goals.length == 0) {
+            return Double.MAX_VALUE;
+        }
+        if (goals.length == 1) {
+            return goals[0].heuristic();
+        }
         double min = Double.MAX_VALUE;
         for (Goal g : goals) {
-            // just take the highest value that is guaranteed to be inside the goal
-            min = Math.min(min, g.heuristic());
+            double h = g.heuristic();
+            if (h < min) {
+                min = h;
+            }
         }
         return min;
     }

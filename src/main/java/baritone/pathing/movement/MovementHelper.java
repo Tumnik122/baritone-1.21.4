@@ -23,6 +23,7 @@ import baritone.api.IBaritone;
 import baritone.api.pathing.movement.ActionCosts;
 import baritone.api.pathing.movement.MovementStatus;
 import baritone.api.utils.*;
+import net.minecraft.client.player.LocalPlayer;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
 import baritone.pathing.movement.MovementState.MovementTarget;
@@ -72,6 +73,14 @@ public interface MovementHelper extends ActionCosts, Helper {
             return true;
         }
         Block b = state.getBlock();
+        if (b == Blocks.BEDROCK || state.is(Blocks.BEDROCK)) {
+            return true;
+        }
+        if (BaritoneAPI.getProvider().getPrimaryBaritone() != null
+                && BaritoneAPI.getProvider().getPrimaryBaritone().getFarmProcess().isActive()
+                && isFarmSoilOrStructure(b)) {
+            return true;
+        }
         return Baritone.settings().blocksToDisallowBreaking.value.contains(b)
                 || b == Blocks.ICE // ice becomes water, and water can mess up the path
                 || b instanceof InfestedBlock // obvious reasons
@@ -81,6 +90,25 @@ public interface MovementHelper extends ActionCosts, Helper {
                 || avoidAdjacentBreaking(bsi, x - 1, y, z, false)
                 || avoidAdjacentBreaking(bsi, x, y, z + 1, false)
                 || avoidAdjacentBreaking(bsi, x, y, z - 1, false);
+    }
+
+    static boolean isFarmSoilOrStructure(Block b) {
+        return b == Blocks.FARMLAND
+                || b == Blocks.DIRT
+                || b == Blocks.GRASS_BLOCK
+                || b == Blocks.DIRT_PATH
+                || b == Blocks.COARSE_DIRT
+                || b == Blocks.ROOTED_DIRT
+                || b == Blocks.MUD
+                || b == Blocks.MUDDY_MANGROVE_ROOTS
+                || b == Blocks.PODZOL
+                || b == Blocks.MYCELIUM
+                || b == Blocks.SOUL_SAND
+                || b == Blocks.SOUL_SOIL
+                || b == Blocks.SAND
+                || b == Blocks.RED_SAND
+                || b == Blocks.COMPOSTER
+                || b == Blocks.HAY_BLOCK;
     }
 
     static boolean avoidAdjacentBreaking(BlockStateInterface bsi, int x, int y, int z, boolean directlyAbove) {
@@ -144,7 +172,7 @@ public interface MovementHelper extends ActionCosts, Helper {
         if (block instanceof AirBlock) {
             return YES;
         }
-        if (block instanceof BaseFireBlock || block == Blocks.COBWEB || block == Blocks.END_PORTAL || block == Blocks.COCOA || block instanceof AbstractSkullBlock || block == Blocks.BUBBLE_COLUMN || block instanceof ShulkerBoxBlock || block instanceof SlabBlock || block instanceof TrapDoorBlock || block == Blocks.HONEY_BLOCK || block == Blocks.END_ROD || block == Blocks.SWEET_BERRY_BUSH || block == Blocks.POINTED_DRIPSTONE || block instanceof AmethystClusterBlock || block instanceof AzaleaBlock) {
+        if (block instanceof BaseFireBlock || block == Blocks.COBWEB || block == Blocks.END_PORTAL || block == Blocks.COCOA || block instanceof AbstractSkullBlock || block == Blocks.BUBBLE_COLUMN || block instanceof ShulkerBoxBlock || block instanceof SlabBlock || block instanceof TrapDoorBlock || block == Blocks.HONEY_BLOCK || block == Blocks.END_ROD || block == Blocks.SWEET_BERRY_BUSH || block == Blocks.POINTED_DRIPSTONE || block instanceof AmethystClusterBlock || block instanceof AzaleaBlock || block instanceof VineBlock || block == Blocks.VINE || block instanceof CaveVines || block == Blocks.CAVE_VINES || block == Blocks.CAVE_VINES_PLANT || block == Blocks.TWISTING_VINES || block == Blocks.TWISTING_VINES_PLANT || block == Blocks.WEEPING_VINES || block == Blocks.WEEPING_VINES_PLANT) {
             return NO;
         }
         if (block == Blocks.BIG_DRIPLEAF) {
@@ -182,6 +210,21 @@ public interface MovementHelper extends ActionCosts, Helper {
         if (block instanceof CauldronBlock) {
             return NO;
         }
+        if (block instanceof CropBlock
+                || block instanceof NetherWartBlock
+                || block instanceof StemBlock
+                || block instanceof AttachedStemBlock
+                || block == Blocks.SUGAR_CANE
+                || block instanceof FlowerBlock
+                || block instanceof TallFlowerBlock
+                || block == Blocks.SHORT_GRASS
+                || block == Blocks.FERN
+                || block == Blocks.DEAD_BUSH
+                || block instanceof SaplingBlock
+                || block == Blocks.SEAGRASS
+                || block == Blocks.TALL_SEAGRASS) {
+            return YES;
+        }
         if (state.isPathfindable(PathComputationType.LAND)) {
             return YES;
         } else {
@@ -204,6 +247,10 @@ public interface MovementHelper extends ActionCosts, Helper {
             }
             // the check in BlockSnow.isPassable is layers < 5
             // while actually, we want < 3 because 3 or greater makes it impassable in a 2 high ceiling
+            // Moreover, if there is a ceiling at y+2, even 1 layer reduces player clearance below 1.8m
+            if (!canWalkThrough(bsi, x, y + 2, z)) {
+                return false;
+            }
             if (state.getValue(SnowLayerBlock.LAYERS) > Baritone.settings().snowPassableLayers.value) {
                 return false;
             }
@@ -213,19 +260,32 @@ public interface MovementHelper extends ActionCosts, Helper {
 
         FluidState fluidState = state.getFluidState();
         if (!fluidState.isEmpty()) {
-            if (isFlowing(x, y, z, state, bsi)) {
+            if (fluidState.is(Fluids.LAVA) || fluidState.is(Fluids.FLOWING_LAVA)) {
                 return false;
             }
-            // Everything after this point has to be a special case as it relies on the water not being flowing, which means a special case is needed.
             if (Baritone.settings().assumeWalkOnWater.value) {
                 return false;
             }
-
-            BlockState up = bsi.get0(x, y + 1, z);
-            if (!up.getFluidState().isEmpty() || up.getBlock() instanceof WaterlilyBlock) {
+            if (state.getBlock() instanceof WaterlilyBlock) {
                 return false;
             }
             return fluidState.getType() instanceof WaterFluid;
+        }
+
+        if (block instanceof CropBlock
+                || block instanceof NetherWartBlock
+                || block instanceof StemBlock
+                || block instanceof AttachedStemBlock
+                || block == Blocks.SUGAR_CANE
+                || block instanceof FlowerBlock
+                || block instanceof TallFlowerBlock
+                || block == Blocks.SHORT_GRASS
+                || block == Blocks.FERN
+                || block == Blocks.DEAD_BUSH
+                || block instanceof SaplingBlock
+                || block == Blocks.SEAGRASS
+                || block == Blocks.TALL_SEAGRASS) {
+            return true;
         }
 
         return state.isPathfindable(PathComputationType.LAND);
@@ -253,6 +313,20 @@ public interface MovementHelper extends ActionCosts, Helper {
                 || block instanceof SkullBlock
                 || block instanceof ShulkerBoxBlock) {
             return NO;
+        }
+
+        if (block instanceof CropBlock
+                || block instanceof NetherWartBlock
+                || block instanceof StemBlock
+                || block instanceof AttachedStemBlock
+                || block == Blocks.SUGAR_CANE
+                || block instanceof FlowerBlock
+                || block instanceof TallFlowerBlock
+                || block == Blocks.SHORT_GRASS
+                || block == Blocks.FERN
+                || block == Blocks.DEAD_BUSH
+                || block instanceof SaplingBlock) {
+            return YES;
         }
         // door, fence gate, liquid, trapdoor have been accounted for, nothing else uses the world or pos parameters
         // at least in 1.12.2 vanilla, that is.....
@@ -291,6 +365,20 @@ public interface MovementHelper extends ActionCosts, Helper {
      * params retained for backwards compatibility
      */
     static boolean fullyPassablePosition(BlockStateInterface bsi, int x, int y, int z, BlockState state) {
+        Block block = state.getBlock();
+        if (block instanceof CropBlock
+                || block instanceof NetherWartBlock
+                || block instanceof StemBlock
+                || block instanceof AttachedStemBlock
+                || block == Blocks.SUGAR_CANE
+                || block instanceof FlowerBlock
+                || block instanceof TallFlowerBlock
+                || block == Blocks.SHORT_GRASS
+                || block == Blocks.FERN
+                || block == Blocks.DEAD_BUSH
+                || block instanceof SaplingBlock) {
+            return true;
+        }
         return state.isPathfindable(PathComputationType.LAND);
     }
 
@@ -778,6 +866,145 @@ public interface MovementHelper extends ActionCosts, Helper {
     }
 
     /**
+     * Oblicza dynamiczną karę kosztu (potential field penalty) za zbliżenie się do płynów (wody i lawy).
+     * Pozwala Baritone wyznaczać trasy naturalnie omijające brzegi rzek, jezior, baseny lawowe i wodospady
+     * z zachowaniem bezpiecznego bufora odległości (fluidAvoidDistance).
+     *
+     * @param context Kontekst kalkulacji
+     * @param x       Współrzędna X stóp gracza
+     * @param y       Współrzędna Y stóp gracza
+     * @param z       Współrzędna Z stóp gracza
+     * @return Dodatkowy koszt ruchu w A*
+     */
+    static double getFluidProximityPenalty(CalculationContext context, int x, int y, int z) {
+        if (!context.avoidFluidProximity) {
+            return 0.0;
+        }
+        boolean checkLava = context.mineAvoidLava;
+        boolean checkWater = context.mineAvoidWater;
+        if (!checkLava && !checkWater) {
+            return 0.0;
+        }
+
+        BlockStateInterface bsi = context.bsi;
+        if (bsi == null) {
+            return 0.0;
+        }
+
+        int maxDist = Math.max(1, Math.min(4, context.fluidAvoidDistance));
+        int minLavaDist = 999;
+        int minWaterDist = 999;
+
+        // 1. Sprawdzenie poziomu 1 (bezpośrednie sąsiedztwo - 8 kierunków poziomych)
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                if (dx == 0 && dz == 0) continue;
+                for (int dy = -1; dy <= 1; dy++) {
+                    BlockState s = bsi.get0(x + dx, y + dy, z + dz);
+                    if (s.getFluidState().isEmpty()) continue;
+                    if (checkLava && minLavaDist > 1 && isLava(s)) {
+                        minLavaDist = 1;
+                    }
+                    if (checkWater && minWaterDist > 1 && isWater(s)) {
+                        minWaterDist = 1;
+                    }
+                }
+            }
+        }
+
+        if ((!checkLava || minLavaDist == 1) && (!checkWater || minWaterDist == 1)) {
+            return calculateFluidPenaltyFromDistances(context, minLavaDist, minWaterDist);
+        }
+
+        // 2. Sprawdzenie poziomu 2 (dystans 2 kratek)
+        if (maxDist >= 2) {
+            int[][] dist2Offsets = {
+                {2, 0}, {-2, 0}, {0, 2}, {0, -2},
+                {2, 1}, {2, -1}, {-2, 1}, {-2, -1},
+                {1, 2}, {-1, 2}, {1, -2}, {-1, -2},
+                {2, 2}, {2, -2}, {-2, 2}, {-2, -2}
+            };
+            for (int[] off : dist2Offsets) {
+                int nx = x + off[0];
+                int nz = z + off[1];
+                for (int dy = -1; dy <= 0; dy++) {
+                    BlockState s = bsi.get0(nx, y + dy, nz);
+                    if (s.getFluidState().isEmpty()) continue;
+
+                    BlockState above = bsi.get0(nx, y + dy + 1, nz);
+                    boolean exposed = above.getFluidState().isEmpty() ? canWalkThrough(context, nx, y + dy + 1, nz, above) : true;
+                    if (!exposed) {
+                        int midX = x + (off[0] / 2);
+                        int midZ = z + (off[1] / 2);
+                        BlockState mid = bsi.get0(midX, y, midZ);
+                        exposed = canWalkThrough(context, midX, y, midZ, mid);
+                    }
+                    if (exposed) {
+                        if (checkLava && minLavaDist > 2 && isLava(s)) {
+                            minLavaDist = 2;
+                        }
+                        if (checkWater && minWaterDist > 2 && isWater(s)) {
+                            minWaterDist = 2;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Sprawdzenie poziomu 3 (dystans 3 kratek)
+        if (maxDist >= 3 && ((checkLava && minLavaDist > 2) || (checkWater && minWaterDist > 2))) {
+            int[][] dist3Offsets = {
+                {3, 0}, {-3, 0}, {0, 3}, {0, -3},
+                {3, 1}, {3, -1}, {-3, 1}, {-3, -1},
+                {1, 3}, {-1, 3}, {1, -3}, {-1, -3}
+            };
+            for (int[] off : dist3Offsets) {
+                int nx = x + off[0];
+                int nz = z + off[1];
+                for (int dy = -1; dy <= 0; dy++) {
+                    BlockState s = bsi.get0(nx, y + dy, nz);
+                    if (s.getFluidState().isEmpty()) continue;
+                    BlockState above = bsi.get0(nx, y + dy + 1, nz);
+                    boolean exposed = above.getFluidState().isEmpty() ? canWalkThrough(context, nx, y + dy + 1, nz, above) : true;
+                    if (exposed) {
+                        if (checkLava && minLavaDist > 3 && isLava(s)) {
+                            minLavaDist = 3;
+                        }
+                        if (checkWater && minWaterDist > 3 && isWater(s)) {
+                            minWaterDist = 3;
+                        }
+                    }
+                }
+            }
+        }
+
+        return calculateFluidPenaltyFromDistances(context, minLavaDist, minWaterDist);
+    }
+
+    private static double calculateFluidPenaltyFromDistances(CalculationContext context, int minLavaDist, int minWaterDist) {
+        double penalty = 0.0;
+        if (context.mineAvoidLava) {
+            if (minLavaDist == 1) {
+                penalty += context.lavaAvoidPenalty * 0.5;
+            } else if (minLavaDist == 2) {
+                penalty += context.lavaAvoidPenalty * 0.15;
+            } else if (minLavaDist == 3) {
+                penalty += context.lavaAvoidPenalty * 0.04;
+            }
+        }
+        if (context.mineAvoidWater) {
+            if (minWaterDist == 1) {
+                penalty += context.waterAvoidPenalty * 0.06;
+            } else if (minWaterDist == 2) {
+                penalty += context.waterAvoidPenalty * 0.018;
+            } else if (minWaterDist == 3) {
+                penalty += context.waterAvoidPenalty * 0.005;
+            }
+        }
+        return penalty;
+    }
+
+    /**
      * Returns whether or not the specified pos has a liquid
      *
      * @param ctx The player context
@@ -907,5 +1134,47 @@ public interface MovementHelper extends ActionCosts, Helper {
             }
         }
         return blocks;
+    }
+
+    /**
+     * Waliduje czy ruch na daną pozycję jest Grim-safe.
+     * Sprawdza step height, onGround i wektor prędkości.
+     */
+    public static boolean isMovementGrimSafe(IPlayerContext ctx, BetterBlockPos from, BetterBlockPos to) {
+        LocalPlayer player = ctx != null ? ctx.player() : null;
+        if (player == null) return false;
+
+        // Step height check
+        int dy = to.getY() - from.getY();
+        if (dy > 0 && !player.onGround()) {
+            return false; // Nie można wejść wyżej w powietrzu
+        }
+        if (dy > 0 && player.onGround() && dy * 1.0 > 0.6) {
+            // Większe niż 0.6 — wymaga skoku
+            return true; // Pathfinder powinien to obsłużyć
+        }
+
+        return true;
+    }
+
+    /**
+     * Zwraca bezpieczny zasięg interakcji dla GrimAC.
+     */
+    public static double getSafeReach() {
+        return 4.0; // Zamiast waniliowego 4.5
+    }
+
+    /**
+     * Sprawdza czy pozycja jest w zasięgu Grim-safe.
+     */
+    public static boolean isWithinGrimReach(IPlayerContext ctx, BlockPos pos) {
+        LocalPlayer player = ctx != null ? ctx.player() : null;
+        if (player == null) return false;
+
+        Vec3 eyePos = player.getEyePosition();
+        Vec3 blockCenter = Vec3.atCenterOf(pos);
+        double distance = eyePos.distanceTo(blockCenter);
+
+        return distance <= 4.0;
     }
 }

@@ -53,6 +53,8 @@ public final class DefaultCommands {
                 new TunnelCommand(baritone),
                 new RenderCommand(baritone),
                 new FarmCommand(baritone),
+                new PlantCommand(baritone),
+                new TillCommand(baritone),
                 new FollowCommand(baritone),
                 new PickupCommand(baritone),
                 new ExploreFilterCommand(baritone),
@@ -67,13 +69,21 @@ public final class DefaultCommands {
                 new ThisWayCommand(baritone),
                 new WaypointsCommand(baritone),
                 new CommandAlias(baritone, "sethome", "Sets your home waypoint", "waypoints save home"),
-                new CommandAlias(baritone, "home", "Path to your home waypoint", "waypoints goto home"),
+                new HomeCommand(baritone),
                 new SelCommand(baritone),
                 new ElytraCommand(baritone),
                 new AiStatusCommand(baritone),
                 new BypassCommand(baritone),
                 new ReconnectCommand(baritone),
-                new AutoLogoutCommand(baritone)
+                new AutoLogoutCommand(baritone),
+                new AutoEatCommand(baritone),
+                new AutoDropCommand(baritone),
+                new MobDefenseCommand(baritone),
+                new WindowsCommand(baritone),
+                new BotOptimizerCommand(baritone),
+                new AnarchiaCommand(baritone),
+                new PracaCommand(baritone),
+                new TestCommand(baritone)
         ));
         ExecutionControlCommands prc = new ExecutionControlCommands(baritone);
         commands.add(prc.pauseCommand);

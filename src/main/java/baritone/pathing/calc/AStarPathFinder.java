@@ -54,7 +54,11 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         int height = calcContext.world.dimensionType().height();
         startNode = getNodeAtPosition(startX, startY, startZ, BetterBlockPos.longHash(startX, startY, startZ));
         startNode.cost = 0;
-        startNode.combinedCost = startNode.estimatedCostToGoal;
+        double astarWeight = Baritone.settings().astarWeight.value;
+        if (astarWeight < 1.0) {
+            astarWeight = 1.0;
+        }
+        startNode.combinedCost = astarWeight * startNode.estimatedCostToGoal;
         BinaryHeapOpenSet openSet = new BinaryHeapOpenSet(4096); // pre-allocated to avoid early Array.copyOf
         openSet.insert(startNode);
         double[] bestHeuristicSoFar = new double[COEFFICIENTS.length];//keep track of the best node by the metric of (estimatedCostToGoal + cost / COEFFICIENTS[i])
@@ -69,8 +73,19 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         if (slowPath) {
             logDebug("slowPath is on, path timeout will be " + Baritone.settings().slowPathTimeoutMS.value + "ms instead of " + primaryTimeout + "ms");
         }
-        long primaryTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : primaryTimeout);
-        long failureTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : failureTimeout);
+        long effectivePrimary = primaryTimeout;
+        long effectiveFailure = failureTimeout;
+        if (startNode != null && !Double.isNaN(startNode.estimatedCostToGoal)) {
+            if (startNode.estimatedCostToGoal <= 6.0) {
+                effectivePrimary = Math.min(effectivePrimary, 500L);
+                effectiveFailure = Math.min(effectiveFailure, 2000L);
+            } else if (startNode.estimatedCostToGoal <= 15.0) {
+                effectivePrimary = Math.min(effectivePrimary, 800L);
+                effectiveFailure = Math.min(effectiveFailure, 2500L);
+            }
+        }
+        long primaryTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : effectivePrimary);
+        long failureTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : effectiveFailure);
         boolean failing = true;
         int numNodes = 0;
         int numMovementsConsidered = 0;
@@ -82,10 +97,9 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         double minimumImprovement = Baritone.settings().minimumImprovementRepropagation.value ? MIN_IMPROVEMENT : 0;
         Moves[] allMoves = Moves.values();
         while (!openSet.isEmpty() && numEmptyChunk < pathingMaxChunkBorderFetch && !cancelRequested) {
-            if ((numNodes & (timeCheckInterval - 1)) == 0) { // only call this once every 64 nodes (about half a millisecond)
+            if ((numNodes & (timeCheckInterval - 1)) == 0) { // only call this once every 128 nodes (about 1 millisecond)
                 long now = System.currentTimeMillis(); // since nanoTime is slow on windows (takes many microseconds)
-                boolean firstSegmentReady = !failing && Baritone.settings().startImmediatelyOnFirstSegment.value;
-                if (now - failureTimeoutTime >= 0 || (!failing && now - primaryTimeoutTime >= 0) || firstSegmentReady) {
+                if (now - failureTimeoutTime >= 0 || (!failing && now - primaryTimeoutTime >= 0)) {
                     break;
                 }
             }
@@ -169,12 +183,33 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                     // see issue #18
                     actionCost *= favoring.calculate(hashCode);
                 }
+                // AI Route Smoothing: Momentum / Straight Line Favoring
+                // Niewielki bonus (0.004 ticka) za kontynuację ruchu w tym samym wektorze.
+                // Eliminuje brzydkie zygzaki i generuje proste, naturalne tunele oraz korytarze.
+                if (currentNode.previous != null) {
+                    int prevDx = currentNode.x - currentNode.previous.x;
+                    int prevDy = currentNode.y - currentNode.previous.y;
+                    int prevDz = currentNode.z - currentNode.previous.z;
+                    int currDx = res.x - currentNode.x;
+                    int currDy = res.y - currentNode.y;
+                    int currDz = res.z - currentNode.z;
+                    if (prevDx == currDx && prevDy == currDy && prevDz == currDz) {
+                        actionCost = Math.max(0.1, actionCost - 0.004);
+                    } else {
+                        actionCost += 0.004;
+                    }
+                    // Planarna stabilność: kara za niepotrzebne schodzenie/wchodzenie (currDy != 0),
+                    // gdy można iść prosto po tym samym poziomie Y
+                    if (currDy != 0) {
+                        actionCost += 0.05;
+                    }
+                }
                 PathNode neighbor = getNodeAtPosition(res.x, res.y, res.z, hashCode);
                 double tentativeCost = currentNode.cost + actionCost;
                 if (neighbor.cost - tentativeCost > minimumImprovement) {
                     neighbor.previous = currentNode;
                     neighbor.cost = tentativeCost;
-                    neighbor.combinedCost = tentativeCost + neighbor.estimatedCostToGoal;
+                    neighbor.combinedCost = tentativeCost + astarWeight * neighbor.estimatedCostToGoal;
                     if (neighbor.isOpen()) {
                         openSet.update(neighbor);
                     } else {
@@ -185,7 +220,11 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                         if (bestHeuristicSoFar[i] - heuristic > minimumImprovement) {
                             bestHeuristicSoFar[i] = heuristic;
                             bestSoFar[i] = neighbor;
-                            if (failing && getDistFromStartSq(neighbor) > MIN_DIST_PATH * MIN_DIST_PATH) {
+                            double targetDist = (startNode != null && !Double.isNaN(startNode.estimatedCostToGoal)) ? startNode.estimatedCostToGoal : MIN_DIST_PATH;
+                            double minThreshold = Math.min(MIN_DIST_PATH, Math.max(1.0, targetDist - 1.0));
+                            boolean inGoal = goal.isInGoal(neighbor.x, neighbor.y, neighbor.z);
+                            boolean nearGoal = neighbor.estimatedCostToGoal <= 1.5;
+                            if (failing && (getDistFromStartSq(neighbor) > minThreshold * minThreshold || inGoal || nearGoal)) {
                                 failing = false;
                             }
                         }

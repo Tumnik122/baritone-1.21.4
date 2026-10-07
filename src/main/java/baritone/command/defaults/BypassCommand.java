@@ -5,9 +5,11 @@ import baritone.api.IBaritone;
 import baritone.api.command.Command;
 import baritone.api.command.argument.IArgConsumer;
 import baritone.api.command.exception.CommandException;
+import baritone.process.HomeProcess;
 import baritone.bypass.BypassConfig;
 import baritone.bypass.BypassProcess;
 import baritone.bypass.ReconnectData;
+import baritone.api.utils.SettingsUtil;
 import net.minecraft.core.BlockPos;
 
 import java.nio.file.Path;
@@ -113,7 +115,31 @@ public class BypassCommand extends Command {
             } else {
                 activeConfig.autoDropTrash = !activeConfig.autoDropTrash;
             }
+            Baritone.settings().autoDropTrash.value = activeConfig.autoDropTrash;
+            try { SettingsUtil.save(Baritone.settings()); } catch (Throwable ignored) {}
             logDirect("§b[Bypass] AutoDrop śmieci przy pełnym EQ: " + (activeConfig.autoDropTrash ? "§aWŁĄCZONY" : "§cWYŁĄCZONY"));
+            return;
+        }
+
+        if (firstArg.equals("clean") || firstArg.equals("drop")) {
+            if (baritoneImpl.getAutoDropProcess() != null) {
+                baritoneImpl.getAutoDropProcess().cleanNow();
+            }
+            return;
+        }
+
+        if (firstArg.equals("lock") || firstArg.equals("autolock")) {
+            if (args.hasAny()) {
+                String val = args.getString().toLowerCase(Locale.ROOT);
+                activeConfig.autoLockSlots = val.equals("on") || val.equals("true") || val.equals("1");
+                Baritone.settings().autoLockResource.value = activeConfig.autoLockSlots;
+            } else {
+                if (baritoneImpl.getAutoDropProcess() != null) {
+                    baritoneImpl.getAutoDropProcess().lockNow();
+                    return;
+                }
+            }
+            logDirect("§b[Bypass] Blokowanie wolnych slotów surowcem (Slot Locking): " + (activeConfig.autoLockSlots ? "§aWŁĄCZONY" : "§cWYŁĄCZONY"));
             return;
         }
 
@@ -250,6 +276,7 @@ public class BypassCommand extends Command {
             return;
         }
 
+        HomeProcess.setSavedMiningCommand("bypass " + String.join(" ", filteredOres));
         process.startMining(filteredOres);
     }
 
@@ -277,6 +304,7 @@ public class BypassCommand extends Command {
         options.add("friend");
         options.add("autotool");
         options.add("autodrop");
+        options.add("lock");
         options.add("esp");
         options.add("vein");
         options.add("dynamicradius");

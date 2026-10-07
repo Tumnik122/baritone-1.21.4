@@ -37,6 +37,7 @@ import net.minecraft.world.level.block.state.BlockState;
 public class MovementAscend extends Movement {
 
     private int ticksWithoutPlacement = 0;
+    private int ticksAscending = 0;
 
     public MovementAscend(IBaritone baritone, BetterBlockPos src, BetterBlockPos dest) {
         super(baritone, src, dest, new BetterBlockPos[]{dest, src.above(2), dest.above()}, dest.below());
@@ -46,6 +47,7 @@ public class MovementAscend extends Movement {
     public void reset() {
         super.reset();
         ticksWithoutPlacement = 0;
+        ticksAscending = 0;
     }
 
     @Override
@@ -66,8 +68,12 @@ public class MovementAscend extends Movement {
 
     public static double cost(CalculationContext context, int x, int y, int z, int destX, int destZ) {
         BlockState toPlace = context.get(destX, y, destZ);
-        if (Baritone.settings().mineAvoidLava.value && (MovementHelper.isLava(toPlace) || MovementHelper.isLavaPitBelow(context.bsi, destX, y, destZ))) {
+        if (context.mineAvoidLava && (MovementHelper.isLava(toPlace) || MovementHelper.isLavaPitBelow(context.bsi, destX, y, destZ) || MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y, destZ))) {
             return COST_INF;
+        }
+        double waterPenalty = 0;
+        if (context.mineAvoidWater && (MovementHelper.isWater(toPlace) || MovementHelper.isWater(context.get(destX, y + 1, destZ)) || MovementHelper.isWater(context.get(destX, y + 2, destZ)))) {
+            waterPenalty = Baritone.settings().waterAvoidPenalty.value;
         }
         double additionalPlacementCost = 0;
         if (!MovementHelper.canWalkOn(context, destX, y, destZ, toPlace)) {
@@ -155,13 +161,18 @@ public class MovementAscend extends Movement {
         if (totalCost >= COST_INF) {
             return COST_INF;
         }
-        totalCost += MovementHelper.getMiningDurationTicks(context, destX, y + 2, destZ, true);
-        return totalCost;
+        double finalCost = totalCost + waterPenalty;
+        if (context.avoidFluidProximity) {
+            finalCost += MovementHelper.getFluidProximityPenalty(context, destX, y + 1, destZ);
+        }
+        return finalCost;
     }
 
     @Override
     public MovementState updateState(MovementState state) {
-        if (ctx.playerFeet().y < src.y) {
+        boolean inLiquid = MovementHelper.isLiquid(ctx, src) || MovementHelper.isLiquid(ctx, ctx.playerFeet()) || ctx.player().isInWater();
+        boolean inWater = inLiquid || MovementHelper.isLiquid(ctx, dest);
+        if (ctx.playerFeet().y < src.y && !inLiquid) {
             // this check should run even when in preparing state (breaking blocks)
             return state.setStatus(MovementStatus.UNREACHABLE);
         }
@@ -172,18 +183,22 @@ public class MovementAscend extends Movement {
             return state;
         }
 
-        if (ctx.playerFeet().equals(dest) || ctx.playerFeet().equals(dest.offset(getDirection().below()))) {
+        if (ctx.playerFeet().equals(dest) || ctx.playerFeet().equals(dest.offset(getDirection().below()))
+                || (inWater && (ctx.playerFeet().equals(dest.above()) || (ctx.playerFeet().getX() == dest.getX() && ctx.playerFeet().getZ() == dest.getZ() && Math.abs(ctx.player().position().y - dest.getY()) < 1.8)))) {
             return state.setStatus(MovementStatus.SUCCESS);
         }
 
         BlockState jumpingOnto = BlockStateInterface.get(ctx, positionToPlace);
-        if (!MovementHelper.canWalkOn(ctx, positionToPlace, jumpingOnto)) {
+        if (!inWater && !MovementHelper.canWalkOn(ctx, positionToPlace, jumpingOnto)) {
             ticksWithoutPlacement++;
             if (MovementHelper.attemptToPlaceABlock(state, baritone, dest.below(), false, true) == PlaceResult.READY_TO_PLACE) {
                 state.setInput(Input.SNEAK, true);
                 if (ctx.player().isCrouching()) {
                     state.setInput(Input.CLICK_RIGHT, true);
                 }
+            }
+            if (ticksWithoutPlacement > 20) {
+                return state.setStatus(MovementStatus.FAILED);
             }
             if (ticksWithoutPlacement > 10) {
                 // After 10 ticks without placement, we might be standing in the way, move back
@@ -205,17 +220,22 @@ public class MovementAscend extends Movement {
             return state;
         }
 
+        ticksAscending++;
+        if (ticksAscending > 30) {
+            return state.setStatus(MovementStatus.FAILED);
+        }
+
         int xAxis = Math.abs(src.getX() - dest.getX()); // either 0 or 1
         int zAxis = Math.abs(src.getZ() - dest.getZ()); // either 0 or 1
         double flatDistToNext = xAxis * Math.abs((dest.getX() + 0.5D) - ctx.player().position().x) + zAxis * Math.abs((dest.getZ() + 0.5D) - ctx.player().position().z);
         double sideDist = zAxis * Math.abs((dest.getX() + 0.5D) - ctx.player().position().x) + xAxis * Math.abs((dest.getZ() + 0.5D) - ctx.player().position().z);
 
         double lateralMotion = xAxis * ctx.player().getDeltaMovement().z + zAxis * ctx.player().getDeltaMovement().x;
-        if (Math.abs(lateralMotion) > 0.1) {
+        if (Math.abs(lateralMotion) > 0.1 && !inLiquid) {
             return state;
         }
 
-        if (headBonkClear()) {
+        if (headBonkClear() || inLiquid) {
             return state.setInput(Input.JUMP, true);
         }
 

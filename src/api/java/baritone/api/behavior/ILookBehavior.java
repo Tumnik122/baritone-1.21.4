@@ -47,4 +47,13 @@ public interface ILookBehavior extends IBehavior {
      * @see IAimProcessor#fork
      */
     IAimProcessor getAimProcessor();
+
+    /**
+     * Returns the exact rotation that was last transmitted to the server in a movement packet.
+     *
+     * @return The last sent server rotation
+     */
+    default Rotation getServerRotation() {
+        return null;
+    }
 }

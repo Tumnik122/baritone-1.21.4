@@ -33,7 +33,11 @@ public class Behavior implements IBehavior {
     public final IPlayerContext ctx;
 
     protected Behavior(Baritone baritone) {
+        this(baritone, baritone != null ? baritone.getPlayerContext() : null);
+    }
+
+    protected Behavior(Baritone baritone, IPlayerContext ctx) {
         this.baritone = baritone;
-        this.ctx = baritone.getPlayerContext();
+        this.ctx = ctx;
     }
 }

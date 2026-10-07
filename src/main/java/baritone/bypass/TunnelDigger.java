@@ -9,8 +9,10 @@ import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Helper;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
+import baritone.api.utils.ObstructionHelper;
 import baritone.api.utils.input.Input;
 import baritone.utils.ContinuousBreakController;
+import baritone.utils.FastBreakHelper;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -104,8 +106,11 @@ public class TunnelDigger {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // Opóźnienie / wariancja czasowa łamania bloków (0-50ms + kompensacja pingu)
-        if (varianceCooldownTicks > 0) {
+        // Opóźnienie / wariancja czasowa łamania bloków (pomijane w trybie FastBreak)
+        boolean fastBreak = FastBreakHelper.isFastBreakActive(ctx);
+        if (fastBreak) {
+            varianceCooldownTicks = 0;
+        } else if (varianceCooldownTicks > 0) {
             varianceCooldownTicks--;
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -138,36 +143,88 @@ public class TunnelDigger {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // 3. Kopanie tunelu 1x2 (stopy, potem głowa)
+        // 3. Kopanie tunelu 1x2 (głowa, potem stopy - zapobiega duszeniu przez żwir/piasek)
         BlockPos toBreak = null;
-        if (!isPassable(world, frontFeet)) {
-            toBreak = frontFeet;
-        } else if (!isPassable(world, frontHead)) {
+        if (!isPassable(world, frontHead)) {
             toBreak = frontHead;
+        } else if (!isPassable(world, frontFeet)) {
+            toBreak = frontFeet;
+        }
+
+        // Gdy bot kopie szybkim kilofem:
+        // Trzymamy celownik zablokowany prosto w korytarzu (yaw = activeDir, pitch = 11.5°),
+        // biegniemy prosto na sprincie i kopiemy ciągle bez zatrzymywania!
+        boolean fastPickaxe = FastBreakHelper.isFastPickaxe(ctx);
+        if (fastPickaxe) {
+            double distH = Math.hypot(ctx.player().getX() - (frontFeet.getX() + 0.5D), ctx.player().getZ() - (frontFeet.getZ() + 0.5D));
+            float pitch = 11.5f;
+            if (!isPassable(world, frontFeet) && distH < 0.95) {
+                pitch = 26.0f; // Szybkie rozbicie bloku tuż pod nogami
+            }
+            Rotation straightRot = new Rotation(activeDir.toYRot(), pitch);
+            RotationEngine.apply(ctx.player(), straightRot, baritone.settings(), true);
+
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+
+            if (toBreak != null) {
+                ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(toBreak));
+                if (world.getBlockState(toBreak).isAir()) {
+                    RotationEngine.notifyBlockBroken(toBreak);
+                    currentTarget = null;
+                    varianceCooldownTicks = 0;
+
+                    // Skanowanie rud po KAŻDYM wykopanym bloku (OreScanner)
+                    List<BlockPos> scanned = OreScanner.scanArea(world, feet, targetOreBlocks,
+                            ctx.player().getEyePosition(), config.reachLimit, config);
+                    if (!scanned.isEmpty() && outFoundOres != null) {
+                        outFoundOres.addAll(scanned);
+                    }
+
+                    // Aktualizacja liczników
+                    if (inSideBranch) {
+                        sideBranchLength++;
+                    } else {
+                        blocksInSegment++;
+                        checkBranchTriggers(feet);
+                    }
+                }
+            }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
         if (toBreak != null) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            double distH = Math.hypot(ctx.player().getX() - (frontFeet.getX() + 0.5D), ctx.player().getZ() - (frontFeet.getZ() + 0.5D));
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, distH > 0.82);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
             if (!toBreak.equals(currentTarget)) {
                 currentTarget = toBreak;
-                RotationEngine.reset();
             }
             Vec3 targetCenter = Vec3.atCenterOf(toBreak);
             Rotation rot = RotationEngine.lookAt(ctx.player().getEyePosition(), targetCenter);
-            RotationEngine.apply(ctx.player(), rot, baritone.settings());
+            RotationEngine.apply(ctx.player(), rot, baritone.settings(), true);
 
-            // Min. 2 ticki stabilizacji przed kliknięciem
-            if (RotationEngine.isSettled(config.preRotationTicks)) {
+            // W trybie FastBreak brak czekania na stabilizację (0 ticków)
+            int requiredSettle = fastBreak ? 0 : config.preRotationTicks;
+            if (RotationEngine.isSettled(requiredSettle)) {
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
                 ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(toBreak));
 
                 if (world.getBlockState(toBreak).isAir()) {
                     RotationEngine.notifyBlockBroken(toBreak);
-                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                    boolean instaOrCont = fastBreak || ContinuousBreakController.shouldHoldThrough(ctx, new BetterBlockPos(toBreak.equals(frontHead) ? frontFeet : frontHead), null);
+                    if (!instaOrCont) {
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                    }
                     currentTarget = null;
 
-                    // Obliczenie wariancji czasu kopania (0-50ms) i kompensacja pingu
-                    applyBreakTimeVariance();
+                    // Obliczenie wariancji czasu kopania (pomijane w FastBreak i continuous break)
+                    if (!instaOrCont) {
+                        applyBreakTimeVariance();
+                    } else {
+                        varianceCooldownTicks = 0;
+                    }
 
                     // Skanowanie rud po KAŻDYM wykopanym bloku (OreScanner)
                     List<BlockPos> scanned = OreScanner.scanArea(world, feet, targetOreBlocks,
@@ -247,6 +304,9 @@ public class TunnelDigger {
 
     private boolean isPassable(Level world, BlockPos pos) {
         BlockState state = world.getBlockState(pos);
+        if (ObstructionHelper.isClearableObstruction(state)) {
+            return false;
+        }
         return state.isAir() || state.canBeReplaced();
     }
 }

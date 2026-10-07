@@ -152,6 +152,30 @@ public class SelCommand extends Command {
             if (selections.length == 0) {
                 throw new CommandInvalidStateException("No selections");
             }
+            if (action == Action.CLEARAREA) {
+                // Compute the bounding box over all selections and clear it in one call.
+                // Calling clearArea multiple times would overwrite the previous task, so we
+                // merge all selections into a single AABB instead of going through CompositeSchematic.
+                BetterBlockPos clearMin = selections[0].min();
+                BetterBlockPos clearMax = selections[0].max();
+                for (ISelection sel : selections) {
+                    BetterBlockPos smin = sel.min();
+                    BetterBlockPos smax = sel.max();
+                    clearMin = new BetterBlockPos(
+                            Math.min(clearMin.x, smin.x),
+                            Math.min(clearMin.y, smin.y),
+                            Math.min(clearMin.z, smin.z)
+                    );
+                    clearMax = new BetterBlockPos(
+                            Math.max(clearMax.x, smax.x),
+                            Math.max(clearMax.y, smax.y),
+                            Math.max(clearMax.z, smax.z)
+                    );
+                }
+                baritone.getBuilderProcess().clearArea(clearMin, clearMax);
+                logDirect("Clearing area now");
+                return;
+            }
             BetterBlockPos origin = selections[0].min();
             CompositeSchematic composite = new CompositeSchematic(0, 0, 0);
             for (ISelection selection : selections) {

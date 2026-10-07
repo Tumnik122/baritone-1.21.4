@@ -67,6 +67,12 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             this.target = null;
             return;
         }
+        // Priorytetyzacja: aktywna interakcja z blokiem (kopanie/sadzenie/bicie) ma wyższy priorytet
+        // niż pasywny obrót głowy podążający za ścieżką (blockInteract == false).
+        // Zapobiega nadpisywaniu celowania w pszenicę przez Movement.update() w tym samym ticku!
+        if (this.target != null && this.target.blockInteract && !blockInteract) {
+            return;
+        }
         this.target = new Target(rotation, Target.Mode.resolve(ctx, blockInteract), blockInteract);
     }
 
@@ -78,6 +84,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     @Override
     public void onTick(TickEvent event) {
         if (event.getType() == TickEvent.Type.IN) {
+            this.target = null;
             this.processor.tick();
         }
     }
@@ -96,22 +103,21 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 }
 
                 this.prevRotation = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
-                Rotation actual = this.processor.peekRotation(this.target.rotation, this.target.blockInteract);
-
-                // Anti-DuplicateRotPlace: add Gaussian micro-jitter when target rotation is stationary (only if not blockInteract)
-                if (!this.target.blockInteract) {
-                    actual = this.applyAntiDuplicateJitter(actual);
-                }
-
-                this.lastAppliedYaw   = actual.getYaw();
-                this.lastAppliedPitch = actual.getPitch();
 
                 if (Baritone.settings().smoothRotation.value) {
-                    SmoothLookHelper.apply(ctx.player(), actual, Baritone.settings(), this.target.blockInteract);
+                    // Płynna rotacja przez silnik RotationEngine na pełny docelowy cel (C2 smootherstep, GCD, brak 1-tick snapów)
+                    SmoothLookHelper.apply(ctx.player(), this.target.rotation, Baritone.settings(), this.target.blockInteract);
                 } else {
+                    Rotation actual = this.processor.peekRotation(this.target.rotation, this.target.blockInteract);
+                    if (!this.target.blockInteract) {
+                        actual = this.applyAntiDuplicateJitter(actual);
+                    }
                     ctx.player().setYRot(actual.getYaw());
                     ctx.player().setXRot(actual.getPitch());
                 }
+
+                this.lastAppliedYaw   = ctx.player().getYRot();
+                this.lastAppliedPitch = ctx.player().getXRot();
                 break;
             }
             case POST: {
@@ -143,38 +149,21 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             float yaw   = packet.getYRot(0.0f);
             float pitch = packet.getXRot(0.0f);
 
-            if (Baritone.settings().humanizedRotations.value) {
-                // ── Velocity-correlated Gaussian jitter ──────────────────────────
-                // Real mice produce more jitter the faster they are moving.
-                // A flat ±0.02° uniform distribution is a bot fingerprint;
-                // we scale a Gaussian jitter by how fast the crosshair just moved.
-                float deltaYaw   = Math.abs(Mth.wrapDegrees(yaw   - lastSentYaw));
-                float deltaPitch = Math.abs(pitch - lastSentPitch);
-                float velocityScale = Math.min(1.0f, (deltaYaw + deltaPitch) / 6.0f);
-
-                float jitterY = (float) (ThreadLocalRandom.current().nextGaussian()
-                        * (0.018f + velocityScale * 0.045f));
-                float jitterP = (float) (ThreadLocalRandom.current().nextGaussian()
-                        * (0.012f + velocityScale * 0.028f));
-
-                // ── Idle hand-tremor ─────────────────────────────────────────────
-                // Regardless of rotation speed, fire a tiny random micro-correction
-                // every 200–600 ms – simulates the hand resting on the mouse.
-                long now = System.currentTimeMillis();
-                if (now >= nextIdleJitterMs) {
-                    jitterY += (float) (ThreadLocalRandom.current().nextGaussian() * 0.05f);
-                    jitterP += (float) (ThreadLocalRandom.current().nextGaussian() * 0.03f);
-                    nextIdleJitterMs = now + 200L + ThreadLocalRandom.current().nextLong(401);
-                }
-
-                yaw   += jitterY;
-                pitch += jitterP;
-            }
-
             lastSentYaw   = yaw;
             lastSentPitch = pitch;
             this.serverRotation = new Rotation(yaw, pitch);
         }
+    }
+
+    @Override
+    public Rotation getServerRotation() {
+        if (this.serverRotation != null) {
+            return this.serverRotation;
+        }
+        if (ctx.player() != null) {
+            return new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
+        }
+        return new Rotation(0.0f, 0.0f);
     }
 
     @Override
@@ -206,7 +195,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         if (dYaw < 0.01F && dPitch < 0.01F) {
             float yaw = target.getYaw() + (float) (ThreadLocalRandom.current().nextGaussian() * 0.015F);
             float pitch = target.getPitch() + (float) (ThreadLocalRandom.current().nextGaussian() * 0.010F);
-            return new Rotation(Mth.wrapDegrees(yaw), Mth.clamp(pitch, -90.0F, 90.0F));
+            return new Rotation(yaw, Mth.clamp(pitch, -90.0F, 90.0F));
         }
         return target;
     }
@@ -221,9 +210,17 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     @Override
     public void onPlayerRotationMove(RotationMoveEvent event) {
         if (this.target != null) {
-            final Rotation actual = this.processor.peekRotation(this.target.rotation);
-            event.setYaw(actual.getYaw());
-            event.setPitch(actual.getPitch());
+            if (!Float.isNaN(this.lastAppliedYaw) && !Float.isNaN(this.lastAppliedPitch)) {
+                // Return the EXACT rotation that was applied at the start of this tick in onPlayerUpdate (PRE).
+                // Re-calling peekRotation() mid-tick advanced the yaw interpolation ahead of time,
+                // causing jumpFromGround/moveRelative to simulate with a different yaw than the tick started with.
+                event.setYaw(this.lastAppliedYaw);
+                event.setPitch(this.lastAppliedPitch);
+            } else {
+                final Rotation actual = this.processor.peekRotation(this.target.rotation);
+                event.setYaw(actual.getYaw());
+                event.setPitch(actual.getPitch());
+            }
         }
     }
 
@@ -402,29 +399,30 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                     deltaPitch += (float) ((this.rand.nextDouble() - 0.5) * jitterAmount * 1.5);
                 }
 
-                // ── 9. Occasional snap (2 % chance) ──────────────────────────
-                if (ThreadLocalRandom.current().nextDouble() < 0.02) {
-                    deltaYaw   += (float) (ThreadLocalRandom.current().nextGaussian() * 1.2);
-                    deltaPitch += (float) (ThreadLocalRandom.current().nextGaussian() * 0.8);
-                }
             }
 
             float newYaw   = this.calculateMouseMove(prev.getYaw(),   deltaYaw);
-            float newPitch = Mth.clamp(this.calculateMouseMove(prev.getPitch(), deltaPitch), -90.0F, 90.0F);
+            float newPitch = this.calculateMouseMove(prev.getPitch(), deltaPitch);
 
             // ── 10. Natural mouse-step rounding ───────────────────────────────
-            // Instead of rounding to a fixed 1/1000°, round to the minimum
-            // physical mouse step (mouseToAngle(1.0)) so the quantisation matches
-            // what the client would send from actual mouse movement.
             float mouseStep = Math.abs(mouseToAngle(1.0));
             if (mouseStep > 0f) {
-                newYaw   = Math.round(newYaw   / mouseStep) * mouseStep;
-                newPitch = Math.round(newPitch / mouseStep) * mouseStep;
-            }
+                float qDeltaYaw = Math.round(deltaYaw / mouseStep) * mouseStep;
+                float qDeltaPitch = Math.round(deltaPitch / mouseStep) * mouseStep;
+                newYaw   = prev.getYaw() + qDeltaYaw;
+                newPitch = prev.getPitch() + qDeltaPitch;
 
-            // Strictly clamp pitch after rounding to guarantee [-90.0F, 90.0F] bounds
-            // and eliminate float rounding artifacts (e.g. -90.000015F triggering BadPacketsD).
-            newPitch = Mth.clamp(newPitch, -90.0F, 90.0F);
+                // Strictly clamp pitch while maintaining GCD multiple
+                if (newPitch > 89.5F) {
+                    int maxSteps = (int) Math.floor((89.5F - prev.getPitch()) / mouseStep);
+                    newPitch = prev.getPitch() + maxSteps * mouseStep;
+                } else if (newPitch < -89.5F) {
+                    int minSteps = (int) Math.ceil((-89.5F - prev.getPitch()) / mouseStep);
+                    newPitch = prev.getPitch() + minSteps * mouseStep;
+                }
+            } else {
+                newPitch = Mth.clamp(newPitch, -89.5F, 89.5F);
+            }
 
             return new Rotation(newYaw, newPitch);
         }
@@ -527,6 +525,9 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
             static Mode resolve(IPlayerContext ctx, boolean blockInteract) {
                 final Settings settings    = Baritone.settings();
+                if (settings.antiCheatCompat.value || settings.antiCheatCompatibility.value) {
+                    return CLIENT;
+                }
                 final boolean blockFreeLook = settings.blockFreeLook.value;
 
                 if (ctx.player() != null && ctx.player().isFallFlying()) {

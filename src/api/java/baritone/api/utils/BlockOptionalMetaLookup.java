@@ -70,14 +70,17 @@ public class BlockOptionalMetaLookup {
     }
 
     public boolean has(Block block) {
-        return blockSet.contains(block);
+        return block != null && blockSet.contains(block);
     }
 
     public boolean has(BlockState state) {
-        return blockStateSet.contains(state);
+        return state != null && blockStateSet.contains(state);
     }
 
     public boolean has(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
         int hash = ((IItemStack) (Object) stack).getBaritoneHash();
         hash -= stack.getDamageValue();
         return stackHashes.contains(hash);
