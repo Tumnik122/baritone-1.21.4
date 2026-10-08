@@ -1384,6 +1384,13 @@ public final class Settings {
      */
     public final Setting<Integer> farmLowCropRadius = new Setting<>(100);
 
+    /**
+     * Ogranicza zbiory wyłącznie do dojrzałej pszenicy (Blocks.WHEAT).
+     * Jeśli włączone (lub w trybie #praca), bot ignoruje inne rośliny (marchew, ziemniaki, dynie itp.)
+     * i zbiera wyłącznie pszenicę, zapobiegając niszczeniu innych struktur i mieszaniu nasion.
+     */
+    public final Setting<Boolean> farmWheatOnly = new Setting<>(false);
+
 
     /**
      * When the cache scan gives less blocks than the maximum threshold (but still above zero), scan the main world too.

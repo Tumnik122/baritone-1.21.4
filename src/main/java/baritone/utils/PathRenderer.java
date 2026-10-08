@@ -705,91 +705,95 @@ public final class PathRenderer implements IRenderer {
      * Placement success events get an orbiting-orb animation.
      */
     private static void renderBuilderOverlay(PoseStack stack, IPlayerContext ctx, float partialTicks) {
-        if (BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess() == null) {
-            return;
-        }
-        Object rawBuilder = BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess();
-        if (!(rawBuilder instanceof BuilderProcess builder) || !builder.isActive()) {
-            return;
-        }
-
-        float time = (ctx.world().getGameTime() + partialTicks) / 20.0F;
-        Vec3 eye = ctx.player().getEyePosition(partialTicks);
-        double reach = BaritoneAPI.getSettings().builderPlacementReach.value;
-        int maxTargets = BaritoneAPI.getSettings().builderOverlayMaxTargets.value;
-        double overlayDist = BaritoneAPI.getSettings().builderOverlayDistance.value;
-
-        List<PlacementScheduler.Target> pending = builder.getPendingTargets();
-        PlacementScheduler.Target current = builder.getCurrentTarget();
-
-        // ---- pass 1: color-coded wireframes for all pending targets (no depth test) ----
-        if (!pending.isEmpty()) {
-            // Color constants
-            Color colorGreen  = new Color(0x00, 0xFF, 0x64, 100);
-            Color colorAmber  = new Color(0xFF, 0xC8, 0x00, 76);
-            Color colorRed    = new Color(0xFF, 0x32, 0x32, 130);
-            Color colorBlue   = new Color(0x50, 0x96, 0xFF, 51);
-
-            int drawn = 0;
-            BufferBuilder bb = IRenderer.startLines(colorGreen, 0.4f, 1.5f, true);
-            for (PlacementScheduler.Target t : pending) {
-                if (t == current) continue;
-                if (drawn >= maxTargets) break;
-                double dx = t.pos.getX() + 0.5 - eye.x;
-                double dy = t.pos.getY() + 0.5 - eye.y;
-                double dz = t.pos.getZ() + 0.5 - eye.z;
-                if (dx * dx + dy * dy + dz * dz > overlayDist * overlayDist) continue;
-
-                boolean missing = builder.isMissingMaterial(t);
-                boolean skipped = builder.isSkipped(t);
-
-                Color c;
-                if (missing) {
-                    float pulse = 0.55f + 0.45f * Mth.sin(time * 7.0f);
-                    c = new Color(0xFF, 0x32, 0x32, (int)(130 * pulse));
-                } else if (skipped) {
-                    c = colorBlue;
-                } else if (eye.distanceToSqr(Vec3.atCenterOf(t.pos)) < reach * reach) {
-                    c = colorGreen;
-                } else {
-                    c = colorAmber;
-                }
-                IRenderer.glColor(c, c.getAlpha() / 255.0f);
-                IRenderer.emitAABB(bb, stack, new AABB(t.pos));
-                drawn++;
+        try {
+            if (BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess() == null) {
+                return;
             }
-            IRenderer.endLines(bb, true);
-        }
+            Object rawBuilder = BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess();
+            if (!(rawBuilder instanceof BuilderProcess builder) || !builder.isActive()) {
+                return;
+            }
 
-        // ---- pass 2: current target — bright white pulsing wireframe + holo fill ----
-        if (current != null) {
-            float pulse = 0.5f + 0.5f * Mth.sin(time * 6.0f);
-            Color curColor = new Color(1.0f, 1.0f, 1.0f, 0.5f + 0.5f * pulse);
+            float time = (ctx.world().getGameTime() + partialTicks) / 20.0F;
+            Vec3 eye = ctx.player().getEyePosition(partialTicks);
+            double reach = BaritoneAPI.getSettings().builderPlacementReach.value;
+            int maxTargets = BaritoneAPI.getSettings().builderOverlayMaxTargets.value;
+            double overlayDist = BaritoneAPI.getSettings().builderOverlayDistance.value;
 
-            BufferBuilder bbCur = IRenderer.startLines(curColor, 0.5f + 0.5f * pulse, 2.5f, true);
-            IRenderer.glColor(curColor, 0.5f + 0.5f * pulse);
-            IRenderer.emitAABB(bbCur, stack, new AABB(current.pos));
-            IRenderer.endLines(bbCur, true);
+            List<PlacementScheduler.Target> pending = builder.getPendingTargets();
+            PlacementScheduler.Target current = builder.getCurrentTarget();
 
-            // Holographic fill (uses existing holo shader if available)
-            if (BaritoneAPI.getSettings().builderHologramCurrentTarget.value) {
-                Color holoColor = new Color(0x9A, 0xE8, 0xFF, (int)(255 * 0.25f * (0.6f + 0.4f * pulse)));
-                if (WorldFxShaders.isUsable()) {
-                    WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_HOLO, true, false);
-                    WorldFxShaders.holoBox(new AABB(current.pos), holoColor, holoColor.getAlpha() / 255.0f);
-                    WorldFxShaders.end();
-                } else {
-                    BufferBuilder bbHolo = IRenderer.startFilledHolo(holoColor, holoColor.getAlpha() / 255.0f, true);
-                    IRenderer.glColor(holoColor, holoColor.getAlpha() / 255.0f);
-                    IRenderer.emitFilledAABB(bbHolo, stack, new AABB(current.pos));
-                    IRenderer.endFilled(bbHolo, true);
+            // ---- pass 1: color-coded wireframes for all pending targets (no depth test) ----
+            if (!pending.isEmpty()) {
+                // Color constants
+                Color colorGreen  = new Color(0x00, 0xFF, 0x64, 100);
+                Color colorAmber  = new Color(0xFF, 0xC8, 0x00, 76);
+                Color colorRed    = new Color(0xFF, 0x32, 0x32, 130);
+                Color colorBlue   = new Color(0x50, 0x96, 0xFF, 51);
+
+                int drawn = 0;
+                BufferBuilder bb = IRenderer.startLines(colorGreen, 0.4f, 1.5f, true);
+                for (PlacementScheduler.Target t : pending) {
+                    if (t == current) continue;
+                    if (drawn >= maxTargets) break;
+                    double dx = t.pos.getX() + 0.5 - eye.x;
+                    double dy = t.pos.getY() + 0.5 - eye.y;
+                    double dz = t.pos.getZ() + 0.5 - eye.z;
+                    if (dx * dx + dy * dy + dz * dz > overlayDist * overlayDist) continue;
+
+                    boolean missing = builder.isMissingMaterial(t);
+                    boolean skipped = builder.isSkipped(t);
+
+                    Color c;
+                    if (missing) {
+                        float pulse = 0.55f + 0.45f * Mth.sin(time * 7.0f);
+                        c = new Color(0xFF, 0x32, 0x32, (int)(130 * pulse));
+                    } else if (skipped) {
+                        c = colorBlue;
+                    } else if (eye.distanceToSqr(Vec3.atCenterOf(t.pos)) < reach * reach) {
+                        c = colorGreen;
+                    } else {
+                        c = colorAmber;
+                    }
+                    IRenderer.glColor(c, c.getAlpha() / 255.0f);
+                    IRenderer.emitAABB(bb, stack, new AABB(t.pos));
+                    drawn++;
+                }
+                IRenderer.endLines(bb, true);
+            }
+
+            // ---- pass 2: current target — bright white pulsing wireframe + holo fill ----
+            if (current != null) {
+                float pulse = 0.5f + 0.5f * Mth.sin(time * 6.0f);
+                Color curColor = new Color(1.0f, 1.0f, 1.0f, 0.5f + 0.5f * pulse);
+
+                BufferBuilder bbCur = IRenderer.startLines(curColor, 0.5f + 0.5f * pulse, 2.5f, true);
+                IRenderer.glColor(curColor, 0.5f + 0.5f * pulse);
+                IRenderer.emitAABB(bbCur, stack, new AABB(current.pos));
+                IRenderer.endLines(bbCur, true);
+
+                // Holographic fill (uses existing holo shader if available)
+                if (BaritoneAPI.getSettings().builderHologramCurrentTarget.value) {
+                    Color holoColor = new Color(0x9A, 0xE8, 0xFF, (int)(255 * 0.25f * (0.6f + 0.4f * pulse)));
+                    if (WorldFxShaders.isUsable()) {
+                        WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_HOLO, true, false);
+                        WorldFxShaders.holoBox(new AABB(current.pos), holoColor, holoColor.getAlpha() / 255.0f);
+                        WorldFxShaders.end();
+                    } else {
+                        BufferBuilder bbHolo = IRenderer.startFilledHolo(holoColor, holoColor.getAlpha() / 255.0f, true);
+                        IRenderer.glColor(holoColor, holoColor.getAlpha() / 255.0f);
+                        IRenderer.emitFilledAABB(bbHolo, stack, new AABB(current.pos));
+                        IRenderer.endFilled(bbHolo, true);
+                    }
                 }
             }
-        }
 
-        // ---- pass 3: placement FX (orbiting orbs on success) ----
-        if (BaritoneAPI.getSettings().builderPlacementFx.value && WorldFxShaders.isUsable()) {
-            renderPlacementFxOrbs(stack, builder, time, partialTicks);
+            // ---- pass 3: placement FX (orbiting orbs on success) ----
+            if (BaritoneAPI.getSettings().builderPlacementFx.value && WorldFxShaders.isUsable()) {
+                renderPlacementFxOrbs(stack, builder, time, partialTicks);
+            }
+        } catch (Throwable ignored) {
+            // Guard against render thread exceptions / concurrent modifications
         }
     }
 

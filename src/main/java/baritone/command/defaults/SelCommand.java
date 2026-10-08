@@ -143,6 +143,10 @@ public class SelCommand extends Command {
                 args.requireMax(1);
                 alignment = args.hasAny() ? args.getDatatypeFor(ForAxis.INSTANCE) : Direction.Axis.Y;
                 replaces = null;
+            } else if (action == Action.CLEARAREA) {
+                // Ignore any optional trailing description (e.g. #sel cleararea arena)
+                replaces = null;
+                alignment = null;
             } else {
                 args.requireMax(0);
                 replaces = null;

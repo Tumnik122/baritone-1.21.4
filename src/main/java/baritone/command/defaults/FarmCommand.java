@@ -75,15 +75,17 @@ public class FarmCommand extends Command {
                     logDirect(String.format("  §fCzas sesji: §e%dm %ds", sessionMin, sessionSec));
                 }
                 boolean isPraca = FarmProcess.isPracaModeActive();
+                boolean wheatOnly = Baritone.settings().farmWheatOnly.value;
                 int harvestable = FarmProcess.getPracaHarvestableCount();
                 int groundDrops = FarmProcess.getPracaGroundDropsCount();
                 int threshold = Baritone.settings().farmLowCropThreshold.value;
+                logDirect("  §fTylko pszenica: " + (wheatOnly ? "§aWŁĄCZONE (tylko roślina pszenicy)" : "§7WYŁĄCZONE (wszystkie plony)"));
                 logDirect("  §fTryb #praca (zbieranie gdy <" + threshold + " plonów w r=100): " + (isPraca ? "§aWŁĄCZONY" : "§7WYŁĄCZONY"));
                 if (isPraca) {
                     logDirect(String.format("    • Dojrzałe w r=100: §e%d szt. §7(próg: §e%d§7)  • Na ziemi: §e%d szt.", harvestable, threshold, groundDrops));
                     logDirect(String.format("    • Bieżący priorytet: %s", (harvestable < threshold && groundDrops > 0) ? "§6ZBIERANIE Z ZIEMI" : "§aZBIÓR PLONÓW"));
                 }
-                logDirect("  §7(#farm status | #farm fast | #farm legit | #farm praca | #farm replant on/off | #farm stop)");
+                logDirect("  §7(#farm status | #farm wheat on/off | #farm fast | #farm legit | #farm praca | #farm replant on/off | #farm stop)");
                 return;
             }
 
@@ -107,6 +109,25 @@ public class FarmCommand extends Command {
                 baritone.getFarmProcess().onLostControl();
                 baritone.getPathingBehavior().cancelEverything();
                 logDirect("§c[Farm] Farmienie zostało ZATRZYMANE.");
+                return;
+            }
+
+            if (first.equals("wheat") || first.equals("pszenica") || first.equals("roslina") || first.equals("rosliny")) {
+                args.getString(); // consume
+                if (args.hasAny()) {
+                    String val = args.getString().toLowerCase(Locale.ROOT);
+                    if (val.equals("on") || val.equals("true") || val.equals("1")) {
+                        Baritone.settings().farmWheatOnly.value = true;
+                        logDirect("§a[Farm] Tryb wyłącznie pszenicy (tylko roślina pszenicy) WŁĄCZONY.");
+                    } else if (val.equals("off") || val.equals("false") || val.equals("0")) {
+                        Baritone.settings().farmWheatOnly.value = false;
+                        logDirect("§c[Farm] Tryb wyłącznie pszenicy WYŁĄCZONY (zbiera wszystkie plony).");
+                    }
+                } else {
+                    boolean cur = !Baritone.settings().farmWheatOnly.value;
+                    Baritone.settings().farmWheatOnly.value = cur;
+                    logDirect("§e[Farm] Tylko pszenica: " + (cur ? "§aWŁĄCZONE (tylko roślina pszenicy)" : "§cWYŁĄCZONE (wszystkie plony)"));
+                }
                 return;
             }
 
@@ -213,11 +234,12 @@ public class FarmCommand extends Command {
     @Override
     public Stream<String> tabComplete(String label, IArgConsumer args) throws CommandException {
         if (args.hasExactlyOne()) {
-            return Stream.of("status", "stop", "replant", "praca", "pickup", "fast", "legit", "10", "20", "30", "50", "100");
+            return Stream.of("status", "stop", "wheat", "pszenica", "replant", "praca", "pickup", "fast", "legit", "10", "20", "30", "50", "100");
         }
         if (args.has(2)) {
             String first = args.getString().toLowerCase(Locale.ROOT);
-            if (first.equals("replant") || first.equals("praca") || first.equals("pickup")) {
+            if (first.equals("replant") || first.equals("praca") || first.equals("pickup")
+                    || first.equals("wheat") || first.equals("pszenica") || first.equals("roslina")) {
                 return Stream.of("on", "off");
             }
         }
@@ -240,6 +262,7 @@ public class FarmCommand extends Command {
                 "> farm <zasięg> - farmi w określonym promieniu od aktualnej pozycji.",
                 "> farm <zasięg> <waypoint> - farmi w promieniu od danego waypointa.",
                 "> farm status - wyświetla stan modułu farmienia i liczbę nasion w ekwipunku.",
+                "> farm wheat <on/off> - zbiera wyłącznie pszenicę (blokuje inne rośliny i chroni bruk/struktury).",
                 "> farm replant <on/off> - włącza/wyłącza ponowne sadzenie nasion.",
                 "> farm stop - natychmiast zatrzymuje farmienie."
         );

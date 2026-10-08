@@ -409,6 +409,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     }
 
     private boolean readyForHarvest(Level world, BlockPos pos, BlockState state) {
+        if (Baritone.settings().farmWheatOnly.value || pracaMode) {
+            return state.getBlock() == Blocks.WHEAT && ((CropBlock) Blocks.WHEAT).isMaxAge(state);
+        }
         Harvest h = HARVEST_BY_BLOCK.get(state.getBlock());
         return h != null && h.readyToHarvest(world, pos, state);
     }
@@ -436,6 +439,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     private boolean isPlantable(ItemStack stack) {
         if (stack == null || stack.isEmpty())
             return false;
+        if (Baritone.settings().farmWheatOnly.value || pracaMode) {
+            return stack.getItem() == Items.WHEAT_SEEDS;
+        }
         return FARMLAND_PLANTABLE.contains(stack.getItem());
     }
 
@@ -760,6 +766,146 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         }
     }
 
+    /**
+     * Dedykowany cel do podnoszenia leżących przedmiotów na farmie.
+     * Wymaga wejścia w ten sam słupek X,Z (na poziomie podłogi lub o 1 niżej na farmlandzie),
+     * dzięki czemu hitbox gracza przecina item i natychmiast go zbiera bez zatrzymywania się obok.
+     */
+    public static final class GoalPickupItem implements Goal, IGoalRenderPos {
+        private final BlockPos pos;
+
+        public GoalPickupItem(BlockPos pos) {
+            this.pos = pos;
+        }
+
+        @Override
+        public boolean isInGoal(int x, int y, int z) {
+            return x == pos.getX() && z == pos.getZ() && (y == pos.getY() || y == pos.getY() - 1);
+        }
+
+        @Override
+        public double heuristic(int x, int y, int z) {
+            int xDiff = x - pos.getX();
+            int yDiff = y - pos.getY();
+            int zDiff = z - pos.getZ();
+            return GoalBlock.calculate(xDiff, yDiff, zDiff);
+        }
+
+        @Override
+        public BlockPos getGoalPos() {
+            return pos;
+        }
+
+        @Override
+        public String toString() {
+            return "GoalPickupItem{" + pos.getX() + "," + pos.getY() + "," + pos.getZ() + "}";
+        }
+    }
+
+    /**
+     * Inteligentny wybór celów wzdłuż rzędów (Lane Traversal):
+     * - Jeśli gracz idzie wzdłuż rzędu, priorytetyzuje plony przed nim (dist >= 1.5 i dot > 0.25),
+     *   dzięki czemu bot biegnie sprintem bez zatrzymywania się na każdym klocku.
+     * - Plony pod stopami są zbierane automatycznie w biegu w sekcji 7.
+     * - Gdy rząd się skończy, wybiera początek kolejnej alei z minimalizacją ostrego nawrotu.
+     */
+    private List<BlockPos> selectOptimizedHarvestGoals(List<BlockPos> source, BetterBlockPos playerPos) {
+        if (source == null || source.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<BlockPos> nearby = new ArrayList<>();
+        double maxDistSq = 32.0D * 32.0D;
+        for (BlockPos p : source) {
+            if (!isBlacklisted(p) && playerPos.distSqr(p) <= maxDistSq) {
+                nearby.add(p);
+            }
+        }
+        if (nearby.isEmpty()) {
+            for (BlockPos p : source) {
+                if (!isBlacklisted(p)) nearby.add(p);
+            }
+            if (nearby.isEmpty()) return Collections.emptyList();
+        }
+
+        Vec3 delta = ctx.player() != null ? ctx.player().getDeltaMovement() : Vec3.ZERO;
+        double dirX = delta.x;
+        double dirZ = delta.z;
+        double speedSq = dirX * dirX + dirZ * dirZ;
+        if (speedSq > 0.003D) {
+            double len = Math.sqrt(speedSq);
+            dirX /= len;
+            dirZ /= len;
+        } else {
+            Vec3 look = ctx.player() != null ? ctx.player().getLookAngle() : new Vec3(1, 0, 0);
+            dirX = look.x;
+            dirZ = look.z;
+            double len = Math.sqrt(dirX * dirX + dirZ * dirZ);
+            if (len > 0.001D) {
+                dirX /= len;
+                dirZ /= len;
+            } else {
+                dirX = 1.0D;
+                dirZ = 0.0D;
+            }
+        }
+
+        final double forwardX = dirX;
+        final double forwardZ = dirZ;
+
+        List<BlockPos> forwardCrops = new ArrayList<>();
+        for (BlockPos p : nearby) {
+            double dx = p.getX() + 0.5D - playerPos.getX();
+            double dz = p.getZ() + 0.5D - playerPos.getZ();
+            double distSq = dx * dx + dz * dz;
+            if (distSq >= 2.25D) {
+                double dist = Math.sqrt(distSq);
+                double dot = (dx * forwardX + dz * forwardZ) / dist;
+                if (dot > 0.25D) {
+                    forwardCrops.add(p);
+                }
+            }
+        }
+
+        List<BlockPos> selected = new ArrayList<>(3);
+        if (!forwardCrops.isEmpty()) {
+            forwardCrops.sort(Comparator.comparingDouble(p -> {
+                double dx = p.getX() + 0.5D - playerPos.getX();
+                double dz = p.getZ() + 0.5D - playerPos.getZ();
+                double distSq = dx * dx + dz * dz;
+                double dist = Math.sqrt(distSq);
+                double dot = (dx * forwardX + dz * forwardZ) / dist;
+                return distSq - (dot * 16.0D);
+            }));
+
+            selected.add(forwardCrops.get(0));
+            for (int i = 1; i < forwardCrops.size(); i++) {
+                BlockPos p = forwardCrops.get(i);
+                if (p.distSqr(selected.get(0)) >= 4.0D) {
+                    selected.add(p);
+                    break;
+                }
+            }
+        } else {
+            nearby.sort(Comparator.comparingDouble(p -> {
+                double dx = p.getX() + 0.5D - playerPos.getX();
+                double dz = p.getZ() + 0.5D - playerPos.getZ();
+                double distSq = dx * dx + dz * dz;
+                double dist = Math.sqrt(distSq);
+                double dot = (dist > 0.1D) ? (dx * forwardX + dz * forwardZ) / dist : 1.0D;
+                double turnPenalty = (dot < -0.5D) ? 8.0D : 0.0D;
+                return distSq + turnPenalty;
+            }));
+
+            int count = Math.min(2, nearby.size());
+            for (int i = 0; i < count; i++) {
+                selected.add(nearby.get(i));
+            }
+        }
+
+        return selected;
+    }
+
     private boolean canSafelyJump() {
         return ctx.player().onGround() && !ctx.player().isInWater()
                 && !ctx.world().getBlockState(ctx.playerFeet().below()).is(Blocks.FARMLAND);
@@ -893,14 +1039,20 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
             final List<Block> scan = new ArrayList<>();
             if (!plantOnly) {
-                for (Harvest harvest : Harvest.values()) {
-                    scan.add(harvest.block);
+                if (Baritone.settings().farmWheatOnly.value || pracaMode) {
+                    scan.add(Blocks.WHEAT);
+                } else {
+                    for (Harvest harvest : Harvest.values()) {
+                        scan.add(harvest.block);
+                    }
                 }
             } else {
                 scan.add(Blocks.FARMLAND);
-                scan.add(Blocks.JUNGLE_LOG);
-                if (Baritone.settings().replantNetherWart.value) {
-                    scan.add(Blocks.SOUL_SAND);
+                if (!Baritone.settings().farmWheatOnly.value && !pracaMode) {
+                    scan.add(Blocks.JUNGLE_LOG);
+                    if (Baritone.settings().replantNetherWart.value) {
+                        scan.add(Blocks.SOUL_SAND);
+                    }
                 }
             }
 
@@ -1244,6 +1396,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             if (!acted) {
                 for (BlockPos pos : candidates) {
                     BlockState bState = ctx.world().getBlockState(pos);
+                    if (!readyForHarvest(ctx.world(), pos, bState)) {
+                        continue;
+                    }
                     final boolean isInstant = bState.getDestroySpeed(ctx.world(), pos) == 0.0F;
                     final boolean fastMode = Baritone.settings().farmFastMode.value;
 
@@ -1267,7 +1422,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         continue;
 
                     applyAimRotation(rot.get(), fastMode);
-                    MovementHelper.switchToBestToolFor(ctx, bState);
+                    if (!isInstant) {
+                        MovementHelper.switchToBestToolFor(ctx, bState);
+                    }
                     if (pos.equals(currentTargetPos)) {
                         targetTicks++;
                     } else {
@@ -1675,7 +1832,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             }
 
             // W trybie #praca z plonami poniżej progu: priorytet zbierania itemów leżących na ziemi.
-            // Max 2 cele na raz — prostoliniowa ścieżka do najbliższego itemu!
+            // Max 2 cele na raz — bezpośrednio przechodzimy przez itemy!
             int maxPickupGoals = Math.min(2, nearbyDrops.size());
             for (int i = 0; i < maxPickupGoals; i++) {
                 ItemEntity ei = nearbyDrops.get(i);
@@ -1683,61 +1840,44 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     break;
                 }
                 BlockPos standPos = BlockPos.containing(ei.getX(), ei.getY() + 0.1D, ei.getZ());
-                goalz.add(new GoalGetToBlock(standPos));
+                goalz.add(new GoalPickupItem(standPos));
             }
             if (farmTicks % 100 == 0) {
                 logDirect(String.format("§e[Praca] Tryb zbierania z ziemi (%d plonów w r=%d < %d). Zbieram: %d itemów",
                         pracaHarvestableCount, dropRadius, threshold, nearbyDrops.size()));
             }
 
-            // Fallback: max 2 pobliskie plony (prostoliniowo!)
+            // Fallback: max 2 pobliskie plony wzdłuż alei
             if (!plantOnly && !toBreak.isEmpty()) {
-                List<BlockPos> validBreak = getNearbyValidBlocks(toBreak, playerPos, 20);
-                if (!validBreak.isEmpty()) {
-                    goalz.add(new GoalFarmTarget(validBreak.get(0)));
-                    if (validBreak.size() > 1) goalz.add(new GoalFarmTarget(validBreak.get(1)));
+                List<BlockPos> fallbackGoals = selectOptimizedHarvestGoals(toBreak, playerPos);
+                for (BlockPos p : fallbackGoals) {
+                    goalz.add(new GoalFarmTarget(p));
                 }
             }
         } else {
             currentDropTargetId = -1;
             dropPickupWaitTicks = 0;
 
-            // ── GREEDY NEAREST-FIRST: zawsze idź do 3 najbliższych plonów ──
-            // W gęstej farmie sekcja 7 zbiera wszystko w zasięgu 3.9 bloka gdy bot idzie.
-            // Nie trzeba TSP — wystarczy zawsze być blisko pszenicy.
-            // 3 cele = 2 fallbacki na CALC_FAILED bez ryzyka centroid-curvature.
+            // ── LANE TRAVERSAL: inteligentny bieg wzdłuż rzędów upraw ──
+            // Bot biegnie sprintem wzdłuż rzędów, zbierając i sadząc plony w biegu (20 bloków/s)
+            // bez zatrzymywania się na każdym klocku i bez zygzakowania po sąsiednich grządkach.
 
-            // A. Dojrzałe plony — 3 najbliższe
+            // A. Dojrzałe plony — trasa wzdłuż rzędów
             if (!plantOnly && !toBreak.isEmpty()) {
-                // Szybkie sort wg dystansu (O(n log n), prosta heurystyka bez TSP)
                 harvestQueue.clear();
-                List<BlockPos> validBreak = getNearbyValidBlocks(toBreak, playerPos, 28);
-                validBreak.sort(Comparator.comparingDouble(playerPos::distSqr));
-                int hCount = 0;
-                for (BlockPos p : validBreak) {
-                    if (!isBlacklisted(p)) {
-                        harvestQueue.add(p);
-                        if (++hCount >= 3) break;
-                    }
-                }
-                for (BlockPos p : harvestQueue) {
+                List<BlockPos> goals = selectOptimizedHarvestGoals(toBreak, playerPos);
+                for (BlockPos p : goals) {
+                    harvestQueue.add(p);
                     goalz.add(new GoalFarmTarget(p));
                 }
             }
 
-            // B. Sadzenie pustej ziemi — 3 najbliższe
+            // B. Sadzenie pustej ziemi — trasa wzdłuż rzędów
             if (haveSeeds && !openFarmland.isEmpty()) {
                 plantQueue.clear();
-                List<BlockPos> validFarmland = getNearbyValidBlocks(openFarmland, playerPos, 24);
-                validFarmland.sort(Comparator.comparingDouble(playerPos::distSqr));
-                int pCount = 0;
-                for (BlockPos p : validFarmland) {
-                    if (!isBlacklisted(p)) {
-                        plantQueue.add(p);
-                        if (++pCount >= 3) break;
-                    }
-                }
-                for (BlockPos p : plantQueue) {
+                List<BlockPos> goals = selectOptimizedHarvestGoals(openFarmland, playerPos);
+                for (BlockPos p : goals) {
+                    plantQueue.add(p);
                     goalz.add(new GoalFarmTarget(p));
                 }
             }
@@ -1770,7 +1910,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 }
             }
 
-            // Normalny tryb: zbieramy pobliskie leżące itemy (max 2 cele)
+            // Normalny tryb: zbieramy pobliskie leżące itemy (max 2 cele przechodząc przez nie)
             int maxPickupGoals = Math.min(2, nearbyDrops.size());
             for (int i = 0; i < maxPickupGoals; i++) {
                 ItemEntity ei = nearbyDrops.get(i);
@@ -1778,7 +1918,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     break;
                 }
                 BlockPos standPos = BlockPos.containing(ei.getX(), ei.getY() + 0.1D, ei.getZ());
-                goalz.add(new GoalGetToBlock(standPos));
+                goalz.add(new GoalPickupItem(standPos));
             }
         }
 

@@ -24,6 +24,7 @@ import baritone.utils.builder.PathingFailureTracker;
 import baritone.utils.builder.PlacementScheduler;
 import baritone.utils.builder.PlacementScheduler.Target;
 import baritone.utils.builder.SmoothLookHelper;
+import baritone.utils.builder.VantagePointSolver;
 import baritone.utils.schematic.SchematicSystem;
 import baritone.utils.schematic.litematica.LitematicaHelper;
 import baritone.utils.schematic.schematica.SchematicaHelper;
@@ -86,6 +87,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
 
     // ---- work state ----
     private List<Target> pending = new ArrayList<>();
+    private volatile List<Target> renderTargetsSnapshot = Collections.emptyList();
     private final Set<BlockPos> resigned = new HashSet<>(); // permanently given up
     private int rescanCountdown;
     private PlacementPlan pendingPlan; // plan we are currently rotating towards
@@ -362,6 +364,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         pendingPlan = null;
         breaking = null;
         pending = new ArrayList<>();
+        updateRenderSnapshot();
         totalTargetsInitial = 0;
         stopBreaking();
         setSneakHeld(false);
@@ -473,18 +476,31 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         List<Target> fresh = new ArrayList<>();
 
         if (clearMin != null) { // #cleararea mode
-            for (int y = clearMin.getY(); y <= clearMax.getY(); y++) {
-                for (int z = clearMin.getZ(); z <= clearMax.getZ(); z++) {
-                    for (int x = clearMin.getX(); x <= clearMax.getX(); x++) {
-                        BetterBlockPos pos = new BetterBlockPos(x, y, z);
-                        if (!world.hasChunkAt(pos)) {
+            int minX = clearMin.getX(), maxX = clearMax.getX();
+            int minY = clearMin.getY(), maxY = clearMax.getY();
+            int minZ = clearMin.getZ(), maxZ = clearMax.getZ();
+
+            // Capped top-down excavation scan: only collect up to MAX_CLEAR_BATCH targets per scan.
+            // This prevents freezing/lag on massive arenas (e.g. 100x100x50 = 500,000 blocks).
+            final int MAX_CLEAR_BATCH = 1000;
+            BlockPos.MutableBlockPos mpos = new BlockPos.MutableBlockPos();
+
+            layerLoop:
+            for (int y = maxY; y >= minY; y--) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    for (int x = minX; x <= maxX; x++) {
+                        mpos.set(x, y, z);
+                        if (!world.hasChunkAt(mpos)) {
                             continue;
                         }
-                        BlockState cur = world.getBlockState(pos);
+                        BlockState cur = world.getBlockState(mpos);
                         if (cur.getBlock() instanceof AirBlock || BlockStateResolver.isReplaceable(cur)) {
                             continue;
                         }
-                        fresh.add(new Target(pos, null));
+                        fresh.add(new Target(mpos.immutable(), null));
+                        if (fresh.size() >= MAX_CLEAR_BATCH) {
+                            break layerLoop;
+                        }
                     }
                 }
             }
@@ -529,6 +545,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             }
         }
         pending = scheduler.orderCandidates(fresh, world, ctx.playerFeet());
+        updateRenderSnapshot();
         // Record initial count for progress percentage
         if (totalTargetsInitial == 0 && !pending.isEmpty()) {
             totalTargetsInitial = pending.size();
@@ -911,6 +928,17 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         }
         starvedTicks = 0;
 
+        if (best.want != null && VantagePointSolver.needsVantage(best.want)) {
+            BlockPos vantage = VantagePointSolver.findVantagePoint(world, player, best.pos, best.want);
+            if (vantage != null) {
+                if (currentGoalTarget == null || !currentGoalTarget.equals(vantage)) {
+                    currentGoalTarget = new BetterBlockPos(vantage);
+                    currentGoal = new GoalBlock(vantage);
+                }
+                return new PathingCommand(currentGoal, PathingCommandType.SET_GOAL_AND_PATH);
+            }
+        }
+
         if (currentGoalTarget == null || currentGoalTarget.distSqr(best.pos) > 8 * 8) {
             currentGoalTarget = new BetterBlockPos(best.pos);
             currentGoal = new GoalNear(currentGoalTarget, 3);
@@ -1007,6 +1035,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         clearMin = clearMax = null;
         pendingPlan = null;
         pending = new ArrayList<>();
+        updateRenderSnapshot();
         setSneakHeld(false);
         stopBreaking();
         if (baritone.getLookBehavior() != null) {
@@ -1177,8 +1206,17 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     /** The scheduler, for visual state queries (last placed pos, tick). */
     public PlacementScheduler getScheduler() { return scheduler; }
 
-    /** Current pending targets list (unmodifiable view). */
-    public List<Target> getPendingTargets() { return Collections.unmodifiableList(pending); }
+    /** Current pending targets list (thread-safe snapshot for PathRenderer). */
+    public List<Target> getPendingTargets() { return renderTargetsSnapshot; }
+
+    private void updateRenderSnapshot() {
+        if (pending.isEmpty()) {
+            this.renderTargetsSnapshot = Collections.emptyList();
+        } else {
+            int limit = Math.min(pending.size(), 200);
+            this.renderTargetsSnapshot = new ArrayList<>(pending.subList(0, limit));
+        }
+    }
 
     /**
      * The current target being aimed at (used by PathRenderer for pulsing highlight).

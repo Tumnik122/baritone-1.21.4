@@ -181,6 +181,9 @@ public abstract class Movement implements IMovement, MovementHelper {
     }
 
     public boolean hasUnbrokenPositionsToBreak() {
+        if (baritone.getFarmProcess().isActive()) {
+            return false;
+        }
         if (positionsToBreak == null || positionsToBreak.length == 0) {
             return false;
         }
@@ -199,6 +202,10 @@ public abstract class Movement implements IMovement, MovementHelper {
 
     protected boolean prepared(MovementState state) {
         if (state.getStatus() == MovementStatus.WAITING) {
+            return true;
+        }
+        if (baritone.getFarmProcess().isActive()) {
+            currentMiningPos = null;
             return true;
         }
 

@@ -73,10 +73,11 @@ public class PracaCommand extends Command {
         baritone.getFarmProcess().farmPraca(100, center);
 
 
-        logDirect("§a[Praca] §e[EKSPERYMENTALNY]§a Uruchamiam tryb pracy na farmie!");
-        logDirect("§7  • Zasięg skanowania: §f100 bloków");
-        logDirect("§7  • Jeśli dojrzałych roślin < §f200§7, priorytet: §azbieranie z ziemi");
-        logDirect("§7  • Jeśli dojrzałych roślin ≥ §f200§7, priorytet: §anormalne zbieranie");
+        logDirect("§a[Praca] Uruchamiam zoptymalizowany tryb pracy na farmie!");
+        logDirect("§7  • Cel: §aTylko dojrzała pszenica §7(blokada niszczenia bruku/struktur: §aAKTYWNA§7)");
+        logDirect("§7  • Zasięg skanowania: §f100 bloków §7| Płynny bieg wzdłuż alei (lane traversal)");
+        logDirect("§7  • Jeśli plonów < §f200§7: priorytet §azbierania z ziemi§7 (przechodzenie przez itemy)");
+        logDirect("§7  • Jeśli plonów ≥ §f200§7: szybki zbiór i replant pszenicy w rzędach");
         logDirect("§7  (zatrzymaj: §f#praca stop§7)");
     }
 

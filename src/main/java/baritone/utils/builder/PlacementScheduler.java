@@ -261,9 +261,25 @@ public final class PlacementScheduler {
      */
     public List<Target> orderCandidates(List<Target> candidates, Level world, BetterBlockPos playerFeet) {
         List<Target> sorted = new ArrayList<>(candidates);
-        sorted.sort(Comparator
-                .comparingInt((Target t) -> t.pos.getY())
-                .thenComparingDouble(t -> t.pos.distSqr(playerFeet)));
+        sorted.sort((a, b) -> {
+            boolean aClear = a.want == null;
+            boolean bClear = b.want == null;
+            if (aClear && bClear) {
+                // Clearing/excavation: TOP-DOWN (higher Y first), then closest to player
+                int dy = Integer.compare(b.pos.getY(), a.pos.getY());
+                if (dy != 0) return dy;
+                return Double.compare(a.pos.distSqr(playerFeet), b.pos.distSqr(playerFeet));
+            }
+            if (aClear != bClear) {
+                return aClear ? -1 : 1; // Clear obstructions before placing
+            }
+            // Construction: BOTTOM-UP (lower Y first), then topological phase, then closest
+            int dy = Integer.compare(a.pos.getY(), b.pos.getY());
+            if (dy != 0) return dy;
+            int dp = Integer.compare(VantagePointSolver.placementPhase(a.want), VantagePointSolver.placementPhase(b.want));
+            if (dp != 0) return dp;
+            return Double.compare(a.pos.distSqr(playerFeet), b.pos.distSqr(playerFeet));
+        });
         return sorted;
     }
 }

@@ -434,7 +434,7 @@ public class MovementTraverse extends Movement {
         // Gdy gracz posiada szybki kilof i kopie prosto w korytarzu:
         // Blokujemy celownik prosto wzdłuż korytarza (yaw = kierunek ruchu, pitch = 11.5° obejmujący oba bloki),
         // trzymamy ciągły bieg w przód i sprint.
-        if (FastBreakHelper.isFastPickaxe(ctx)) {
+        if (FastBreakHelper.isFastPickaxe(ctx) && !baritone.getFarmProcess().isActive() && Baritone.settings().allowBreak.value) {
             boolean headSolid = !MovementHelper.canWalkThrough(ctx, dest.above());
             boolean feetSolid = !MovementHelper.canWalkThrough(ctx, dest);
             if (headSolid || feetSolid) {
