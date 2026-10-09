@@ -250,6 +250,23 @@ public final class PlacementScheduler {
     @Deprecated
     public void markUnreachableWithBackoff(BlockPos pos) { /* handled by caller */ }
 
+    public enum ClearMode { AUTO, TOP_DOWN, BOTTOM_UP }
+    public enum Strategy { ARENA, TOP_DOWN, BOTTOM_UP }
+
+    private ClearMode clearMode = ClearMode.AUTO;
+
+    public void setClearMode(ClearMode mode) { this.clearMode = mode != null ? mode : ClearMode.AUTO; }
+    public ClearMode getClearMode() { return this.clearMode; }
+    public String describeStrategy(int areaHeight) { return resolveStrategy(areaHeight).name(); }
+
+    public Strategy resolveStrategy(int areaHeight) {
+        return switch (clearMode) {
+            case TOP_DOWN -> Strategy.TOP_DOWN;
+            case BOTTOM_UP -> Strategy.BOTTOM_UP;
+            case AUTO -> areaHeight <= 6 ? Strategy.ARENA : Strategy.TOP_DOWN;
+        };
+    }
+
     /**
      * Sort and return a list of build targets using Y-first order (bottom-up),
      * then by distance from the player's feet (closest first).
@@ -273,14 +290,18 @@ public final class PlacementScheduler {
                 if (t.pos.getY() > clearMaxY) clearMaxY = t.pos.getY();
             }
         }
-        final boolean shallowClear = hasClear && (clearMaxY - clearMinY + 1 <= 6);
+        final int areaHeight = hasClear ? Math.max(1, clearMaxY - clearMinY + 1) : 1;
+        final Strategy strategy = resolveStrategy(areaHeight);
         final BlockPos standPos = playerFeet != null ? playerFeet.below() : null;
 
         sorted.sort((a, b) -> {
             boolean aClear = a.want == null;
             boolean bClear = b.want == null;
+            if (aClear != bClear) {
+                return aClear ? -1 : 1; // Clear obstructions before placing
+            }
             if (aClear && bClear) {
-                // Ground protection: never dig the block directly beneath our feet until other blocks are done!
+                // 1) Ground protection: never dig the block directly beneath our feet until other blocks are done!
                 if (standPos != null) {
                     boolean aIsStand = a.pos.equals(standPos);
                     boolean bIsStand = b.pos.equals(standPos);
@@ -288,13 +309,22 @@ public final class PlacementScheduler {
                         return aIsStand ? 1 : -1;
                     }
                 }
-                // Clearing/excavation:
-                // Shallow arena (<= 6 blocks): BOTTOM-UP (lower Y first)!
-                // Deep excavation (> 6 blocks): TOP-DOWN (higher Y first) to avoid falling
-                int dy = shallowClear
-                        ? Integer.compare(a.pos.getY(), b.pos.getY())
-                        : Integer.compare(b.pos.getY(), a.pos.getY());
-                if (dy != 0) return dy;
+
+                // 2) Layer ordering based on strategy
+                int ay = a.pos.getY(), by = b.pos.getY();
+                switch (strategy) {
+                    case ARENA -> {
+                        int pa = arenaPhase(ay, playerFeet);
+                        int pb = arenaPhase(by, playerFeet);
+                        if (pa != pb) return Integer.compare(pa, pb);
+                        if (pa == 1) { int c = Integer.compare(ay, by); if (c != 0) return c; } // ceiling: bottom-up
+                        if (pa == 2) { int c = Integer.compare(by, ay); if (c != 0) return c; } // floor: top-down
+                    }
+                    case TOP_DOWN -> { int c = Integer.compare(by, ay); if (c != 0) return c; }
+                    case BOTTOM_UP -> { int c = Integer.compare(ay, by); if (c != 0) return c; }
+                }
+
+                // 3) Within layer: closest to player feet
                 if (playerFeet != null) {
                     int distCmp = Double.compare(a.pos.distSqr(playerFeet), b.pos.distSqr(playerFeet));
                     if (distCmp != 0) return distCmp;
@@ -303,9 +333,7 @@ public final class PlacementScheduler {
                 if (dx != 0) return dx;
                 return Integer.compare(a.pos.getZ(), b.pos.getZ());
             }
-            if (aClear != bClear) {
-                return aClear ? -1 : 1; // Clear obstructions before placing
-            }
+
             // Construction: BOTTOM-UP (lower Y first), then topological phase, then closest
             int dy = Integer.compare(a.pos.getY(), b.pos.getY());
             if (dy != 0) return dy;
@@ -320,6 +348,14 @@ public final class PlacementScheduler {
             return Integer.compare(a.pos.getZ(), b.pos.getZ());
         });
         return sorted;
+    }
+
+    /** 0 = poziom stóp i klatki/głowy, 1 = sufit (wyżej), 2 = podłoga (niżej). */
+    private static int arenaPhase(int y, BlockPos feet) {
+        if (feet == null) return 0;
+        int fy = feet.getY();
+        if (y >= fy && y <= fy + 1) return 0;
+        return y > fy + 1 ? 1 : 2;
     }
 }
 

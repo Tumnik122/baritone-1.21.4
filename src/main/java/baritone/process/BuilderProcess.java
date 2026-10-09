@@ -4,6 +4,8 @@ import baritone.Baritone;
 import baritone.api.IBaritone;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
+import baritone.api.pathing.goals.GoalComposite;
+import baritone.api.pathing.goals.GoalGetToBlock;
 import baritone.api.pathing.goals.GoalNear;
 import baritone.api.pathing.goals.GoalRunAway;
 import baritone.api.process.IBuilderProcess;
@@ -43,6 +45,7 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.*;
 import net.minecraft.world.level.block.state.BlockState;
@@ -246,6 +249,16 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 : 0;
         this.rescanCountdown = 0;
         return true;
+    }
+
+    public String previewStrategy(PlacementScheduler.ClearMode mode, int maxHeight) {
+        scheduler.setClearMode(mode);
+        return scheduler.describeStrategy(maxHeight);
+    }
+
+    public void clearArea(BlockPos a, BlockPos b, PlacementScheduler.ClearMode mode) {
+        scheduler.setClearMode(mode);
+        clearArea(a, b);
     }
 
     @Override
@@ -511,17 +524,28 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
 
     /**
      * Unified predicate determining whether a block is considered cleared.
-     * True for air, pure fluids, and replaceable non-solid blocks.
+     * True for air, pure fluids, bubble columns, and replaceable non-solid blocks.
      * False for waterlogged physical blocks (stairs, slabs, chests) which still need breaking.
      */
     public static boolean isCleared(BlockState state) {
-        if (state == null) return true;
-        if (state.isAir()) return true;
+        if (state == null || state.isAir()) return true;
         if (state.getBlock() instanceof LiquidBlock) return true;
+        if (state.getBlock() instanceof BubbleColumnBlock) return true;
         if (state.hasProperty(BlockStateProperties.WATERLOGGED) && state.getValue(BlockStateProperties.WATERLOGGED)) {
             return false; // Physical block inside water must be broken!
         }
         return BlockStateResolver.isReplaceable(state);
+    }
+
+    /** Bedrock, bariery, portale końca itd. mają destroySpeed < 0. */
+    public static boolean isBreakable(Level world, BlockPos pos, BlockState state) {
+        return state != null && state.getDestroySpeed(world, pos) >= 0.0F;
+    }
+
+    /** Cel nadal wymaga kopania i da się go rozbić. */
+    private boolean needsBreaking(Level world, BlockPos pos) {
+        BlockState s = world.getBlockState(pos);
+        return !isCleared(s) && isBreakable(world, pos, s);
     }
 
     /** Rebuilds `pending` (schematic cells not yet matching the world) and orders it. */
@@ -556,7 +580,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                             continue;
                         }
                         BlockState cur = world.getBlockState(mpos);
-                        if (isCleared(cur) || cur.getDestroySpeed(world, mpos) < 0) {
+                        if (isCleared(cur) || !isBreakable(world, mpos, cur)) {
                             continue;
                         }
                         fresh.add(new Target(mpos.immutable(), null));
@@ -848,10 +872,45 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     // Phase 1: breaking wrong blocks
     // =====================================================================
 
+    private static final double REACH_MARGIN = 0.3; // zapas na lag/Grim
+
+    private static double distSqrToBlock(Vec3 eye, BlockPos pos) {
+        double dx = eye.x - Mth.clamp(eye.x, pos.getX(), pos.getX() + 1.0);
+        double dy = eye.y - Mth.clamp(eye.y, pos.getY(), pos.getY() + 1.0);
+        double dz = eye.z - Mth.clamp(eye.z, pos.getZ(), pos.getZ() + 1.0);
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    private boolean inReach(LocalPlayer player, BlockPos pos) {
+        double r = player.blockInteractionRange() - REACH_MARGIN;
+        return distSqrToBlock(player.getEyePosition(), pos) <= r * r;
+    }
+
+    /** Raycast z oczu do środka i środków 6 ścian; woda jest ignorowana (Fluid.NONE). */
+    private boolean hasLineOfSight(Level world, LocalPlayer player, BlockPos pos) {
+        Vec3 eye = player.getEyePosition();
+        Vec3 c = Vec3.atCenterOf(pos);
+        final double o = 0.49;
+        Vec3[] pts = {
+                c,
+                c.add(0, o, 0), c.add(0, -o, 0),
+                c.add(o, 0, 0), c.add(-o, 0, 0),
+                c.add(0, 0, o), c.add(0, 0, -o)
+        };
+        for (Vec3 p : pts) {
+            BlockHitResult hit = world.clip(new ClipContext(
+                    eye, p, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+            if (hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(pos)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private Target findBreakTargetInReach(Level world, LocalPlayer player) {
         if (breaking != null) {
             BlockState curBreak = world.getBlockState(breaking);
-            if (isCleared(curBreak)) {
+            if (isCleared(curBreak) || !isBreakable(world, breaking, curBreak)) {
                 stopBreaking();
             } else {
                 for (Target t : pending) {
@@ -862,28 +921,64 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 stopBreaking();
             }
         }
-        Vec3 eye = player.getEyePosition();
-        double reach = Math.max(3.0, Math.min(player.blockInteractionRange() - 0.25, 4.5));
+        BlockPos standPos = player.blockPosition().below();
+        Target best = null;
+        double bestD = Double.MAX_VALUE;
+        Target standTarget = null;
+
         for (Target t : pending) {
-            if (scheduler.isUnreachable(t.pos) || resigned.contains(t.pos)) {
+            if (t.want != null) continue;
+            if (scheduler.isUnreachable(t.pos)) continue;
+
+            BlockState s = world.getBlockState(t.pos);
+            if (isCleared(s) || !isBreakable(world, t.pos, s)) continue;
+            if (!inReach(player, t.pos)) continue;
+            if (!hasLineOfSight(world, player, t.pos)) continue;
+
+            if (t.pos.equals(standPos)) {
+                standTarget = t;
                 continue;
             }
-            BlockState cur = world.getBlockState(t.pos);
-            if (isCleared(cur) || cur.getDestroySpeed(world, t.pos) < 0) {
-                continue; // already cleared; bedrock/barriers cannot be broken
+
+            double d = distSqrToBlock(player.getEyePosition(), t.pos);
+            if (d < bestD) {
+                bestD = d;
+                best = t;
             }
-            double dx = t.pos.getX() + 0.5 - eye.x;
-            double dy = t.pos.getY() + 0.5 - eye.y;
-            double dz = t.pos.getZ() + 0.5 - eye.z;
-            if (dx * dx + dy * dy + dz * dz > reach * reach) {
-                continue;
-            }
-            return t;
+        }
+        if (best != null) return best;
+
+        // Grunt pod nogami: dopiero gdy na tym poziomie i wyżej nie ma już innych bloków do wykopania
+        if (standTarget != null && noOtherWorkAtOrAbove(world, standPos)) {
+            return standTarget;
         }
         return null;
     }
 
+    private boolean noOtherWorkAtOrAbove(Level world, BlockPos standPos) {
+        for (Target t : pending) {
+            if (t.want != null || t.pos.equals(standPos)) continue;
+            if (t.pos.getY() >= standPos.getY() && needsBreaking(world, t.pos)) return false;
+        }
+        return true;
+    }
+
+    private int breakBudget;
+
     private PathingCommand controlBreak(Level world, LocalPlayer player, Target t) {
+        BlockState cur = world.getBlockState(t.pos);
+
+        // Już usunięty (także zastąpiony wodą/lawą albo bąbelkami)
+        if (isCleared(cur)) {
+            finishTarget(t);
+            return standStill();
+        }
+        // Nie da się rozbić (bedrock itp.) -> wywal z listy
+        if (!isBreakable(world, t.pos, cur)) {
+            finishTarget(t);
+            return standStill();
+        }
+
         if (Baritone.settings().antiCheatCompat.value) {
             player.setSprinting(false);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
@@ -897,29 +992,48 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         }
         Direction face = breakFace(player, t.pos);
         baritone.getPlayerContext().playerController().syncHeldItem();
+
         if (breaking == null || !breaking.equals(t.pos)) {
             stopBreaking();
             breaking = t.pos.immutable();
             breakTicks = 0;
+            float perTick = cur.getDestroyProgress(player, world, t.pos);
+            if (perTick <= 0.0F) {
+                scheduler.markUnreachable(t.pos, scheduler.currentTick() + 200);
+                stopBreaking();
+                currentGoalTarget = null;
+                currentGoal = null;
+                return standStill();
+            }
+            breakBudget = (int) Math.min(20 * 60 * 5, Math.ceil(1.0F / perTick) * 2 + 40);
             mc.gameMode.startDestroyBlock(t.pos, face);
         } else {
             mc.gameMode.continueDestroyBlock(t.pos, face);
         }
         player.swing(InteractionHand.MAIN_HAND);
 
-        if (++breakTicks > MAX_BREAK_TICKS) {
-            scheduler.markUnreachable(t.pos, scheduler.currentTick() + 400);
+        if (++breakTicks > breakBudget) {
+            scheduler.markUnreachable(t.pos, scheduler.currentTick() + 100);
             stopBreaking();
-        } else {
-            BlockState curNow = world.getBlockState(t.pos);
-            if (isCleared(curNow)) {
-                stopBreaking();
-                pending.removeIf(p -> p.pos.equals(t.pos));
-                currentGoalTarget = null;
-                currentGoal = null;
-            }
+            currentGoalTarget = null;
+            currentGoal = null;
+            return standStill();
+        }
+
+        BlockState curNow = world.getBlockState(t.pos);
+        if (isCleared(curNow)) {
+            finishTarget(t);
         }
         return standStill();
+    }
+
+    private void finishTarget(Target t) {
+        stopBreaking();
+        pending.removeIf(p -> p.pos.equals(t.pos));
+        currentGoalTarget = null;
+        currentGoal = null;
+        breakTicks = 0;
+        breakBudget = 0;
     }
 
     private void stopBreaking() {
@@ -928,6 +1042,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         }
         breaking = null;
         breakTicks = 0;
+        breakBudget = 0;
     }
 
     private static Direction breakFace(LocalPlayer player, BlockPos pos) {
@@ -952,6 +1067,24 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     // Phase 3: pathing (BUG 1 skip ladder)
     // =====================================================================
 
+    private Goal breakGoalFor(Level world, BlockPos pos) {
+        boolean airAbove = isCleared(world.getBlockState(pos.above()))
+                && isCleared(world.getBlockState(pos.above(2)));
+        if (airAbove) {
+            return new GoalComposite(
+                    new GoalBreak(pos),
+                    new GoalGetToBlock(pos.above()) {
+                        @Override
+                        public boolean isInGoal(int x, int y, int z) {
+                            // nie stawaj wyżej ani dokładnie nad blokiem
+                            if (y > this.y || (x == this.x && y == this.y && z == this.z)) return false;
+                            return super.isInGoal(x, y, z);
+                        }
+                    });
+        }
+        return new GoalBreak(pos);
+    }
+
     private PathingCommand pathToNextWork(LocalPlayer player, Level world) {
         Target best = null;
         int missingCount = 0;
@@ -971,7 +1104,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 }
             } else {
                 // Clearing/excavation: skip if already cleared or unbreakable
-                if (isCleared(cur) || cur.getDestroySpeed(world, t.pos) < 0) {
+                if (!needsBreaking(world, t.pos)) {
                     continue;
                 }
             }
@@ -1020,19 +1153,29 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             }
         }
 
+        if (best.want == null) {
+            // Clearing mode: path to break goal (GoalBreak or composite with top approach)
+            if (currentGoal == null || currentGoalTarget == null || !currentGoalTarget.equals(best.pos)) {
+                currentGoalTarget = new BetterBlockPos(best.pos);
+                currentGoal = breakGoalFor(world, best.pos);
+            }
+
+            BlockPos feet = player.blockPosition();
+            if (!currentGoal.isInGoal(feet.getX(), feet.getY(), feet.getZ())) {
+                return new PathingCommand(currentGoal, PathingCommandType.SET_GOAL_AND_PATH);
+            }
+
+            // Goal osiągnięty, ale blok nie jest w zasięgu lub brak LOS (np. zasłonięty)
+            scheduler.markUnreachable(best.pos, scheduler.currentTick() + 40);
+            currentGoalTarget = null;
+            currentGoal = null;
+            return standStill();
+        }
+
         boolean needNewGoal = currentGoal == null
                 || currentGoalTarget == null
                 || !pendingContains(currentGoalTarget)
                 || currentGoal.isInGoal(player.getBlockX(), player.getBlockY(), player.getBlockZ());
-
-        if (best.want == null) {
-            // Clearing mode: path directly adjacent to block to break it cleanly
-            if (needNewGoal || !currentGoalTarget.equals(best.pos)) {
-                currentGoalTarget = new BetterBlockPos(best.pos);
-                currentGoal = new GoalBreak(currentGoalTarget);
-            }
-            return new PathingCommand(currentGoal, PathingCommandType.SET_GOAL_AND_PATH);
-        }
 
         if (needNewGoal || !currentGoalTarget.equals(best.pos)) {
             currentGoalTarget = new BetterBlockPos(best.pos);

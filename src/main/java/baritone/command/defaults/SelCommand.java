@@ -39,9 +39,12 @@ import baritone.api.selection.ISelectionManager;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.BlockOptionalMeta;
 import baritone.api.utils.BlockOptionalMetaLookup;
+import baritone.process.BuilderProcess;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.IRenderer;
+import baritone.utils.builder.PlacementScheduler;
 import baritone.utils.schematic.StaticSchematic;
+import net.minecraft.world.level.Level;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -126,34 +129,47 @@ public class SelCommand extends Command {
                 }
             }
         } else if (action.isFillAction()) {
-            BlockOptionalMeta type = action == Action.CLEARAREA
-                    ? new BlockOptionalMeta(Blocks.AIR)
-                    : args.getDatatypeFor(ForBlockOptionalMeta.INSTANCE);
-
+            PlacementScheduler.ClearMode clearMode = PlacementScheduler.ClearMode.AUTO;
+            BlockOptionalMeta type;
             final BlockOptionalMetaLookup replaces; // Action.REPLACE
             final Direction.Axis alignment;         // Action.(H)CYLINDER
-            if (action == Action.REPLACE) {
-                args.requireMin(1);
-                List<BlockOptionalMeta> replacesList = new ArrayList<>();
-                replacesList.add(type);
-                while (args.has(2)) {
-                    replacesList.add(args.getDatatypeFor(ForBlockOptionalMeta.INSTANCE));
+
+            if (action == Action.CLEARAREA) {
+                type = new BlockOptionalMeta(Blocks.AIR);
+                replaces = null;
+                alignment = null;
+                if (args.hasAny()) {
+                    String flag = args.getString().toLowerCase(Locale.ROOT);
+                    switch (flag) {
+                        case "auto" -> clearMode = PlacementScheduler.ClearMode.AUTO;
+                        case "topdown", "top-down", "td" -> clearMode = PlacementScheduler.ClearMode.TOP_DOWN;
+                        case "bottomup", "bottom-up", "bu" -> clearMode = PlacementScheduler.ClearMode.BOTTOM_UP;
+                        default -> throw new CommandInvalidStateException(
+                                "Nieznana flaga '" + flag + "'. Dostępne: auto | topdown | bottomup");
+                    }
+                    args.requireMax(0);
                 }
-                type = args.getDatatypeFor(ForBlockOptionalMeta.INSTANCE);
-                replaces = new BlockOptionalMetaLookup(replacesList.toArray(new BlockOptionalMeta[0]));
-                alignment = null;
-            } else if (action == Action.CYLINDER || action == Action.HCYLINDER) {
-                args.requireMax(1);
-                alignment = args.hasAny() ? args.getDatatypeFor(ForAxis.INSTANCE) : Direction.Axis.Y;
-                replaces = null;
-            } else if (action == Action.CLEARAREA) {
-                // Ignore any optional trailing description (e.g. #sel cleararea arena)
-                replaces = null;
-                alignment = null;
             } else {
-                args.requireMax(0);
-                replaces = null;
-                alignment = null;
+                type = args.getDatatypeFor(ForBlockOptionalMeta.INSTANCE);
+                if (action == Action.REPLACE) {
+                    args.requireMin(1);
+                    List<BlockOptionalMeta> replacesList = new ArrayList<>();
+                    replacesList.add(type);
+                    while (args.has(2)) {
+                        replacesList.add(args.getDatatypeFor(ForBlockOptionalMeta.INSTANCE));
+                    }
+                    type = args.getDatatypeFor(ForBlockOptionalMeta.INSTANCE);
+                    replaces = new BlockOptionalMetaLookup(replacesList.toArray(new BlockOptionalMeta[0]));
+                    alignment = null;
+                } else if (action == Action.CYLINDER || action == Action.HCYLINDER) {
+                    args.requireMax(1);
+                    alignment = args.hasAny() ? args.getDatatypeFor(ForAxis.INSTANCE) : Direction.Axis.Y;
+                    replaces = null;
+                } else {
+                    args.requireMax(0);
+                    replaces = null;
+                    alignment = null;
+                }
             }
             ISelection[] selections = manager.getSelections();
             if (selections.length == 0) {
@@ -179,11 +195,36 @@ public class SelCommand extends Command {
                             Math.max(clearMax.z, smax.z)
                     );
                 }
-                baritone.getBuilderProcess().clearArea(clearMin, clearMax);
+
                 int h = clearMax.y - clearMin.y + 1;
-                logDirect(String.format("Czyszczenie terenu (%dx%dx%d) — tryb: %s",
+                Level world = ctx.world();
+                long toBreak = 0;
+                boolean counted = true;
+                long volume = (long) (clearMax.x - clearMin.x + 1) * h * (clearMax.z - clearMin.z + 1);
+                if (volume > 5_000_000L) {
+                    counted = false;
+                } else if (world != null) {
+                    BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+                    for (int x = clearMin.x; x <= clearMax.x; x++) {
+                        for (int y = clearMin.y; y <= clearMax.y; y++) {
+                            for (int z = clearMin.z; z <= clearMax.z; z++) {
+                                p.set(x, y, z);
+                                BlockState st = world.getBlockState(p);
+                                if (!BuilderProcess.isCleared(st) && BuilderProcess.isBreakable(world, p, st)) {
+                                    toBreak++;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                BuilderProcess bp = (BuilderProcess) baritone.getBuilderProcess();
+                String strategy = bp.previewStrategy(clearMode, h);
+                logDirect(String.format("Czyszczenie terenu (%dx%dx%d) | do wykopania: %s | algorytm: %s",
                         clearMax.x - clearMin.x + 1, h, clearMax.z - clearMin.z + 1,
-                        h <= 6 ? "od dołu do góry" : "od góry do dołu"));
+                        counted ? String.valueOf(toBreak) : ">5M objętości (pominięto zliczanie)", strategy));
+
+                bp.clearArea(clearMin, clearMax, clearMode);
                 return;
             }
             BetterBlockPos origin = selections[0].min();
@@ -319,6 +360,13 @@ public class SelCommand extends Command {
                         return args.tabCompleteDatatype(RelativeBlockPos.INSTANCE);
                     }
                 } else if (action.isFillAction()) {
+                    if (action == Action.CLEARAREA) {
+                        return new TabCompleteHelper()
+                                .append("auto", "topdown", "bottomup")
+                                .filterPrefix(args.getString())
+                                .sortAlphabetically()
+                                .stream();
+                    }
                     if (args.hasExactlyOne() || action == Action.REPLACE) {
                         while (args.has(2)) {
                             args.get();
