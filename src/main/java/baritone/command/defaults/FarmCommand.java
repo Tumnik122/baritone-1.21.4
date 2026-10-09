@@ -84,6 +84,8 @@ public class FarmCommand extends Command {
                 if (isPraca) {
                     logDirect(String.format("    • Dojrzałe w r=100: §e%d szt. §7(próg: §e%d§7)  • Na ziemi: §e%d szt.", harvestable, threshold, groundDrops));
                     logDirect(String.format("    • Bieżący priorytet: %s", (harvestable < threshold && groundDrops > 0) ? "§6ZBIERANIE Z ZIEMI" : "§aZBIÓR PLONÓW"));
+                    boolean wheatPriority = FarmProcess.isPracaWheatPriorityActive();
+                    logDirect("    • Fokus surowca: " + (wheatPriority ? "§aSkupienie na pszenicy (>100 nasion)" : "§eZbieranie nasion i pszenicy"));
                 }
                 logDirect("  §7(#farm status | #farm wheat on/off | #farm fast | #farm legit | #farm praca | #farm replant on/off | #farm stop)");
                 return;

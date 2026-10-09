@@ -181,9 +181,6 @@ public abstract class Movement implements IMovement, MovementHelper {
     }
 
     public boolean hasUnbrokenPositionsToBreak() {
-        if (baritone.getFarmProcess().isActive()) {
-            return false;
-        }
         if (positionsToBreak == null || positionsToBreak.length == 0) {
             return false;
         }
@@ -191,8 +188,9 @@ public abstract class Movement implements IMovement, MovementHelper {
             if (pos != null && !MovementHelper.canWalkThrough(ctx, pos)) {
                 BlockState bState = BlockStateInterface.get(ctx, pos);
                 if (!bState.getFluidState().isEmpty() || bState.is(net.minecraft.world.level.block.Blocks.BEDROCK)
-                        || bState.getDestroySpeed(ctx.world(), pos) < 0) {
-                    continue; // Płynów i Bedrocka nie traktujemy jako bloki do wykopania!
+                        || bState.getDestroySpeed(ctx.world(), pos) < 0
+                        || (baritone.getFarmProcess().isActive() && MovementHelper.isFarmSoilOrStructure(bState.getBlock()))) {
+                    continue; // Płynów, Bedrocka i gleby/konstrukcji farmy nie traktujemy jako bloki do wykopania!
                 }
                 return true;
             }
@@ -202,10 +200,6 @@ public abstract class Movement implements IMovement, MovementHelper {
 
     protected boolean prepared(MovementState state) {
         if (state.getStatus() == MovementStatus.WAITING) {
-            return true;
-        }
-        if (baritone.getFarmProcess().isActive()) {
-            currentMiningPos = null;
             return true;
         }
 

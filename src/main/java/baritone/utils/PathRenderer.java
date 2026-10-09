@@ -18,6 +18,7 @@
 package baritone.utils;
 
 import baritone.api.BaritoneAPI;
+import baritone.api.IBaritone;
 import baritone.api.event.events.RenderEvent;
 import baritone.api.pathing.goals.*;
 import baritone.api.utils.BetterBlockPos;
@@ -147,7 +148,7 @@ public final class PathRenderer implements IRenderer {
 
         // ---- Builder / Litematica overlay (Fix 5 + 6) ----
         if (settings.builderVisuals.value) {
-            renderBuilderOverlay(event.getModelViewStack(), behavior.ctx, event.getPartialTicks());
+            renderBuilderOverlay(event.getModelViewStack(), behavior.baritone, behavior.ctx, event.getPartialTicks());
         }
     }
 
@@ -704,12 +705,12 @@ public final class PathRenderer implements IRenderer {
      * Current target gets a bright white pulsing wireframe + holographic fill.
      * Placement success events get an orbiting-orb animation.
      */
-    private static void renderBuilderOverlay(PoseStack stack, IPlayerContext ctx, float partialTicks) {
+    private static void renderBuilderOverlay(PoseStack stack, IBaritone baritone, IPlayerContext ctx, float partialTicks) {
         try {
-            if (BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess() == null) {
+            if (baritone == null || baritone.getBuilderProcess() == null) {
                 return;
             }
-            Object rawBuilder = BaritoneAPI.getProvider().getPrimaryBaritone().getBuilderProcess();
+            Object rawBuilder = baritone.getBuilderProcess();
             if (!(rawBuilder instanceof BuilderProcess builder) || !builder.isActive()) {
                 return;
             }
@@ -733,33 +734,36 @@ public final class PathRenderer implements IRenderer {
 
                 int drawn = 0;
                 BufferBuilder bb = IRenderer.startLines(colorGreen, 0.4f, 1.5f, true);
-                for (PlacementScheduler.Target t : pending) {
-                    if (t == current) continue;
-                    if (drawn >= maxTargets) break;
-                    double dx = t.pos.getX() + 0.5 - eye.x;
-                    double dy = t.pos.getY() + 0.5 - eye.y;
-                    double dz = t.pos.getZ() + 0.5 - eye.z;
-                    if (dx * dx + dy * dy + dz * dz > overlayDist * overlayDist) continue;
+                try {
+                    for (PlacementScheduler.Target t : pending) {
+                        if (t == current) continue;
+                        if (drawn >= maxTargets) break;
+                        double dx = t.pos.getX() + 0.5 - eye.x;
+                        double dy = t.pos.getY() + 0.5 - eye.y;
+                        double dz = t.pos.getZ() + 0.5 - eye.z;
+                        if (dx * dx + dy * dy + dz * dz > overlayDist * overlayDist) continue;
 
-                    boolean missing = builder.isMissingMaterial(t);
-                    boolean skipped = builder.isSkipped(t);
+                        boolean missing = builder.isMissingMaterial(t);
+                        boolean skipped = builder.isSkipped(t);
 
-                    Color c;
-                    if (missing) {
-                        float pulse = 0.55f + 0.45f * Mth.sin(time * 7.0f);
-                        c = new Color(0xFF, 0x32, 0x32, (int)(130 * pulse));
-                    } else if (skipped) {
-                        c = colorBlue;
-                    } else if (eye.distanceToSqr(Vec3.atCenterOf(t.pos)) < reach * reach) {
-                        c = colorGreen;
-                    } else {
-                        c = colorAmber;
+                        Color c;
+                        if (missing) {
+                            float pulse = 0.55f + 0.45f * Mth.sin(time * 7.0f);
+                            c = new Color(0xFF, 0x32, 0x32, (int)(130 * pulse));
+                        } else if (skipped) {
+                            c = colorBlue;
+                        } else if (eye.distanceToSqr(Vec3.atCenterOf(t.pos)) < reach * reach) {
+                            c = colorGreen;
+                        } else {
+                            c = colorAmber;
+                        }
+                        IRenderer.glColor(c, c.getAlpha() / 255.0f);
+                        IRenderer.emitAABB(bb, stack, new AABB(t.pos));
+                        drawn++;
                     }
-                    IRenderer.glColor(c, c.getAlpha() / 255.0f);
-                    IRenderer.emitAABB(bb, stack, new AABB(t.pos));
-                    drawn++;
+                } finally {
+                    IRenderer.endLines(bb, true);
                 }
-                IRenderer.endLines(bb, true);
             }
 
             // ---- pass 2: current target — bright white pulsing wireframe + holo fill ----
@@ -768,9 +772,12 @@ public final class PathRenderer implements IRenderer {
                 Color curColor = new Color(1.0f, 1.0f, 1.0f, 0.5f + 0.5f * pulse);
 
                 BufferBuilder bbCur = IRenderer.startLines(curColor, 0.5f + 0.5f * pulse, 2.5f, true);
-                IRenderer.glColor(curColor, 0.5f + 0.5f * pulse);
-                IRenderer.emitAABB(bbCur, stack, new AABB(current.pos));
-                IRenderer.endLines(bbCur, true);
+                try {
+                    IRenderer.glColor(curColor, 0.5f + 0.5f * pulse);
+                    IRenderer.emitAABB(bbCur, stack, new AABB(current.pos));
+                } finally {
+                    IRenderer.endLines(bbCur, true);
+                }
 
                 // Holographic fill (uses existing holo shader if available)
                 if (BaritoneAPI.getSettings().builderHologramCurrentTarget.value) {
@@ -781,9 +788,12 @@ public final class PathRenderer implements IRenderer {
                         WorldFxShaders.end();
                     } else {
                         BufferBuilder bbHolo = IRenderer.startFilledHolo(holoColor, holoColor.getAlpha() / 255.0f, true);
-                        IRenderer.glColor(holoColor, holoColor.getAlpha() / 255.0f);
-                        IRenderer.emitFilledAABB(bbHolo, stack, new AABB(current.pos));
-                        IRenderer.endFilled(bbHolo, true);
+                        try {
+                            IRenderer.glColor(holoColor, holoColor.getAlpha() / 255.0f);
+                            IRenderer.emitFilledAABB(bbHolo, stack, new AABB(current.pos));
+                        } finally {
+                            IRenderer.endFilled(bbHolo, true);
+                        }
                     }
                 }
             }

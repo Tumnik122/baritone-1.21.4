@@ -75,16 +75,7 @@ if (-not (Test-Path $iasDest)) {
     }
 }
 
-# Usun ewentualne stare locki gradle/devlaunchinjector z poprzednich zacietych sesji
-try {
-    $procs = @(Get-CimInstance Win32_Process -Filter "Name='java.exe' OR Name='javaw.exe'" -ErrorAction SilentlyContinue)
-    foreach ($p in $procs) {
-        $cl = $p.CommandLine
-        if ($cl -and ($cl -match '(?i)devlaunchinjector' -or ($cl -match '(?i)gradle.*daemon' -and $cl -match [regex]::Escape($repo)))) {
-            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
-        }
-    }
-} catch {}
+# Tryb multi-bot: NIE zabijamy zadnych istniejacych procesow java/gradle (boty dzialaja bez przerw)
 
 # Kazdy bot dostaje wlasny project-cache-dir zeby uniknac Gradle lock contention
 # WAZNE: sciezka bez spacji (inaczej Gradle zle parsuje argumenty)

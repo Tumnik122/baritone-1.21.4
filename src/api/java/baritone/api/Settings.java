@@ -1391,6 +1391,18 @@ public final class Settings {
      */
     public final Setting<Boolean> farmWheatOnly = new Setting<>(false);
 
+    /**
+     * W trybie #praca: próg liczby nasion w ekwipunku (domyślnie 100), powyżej którego bot skupia się na zbieraniu pszenicy
+     * zamiast biegania za nasionami leżącymi na ziemi.
+     */
+    public final Setting<Integer> pracaSeedsHighThreshold = new Setting<>(100);
+
+    /**
+     * W trybie #praca: dolny próg liczby nasion w ekwipunku (domyślnie 30), poniżej którego bot ponownie zaczyna
+     * aktywnie zbierać nasiona z ziemi (histereza).
+     */
+    public final Setting<Integer> pracaSeedsLowThreshold = new Setting<>(30);
+
 
     /**
      * When the cache scan gives less blocks than the maximum threshold (but still above zero), scan the main world too.

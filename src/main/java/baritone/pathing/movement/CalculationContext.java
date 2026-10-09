@@ -238,7 +238,7 @@ public class CalculationContext {
     }
 
     public double breakCostMultiplierAt(int x, int y, int z, BlockState current) {
-        if (baritone.getFarmProcess().isActive()) {
+        if (baritone.getFarmProcess().isActive() && MovementHelper.isFarmSoilOrStructure(current.getBlock())) {
             return COST_INF;
         }
         if (!allowBreak && !allowBreakAnyway.contains(current.getBlock())) {

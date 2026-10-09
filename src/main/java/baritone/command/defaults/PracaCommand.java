@@ -53,11 +53,17 @@ public class PracaCommand extends Command {
                 int harvestable = FarmProcess.getPracaHarvestableCount();
                 int drops = FarmProcess.getPracaGroundDropsCount();
                 int threshold = Baritone.settings().farmLowCropThreshold.value;
+                int seeds = ((FarmProcess) baritone.getFarmProcess()).countWheatSeedsInInventory();
+                boolean wheatPriority = FarmProcess.isPracaWheatPriorityActive();
+                int highThresh = Baritone.settings().pracaSeedsHighThreshold.value;
+                int lowThresh = Baritone.settings().pracaSeedsLowThreshold.value;
                 logDirect("§b=== STATUS #PRACA (EKSPERYMENTALNY) ===");
                 logDirect("  §fStan: " + (active ? "§aAKTYWNY" : "§cBEZCZYNNY"));
                 logDirect("  §fTryb #praca: " + (pracaMode ? "§aWŁĄCZONY" : "§7WYŁĄCZONY"));
                 logDirect(String.format("  §fDojrzałe rośliny w r=100: §e%d szt. §7(próg: §e%d§7)", harvestable, threshold));
                 logDirect(String.format("  §fItemy na ziemi do zebrania: §e%d szt.", drops));
+                logDirect(String.format("  §fNasiona w EQ: §e%d szt. §7(skupienie na pszenicy: >%d, powrót do nasion: ≤%d)", seeds, highThresh, lowThresh));
+                logDirect("  §fFokus zbierania: " + (wheatPriority ? "§a[SKUPIENIE NA PSZENICY (>100 nasion)]" : "§e[ZBIERANIE NASION I PSZENICY (≤30 nasion)]"));
                 logDirect(String.format("  §fBieżący priorytet: %s",
                         (harvestable < threshold && drops > 0) ? "§6[ZBIERANIE Z ZIEMI]" : "§a[NORMALNY ZBIÓR PLONÓW]"));
                 logDirect("  §7(#praca stop | #praca status)");
@@ -72,10 +78,10 @@ public class PracaCommand extends Command {
         BlockPos center = baritone.getPlayerContext().playerFeet();
         baritone.getFarmProcess().farmPraca(100, center);
 
-
         logDirect("§a[Praca] Uruchamiam zoptymalizowany tryb pracy na farmie!");
         logDirect("§7  • Cel: §aTylko dojrzała pszenica §7(blokada niszczenia bruku/struktur: §aAKTYWNA§7)");
         logDirect("§7  • Zasięg skanowania: §f100 bloków §7| Płynny bieg wzdłuż alei (lane traversal)");
+        logDirect("§7  • Gdy nasion > §f100§7: priorytet §apszenicy§7 (mniej biegania za nasionami, aż do spadku do §f30§7)");
         logDirect("§7  • Jeśli plonów < §f200§7: priorytet §azbierania z ziemi§7 (przechodzenie przez itemy)");
         logDirect("§7  • Jeśli plonów ≥ §f200§7: szybki zbiór i replant pszenicy w rzędach");
         logDirect("§7  (zatrzymaj: §f#praca stop§7)");
@@ -91,25 +97,28 @@ public class PracaCommand extends Command {
 
     @Override
     public String getShortDesc() {
-        return "[EKSPERYMENTALNY] Tryb pracy: farm z priorytetem zbierania gdy mało plonów";
+        return "[EKSPERYMENTALNY] Tryb pracy: farm z priorytetem zbierania pszenicy (>100 nasion) i dropów gdy mało plonów";
     }
 
     @Override
     public List<String> getLongDesc() {
         return Arrays.asList(
-                "Komenda #praca uruchamia eksperymentalny tryb farmienia.",
+                "Komenda #praca uruchamia eksperymentalny tryb farmienia pszenicy.",
                 "",
                 "Logika:",
-                "  - Skanuje promień 100 bloków w poszukiwaniu dojrzałych roślin.",
+                "  - Skanuje promień 100 bloków w poszukiwaniu dojrzałej pszenicy.",
+                "  - Inteligentne nasiona (histereza 100 -> 30):",
+                "    • Gdy w EQ jest >100 nasion: bot skupia się na pszenicy (zbiera leżącą pszenicę i kosi plony,",
+                "      nie tracąc czasu na bieganie za pojedynczymi nasionami).",
+                "    • Gdy nasiona spadną do <=30: bot ponownie aktywnie zbiera nasiona z ziemi.",
                 "  - Jeśli dojrzałych roślin jest MNIEJ niż 200:",
                 "    → Bot priorytetyzuje zbieranie itemów leżących na ziemi",
-                "      (pszenica, nasiona, marchew itp.)",
                 "  - Jeśli dojrzałych roślin jest 200 lub więcej:",
-                "    → Normalny tryb zbioru jak w #farm",
+                "    → Szybki bieg wzdłuż alei (lane traversal) z natychmiastowym zbiorem i replantem",
                 "",
                 "> #praca          — startuje tryb pracy",
                 "> #praca stop     — zatrzymuje",
-                "> #praca status   — pokazuje aktualny stan i licznik roślin"
+                "> #praca status   — pokazuje aktualny stan, licznik roślin i nasion"
         );
     }
 }

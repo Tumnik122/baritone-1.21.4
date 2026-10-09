@@ -177,7 +177,6 @@ public class AutoDropProcess extends BaritoneProcessHelper implements IBaritoneP
         return baritone.getMineProcess().isActive()
                 || baritone.getFarmProcess().isActive()
                 || baritone.getBypassProcess().isActive()
-                || baritone.getBuilderProcess().isActive()
                 || baritone.getExploreProcess().isActive()
                 || baritone.getFollowProcess().isActive()
                 || baritone.getGetToBlockProcess().isActive();
@@ -300,6 +299,15 @@ public class AutoDropProcess extends BaritoneProcessHelper implements IBaritoneP
             return false;
         }
 
+        // Podczas budowania lub czyszczenia terenu (#build, #cleararea, #sel cleararea)
+        // NIGDY nie aktywujemy czyszczenia ekwipunku ani wyrzucania przedmiotów!
+        if (baritone.getBuilderProcess().isActive()) {
+            if (state != State.IDLE) {
+                onLostControl();
+            }
+            return false;
+        }
+
         // Jeśli proces jest już w trakcie czyszczenia/blokowania/segregowania, kontynuuje aż zakończy całą sekwencję
         if (state != State.IDLE) {
             return true;
@@ -333,11 +341,11 @@ public class AutoDropProcess extends BaritoneProcessHelper implements IBaritoneP
             }
         }
 
-        // 4. Warunek automatycznego blokowania slotów: tylko gdy włączone autoLockResource, są puste sloty, gracz ma surowiec
-        // UWAGA: Podczas farmienia (#farm) NIGDY nie blokujemy slotów — ekwipunek jest zajmowany plonami,
-        // a blokowanie nasionami powoduje MultiActionsC na GrimAC.
+        // UWAGA: Podczas farmienia (#farm) lub budowania/czyszczenia (#build, #cleararea) NIGDY nie blokujemy slotów — ekwipunek jest zajmowany plonami/blokami,
+        // a blokowanie nasionami powoduje wyrzucanie surowców oraz MultiActionsC na GrimAC.
         if (Baritone.settings().autoLockResource.value && freeSlots > 0
-                && !baritone.getFarmProcess().isActive()) {
+                && !baritone.getFarmProcess().isActive()
+                && !baritone.getBuilderProcess().isActive()) {
             if (now - lastLockTime > 5000L) {
                 String lockItem = Baritone.settings().autoLockItemName.value;
                 int sourceSlot = InventoryCleaner.findBestLockSourceSlot(ctx.player(), lockItem, targets);

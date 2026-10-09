@@ -110,15 +110,24 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     private int rotationSettleTicks;
 
     private static final int RESCAN_INTERVAL = 10;
-    private static final float ROTATION_TOLERANCE = 2.0f;
+    private static final float ROTATION_TOLERANCE = 12.0f; // Snappy look-and-mine
     private static final int SKIP_RADIUS = 16;
-    private static final int MAX_BREAK_TICKS = 200;
-    private static final int STARVED_TICK_LIMIT = 200; // ~10 seconds before giving up on unreachable
-    /** Max ticks of total inactivity (no place/break/path) before force-advancing. */
-    private static final int ANTI_STALL_TICKS = 300; // 15 seconds
+    private static final int MAX_BREAK_TICKS = 120;
+    private static final int STARVED_TICK_LIMIT = 100;
+    /** Max ticks of total inactivity (no place/break/path) before force-advancing (6 seconds). */
+    private static final int ANTI_STALL_TICKS = 120;
     private int inactivityTicks;
     /** Total targets at start of this layer/build (for progress %). */
     private int totalTargetsInitial;
+
+    // Temporary settings saved during clearArea excavation
+    private boolean savedMineAvoidWater;
+    private boolean savedAvoidFluidProximity;
+    private boolean savedAllowDownward;
+    private boolean savedBreakFromAbove;
+    private boolean savedGoalBreakFromAbove;
+    private boolean savedOkIfWater;
+    private boolean customSettingsActive;
 
     public BuilderProcess(Baritone baritone) {
         super(baritone);
@@ -247,6 +256,25 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         this.layerMode = false;
         this.clearMin = new BetterBlockPos(Math.min(a.getX(), b.getX()), Math.min(a.getY(), b.getY()), Math.min(a.getZ(), b.getZ()));
         this.clearMax = new BetterBlockPos(Math.max(a.getX(), b.getX()), Math.max(a.getY(), b.getY()), Math.max(a.getZ(), b.getZ()));
+
+        // BREAKTHROUGH: Automatically adapt settings for smooth arena clearing
+        if (!customSettingsActive) {
+            this.savedMineAvoidWater = Baritone.settings().mineAvoidWater.value;
+            this.savedAvoidFluidProximity = Baritone.settings().avoidFluidProximity.value;
+            this.savedAllowDownward = Baritone.settings().allowDownward.value;
+            this.savedBreakFromAbove = Baritone.settings().breakFromAbove.value;
+            this.savedGoalBreakFromAbove = Baritone.settings().goalBreakFromAbove.value;
+            this.savedOkIfWater = Baritone.settings().okIfWater.value;
+            this.customSettingsActive = true;
+        }
+
+        Baritone.settings().mineAvoidWater.value = false;
+        Baritone.settings().avoidFluidProximity.value = false;
+        Baritone.settings().allowDownward.value = true;
+        Baritone.settings().breakFromAbove.value = true;
+        Baritone.settings().goalBreakFromAbove.value = true;
+        Baritone.settings().okIfWater.value = true;
+
         start();
     }
 
@@ -300,14 +328,14 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         return voxelshape.isEmpty() || ctx.world().isUnobstructed(null, voxelshape.move(pos.getX(), pos.getY(), pos.getZ()));
     }
 
-    public static class GoalBreak extends baritone.api.pathing.goals.GoalGetToBlock {
+    public class GoalBreak extends baritone.api.pathing.goals.GoalGetToBlock {
         public GoalBreak(BlockPos pos) {
             super(pos);
         }
 
         @Override
         public boolean isInGoal(int x, int y, int z) {
-            if (y > this.y) {
+            if (!Baritone.settings().goalBreakFromAbove.value && clearMin == null && y > this.y) {
                 return false;
             }
             return super.isInGoal(x, y, z);
@@ -357,6 +385,15 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
 
     @Override
     public void onLostControl() {
+        if (customSettingsActive) {
+            Baritone.settings().mineAvoidWater.value = savedMineAvoidWater;
+            Baritone.settings().avoidFluidProximity.value = savedAvoidFluidProximity;
+            Baritone.settings().allowDownward.value = savedAllowDownward;
+            Baritone.settings().breakFromAbove.value = savedBreakFromAbove;
+            Baritone.settings().goalBreakFromAbove.value = savedGoalBreakFromAbove;
+            Baritone.settings().okIfWater.value = savedOkIfWater;
+            customSettingsActive = false;
+        }
         // CRITICAL FIX: must set active=false or process manager throws
         // "stayed active after being cancelled" IllegalStateException
         active = false;
@@ -409,9 +446,13 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             return null;
         }
 
-        // ---- Anti-stall: only count when player is truly idle (not moving or pathing) ----
-        if ((baritone.getPathingBehavior() != null && baritone.getPathingBehavior().isPathing())
-                || player.getDeltaMovement().lengthSqr() > 0.001) {
+        // ---- Anti-stall: only count when player is truly idle (not breaking, not pathing, not turning, not moving) ----
+        boolean isWorking = (breaking != null)
+                || (baritone.getPathingBehavior() != null && (baritone.getPathingBehavior().isPathing() || baritone.getPathingBehavior().getInProgress().isPresent()))
+                || (rotationSettleTicks > 0)
+                || (player.getDeltaMovement().lengthSqr() > 0.001);
+
+        if (isWorking) {
             inactivityTicks = 0;
         } else {
             inactivityTicks++;
@@ -420,8 +461,8 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             scheduler.forceResetVerification();
             inactivityTicks = 0;
             if (currentGoalTarget != null) {
-                // Only skip the specific stalled target, do NOT mark the whole layer unreachable!
-                scheduler.markUnreachable(currentGoalTarget, scheduler.currentTick() + 100);
+                // Temporarily back off from this stalled target (200 ticks) instead of permanently resigning!
+                scheduler.markUnreachable(currentGoalTarget, scheduler.currentTick() + 200);
                 currentGoalTarget = null;
                 currentGoal = null;
             }
@@ -468,6 +509,21 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     // Scanning / ordering
     // =====================================================================
 
+    /**
+     * Unified predicate determining whether a block is considered cleared.
+     * True for air, pure fluids, and replaceable non-solid blocks.
+     * False for waterlogged physical blocks (stairs, slabs, chests) which still need breaking.
+     */
+    public static boolean isCleared(BlockState state) {
+        if (state == null) return true;
+        if (state.isAir()) return true;
+        if (state.getBlock() instanceof LiquidBlock) return true;
+        if (state.hasProperty(BlockStateProperties.WATERLOGGED) && state.getValue(BlockStateProperties.WATERLOGGED)) {
+            return false; // Physical block inside water must be broken!
+        }
+        return BlockStateResolver.isReplaceable(state);
+    }
+
     /** Rebuilds `pending` (schematic cells not yet matching the world) and orders it. */
     private void searchForPlacables(Level world) {
         rescanCountdown = RESCAN_INTERVAL;
@@ -480,13 +536,19 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             int minY = clearMin.getY(), maxY = clearMax.getY();
             int minZ = clearMin.getZ(), maxZ = clearMax.getZ();
 
-            // Capped top-down excavation scan: only collect up to MAX_CLEAR_BATCH targets per scan.
-            // This prevents freezing/lag on massive arenas (e.g. 100x100x50 = 500,000 blocks).
-            final int MAX_CLEAR_BATCH = 1000;
+            int height = maxY - minY + 1;
+            final int MAX_CLEAR_BATCH = 1500;
             BlockPos.MutableBlockPos mpos = new BlockPos.MutableBlockPos();
 
+            // When selection height is shallow (<= 6 blocks, typical arena/room), clear BOTTOM-UP (floor to ceiling)
+            // When deep quarry (> 6 blocks), clear TOP-DOWN (maxY to minY)
+            boolean bottomUp = height <= 6;
+            int yStart = bottomUp ? minY : maxY;
+            int yEnd = bottomUp ? maxY : minY;
+            int yStep = bottomUp ? 1 : -1;
+
             layerLoop:
-            for (int y = maxY; y >= minY; y--) {
+            for (int y = yStart; bottomUp ? (y <= yEnd) : (y >= yEnd); y += yStep) {
                 for (int z = minZ; z <= maxZ; z++) {
                     for (int x = minX; x <= maxX; x++) {
                         mpos.set(x, y, z);
@@ -494,7 +556,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                             continue;
                         }
                         BlockState cur = world.getBlockState(mpos);
-                        if (cur.getBlock() instanceof AirBlock || BlockStateResolver.isReplaceable(cur)) {
+                        if (isCleared(cur) || cur.getDestroySpeed(world, mpos) < 0) {
                             continue;
                         }
                         fresh.add(new Target(mpos.immutable(), null));
@@ -788,12 +850,17 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
 
     private Target findBreakTargetInReach(Level world, LocalPlayer player) {
         if (breaking != null) {
-            for (Target t : pending) {
-                if (t.pos.equals(breaking)) {
-                    return t;
+            BlockState curBreak = world.getBlockState(breaking);
+            if (isCleared(curBreak)) {
+                stopBreaking();
+            } else {
+                for (Target t : pending) {
+                    if (t.pos.equals(breaking)) {
+                        return t;
+                    }
                 }
+                stopBreaking();
             }
-            stopBreaking();
         }
         Vec3 eye = player.getEyePosition();
         double reach = Math.max(3.0, Math.min(player.blockInteractionRange() - 0.25, 4.5));
@@ -802,8 +869,8 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 continue;
             }
             BlockState cur = world.getBlockState(t.pos);
-            if (cur.getBlock() instanceof AirBlock || BlockStateResolver.isReplaceable(cur) || !cur.getFluidState().isEmpty()) {
-                continue; // fluids get placed into, not broken
+            if (isCleared(cur) || cur.getDestroySpeed(world, t.pos) < 0) {
+                continue; // already cleared; bedrock/barriers cannot be broken
             }
             double dx = t.pos.getX() + 0.5 - eye.x;
             double dy = t.pos.getY() + 0.5 - eye.y;
@@ -841,10 +908,16 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         player.swing(InteractionHand.MAIN_HAND);
 
         if (++breakTicks > MAX_BREAK_TICKS) {
-            scheduler.markUnreachable(t.pos, scheduler.currentTick() + 1200);
+            scheduler.markUnreachable(t.pos, scheduler.currentTick() + 400);
             stopBreaking();
-        } else if (world.getBlockState(t.pos).getBlock() instanceof AirBlock) {
-            stopBreaking();
+        } else {
+            BlockState curNow = world.getBlockState(t.pos);
+            if (isCleared(curNow)) {
+                stopBreaking();
+                pending.removeIf(p -> p.pos.equals(t.pos));
+                currentGoalTarget = null;
+                currentGoal = null;
+            }
         }
         return standStill();
     }
@@ -887,12 +960,20 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             if (scheduler.isUnreachable(t.pos) || resigned.contains(t.pos)) {
                 continue;
             }
-            if (t.want != null && BlockStateResolver.statesMatch(t.want, world.getBlockState(t.pos))) {
-                continue; // Already placed, do not path to it
-            }
-            if (t.want != null && slotFor(t.want) < 0) {
-                missingCount++;
-                continue;
+            BlockState cur = world.getBlockState(t.pos);
+            if (t.want != null) {
+                if (BlockStateResolver.statesMatch(t.want, cur)) {
+                    continue; // Already placed, do not path to it
+                }
+                if (slotFor(t.want) < 0) {
+                    missingCount++;
+                    continue;
+                }
+            } else {
+                // Clearing/excavation: skip if already cleared or unbreakable
+                if (isCleared(cur) || cur.getDestroySpeed(world, t.pos) < 0) {
+                    continue;
+                }
             }
             totalWithMaterial++;
             // FIX 2: prioritize targets that have support (scaffolding logic)
@@ -939,11 +1020,37 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             }
         }
 
-        if (currentGoalTarget == null || currentGoalTarget.distSqr(best.pos) > 8 * 8) {
+        boolean needNewGoal = currentGoal == null
+                || currentGoalTarget == null
+                || !pendingContains(currentGoalTarget)
+                || currentGoal.isInGoal(player.getBlockX(), player.getBlockY(), player.getBlockZ());
+
+        if (best.want == null) {
+            // Clearing mode: path directly adjacent to block to break it cleanly
+            if (needNewGoal || !currentGoalTarget.equals(best.pos)) {
+                currentGoalTarget = new BetterBlockPos(best.pos);
+                currentGoal = new GoalBreak(currentGoalTarget);
+            }
+            return new PathingCommand(currentGoal, PathingCommandType.SET_GOAL_AND_PATH);
+        }
+
+        if (needNewGoal || !currentGoalTarget.equals(best.pos)) {
             currentGoalTarget = new BetterBlockPos(best.pos);
             currentGoal = new GoalNear(currentGoalTarget, 3);
         }
         return new PathingCommand(currentGoal, PathingCommandType.SET_GOAL_AND_PATH);
+    }
+
+    private boolean pendingContains(BlockPos pos) {
+        if (pos == null) {
+            return false;
+        }
+        for (Target t : pending) {
+            if (t.pos.equals(pos)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** FIX 2: Check if a target position has at least one solid neighbor to place against. */

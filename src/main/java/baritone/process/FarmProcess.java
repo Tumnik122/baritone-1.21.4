@@ -51,6 +51,7 @@ import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.AirBlock;
 import net.minecraft.world.level.block.BambooStalkBlock;
@@ -139,6 +140,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     private int currentDropTargetId = -1;
     private int dropPickupWaitTicks = 0;
     private boolean pracaGroundFirstState = false; // histereza trybu zbierania z ziemi
+    private static boolean pracaWheatPriorityState = false; // histereza: skupienie na pszenicy (>100 nasion aż do <=30 nasion)
 
     public static boolean isPracaModeActive() {
         return pracaMode || Baritone.settings().farmCollectDropsWhenLowCrops.value;
@@ -148,6 +150,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     }
     public static int getPracaHarvestableCount() { return pracaHarvestableCount; }
     public static int getPracaGroundDropsCount() { return pracaGroundDropsCount; }
+    public static boolean isPracaWheatPriorityActive() { return pracaWheatPriorityState; }
 
     // Zapamiętane opcje użytkownika (Pkt 10)
     private final List<Block> addedDisallowed = new ArrayList<>();
@@ -249,6 +252,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         this.plantOnly = false;
         pracaMode = false;
         pracaGroundFirstState = false;
+        pracaWheatPriorityState = false;
         if (pos == null) {
             center = baritone.getPlayerContext().playerFeet();
         } else {
@@ -478,6 +482,24 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         }
         for (ItemStack stack : ctx.player().getInventory().offhand) {
             if (stack != null && !stack.isEmpty() && PICKUP_DROPPED.contains(stack.getItem())) {
+                total += stack.getCount();
+            }
+        }
+        return total;
+    }
+
+    public int countWheatSeedsInInventory() {
+        if (ctx.player() == null || ctx.player().getInventory() == null) {
+            return 0;
+        }
+        int total = 0;
+        for (ItemStack stack : ctx.player().getInventory().items) {
+            if (stack != null && !stack.isEmpty() && stack.is(Items.WHEAT_SEEDS)) {
+                total += stack.getCount();
+            }
+        }
+        for (ItemStack stack : ctx.player().getInventory().offhand) {
+            if (stack != null && !stack.isEmpty() && stack.is(Items.WHEAT_SEEDS)) {
                 total += stack.getCount();
             }
         }
@@ -748,21 +770,42 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
     /**
      * Dedykowany cel Baritone pod zbiory i sadzenie na farmie.
-     * Zmierza bezpośrednio do bloku uprawy/grządki (GoalGetToBlock),
-     * dzięki czemu bot idzie wzdłuż ścieżki i podchodzi do każdej uprawy po kolei,
-     * nie zatrzymując się przedwcześnie w odległości 2 bloków.
+     * Zmierza bezpośrednio do kolumny (x, z) uprawy/grządki.
+     * Wymaga znalezienia się dokładnie na tej samej pozycji w poziomie (x == this.x && z == this.z),
+     * dzięki czemu bot nie uznaje celu za osiągnięty stojąc 1 blok obok (co wcześniej zamrażało ruch w miejscu).
      */
-    public static final class GoalFarmTarget extends GoalGetToBlock {
+    public static final class GoalFarmTarget implements Goal, IGoalRenderPos {
+        public final int x;
+        public final int y;
+        public final int z;
+
         public GoalFarmTarget(BlockPos pos) {
-            super(pos);
+            this.x = pos.getX();
+            this.y = pos.getY();
+            this.z = pos.getZ();
         }
 
         @Override
         public boolean isInGoal(int x, int y, int z) {
-            if (y > this.y) {
-                return false;
-            }
-            return super.isInGoal(x, y, z);
+            return x == this.x && z == this.z && (y == this.y || y == this.y - 1 || y == this.y + 1);
+        }
+
+        @Override
+        public double heuristic(int x, int y, int z) {
+            int xDiff = x - this.x;
+            int yDiff = y - this.y;
+            int zDiff = z - this.z;
+            return GoalBlock.calculate(xDiff, yDiff, zDiff);
+        }
+
+        @Override
+        public BlockPos getGoalPos() {
+            return new BlockPos(x, y, z);
+        }
+
+        @Override
+        public String toString() {
+            return "GoalFarmTarget{" + x + "," + y + "," + z + "}";
         }
     }
 
@@ -780,7 +823,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
         @Override
         public boolean isInGoal(int x, int y, int z) {
-            return x == pos.getX() && z == pos.getZ() && (y == pos.getY() || y == pos.getY() - 1);
+            return x == pos.getX() && z == pos.getZ() && (y == pos.getY() || y == pos.getY() - 1 || y == pos.getY() + 1);
         }
 
         @Override
@@ -814,18 +857,36 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             return Collections.emptyList();
         }
 
+        List<BlockPos> validSource = new ArrayList<>();
+        List<BlockPos> sameFloorSource = new ArrayList<>();
+        final int playerY = playerPos.getY();
+        for (BlockPos p : source) {
+            if (!isBlacklisted(p)) {
+                validSource.add(p);
+                // Plony na tej samej wysokości co gracz (w granicach ±1 bloku — uwzględnia zaoraną ziemię i lekkie stopnie)
+                if (Math.abs(p.getY() - playerY) <= 1) {
+                    sameFloorSource.add(p);
+                }
+            }
+        }
+        if (validSource.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // KROK 1: Izolacja piętra. Jeśli na obecnym piętrze (Y ~= playerPos.getY()) są plony,
+        // wybieramy cele WYŁĄCZNIE z tego piętra! Nigdy nie mieszamy upraw z sufitu / innego piętra
+        // (np. gracz na Y=-57, uprawy nad sufitem na Y=-54).
+        List<BlockPos> pool = !sameFloorSource.isEmpty() ? sameFloorSource : validSource;
+
         List<BlockPos> nearby = new ArrayList<>();
         double maxDistSq = 32.0D * 32.0D;
-        for (BlockPos p : source) {
-            if (!isBlacklisted(p) && playerPos.distSqr(p) <= maxDistSq) {
+        for (BlockPos p : pool) {
+            if (playerPos.distSqr(p) <= maxDistSq) {
                 nearby.add(p);
             }
         }
         if (nearby.isEmpty()) {
-            for (BlockPos p : source) {
-                if (!isBlacklisted(p)) nearby.add(p);
-            }
-            if (nearby.isEmpty()) return Collections.emptyList();
+            nearby.addAll(pool);
         }
 
         Vec3 delta = ctx.player() != null ? ctx.player().getDeltaMovement() : Vec3.ZERO;
@@ -853,53 +914,81 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         final double forwardX = dirX;
         final double forwardZ = dirZ;
 
+        final double playerRealX = ctx.player() != null ? ctx.player().getX() : playerPos.getX() + 0.5D;
+        final double playerRealZ = ctx.player() != null ? ctx.player().getZ() : playerPos.getZ() + 0.5D;
+
         List<BlockPos> forwardCrops = new ArrayList<>();
         for (BlockPos p : nearby) {
-            double dx = p.getX() + 0.5D - playerPos.getX();
-            double dz = p.getZ() + 0.5D - playerPos.getZ();
+            if (p.getX() == playerPos.getX() && p.getZ() == playerPos.getZ() && nearby.size() > 1) {
+                continue;
+            }
+            // Do sprintu w przód kwalifikujemy tylko plony na tym samym piętrze
+            if (Math.abs(p.getY() - playerY) > 1) {
+                continue;
+            }
+            double dx = p.getX() + 0.5D - playerRealX;
+            double dz = p.getZ() + 0.5D - playerRealZ;
             double distSq = dx * dx + dz * dz;
-            if (distSq >= 2.25D) {
+            if (distSq >= 2.0D) {
                 double dist = Math.sqrt(distSq);
                 double dot = (dx * forwardX + dz * forwardZ) / dist;
-                if (dot > 0.25D) {
+                if (dot > 0.20D) {
                     forwardCrops.add(p);
                 }
             }
         }
 
-        List<BlockPos> selected = new ArrayList<>(3);
+        List<BlockPos> selected = new ArrayList<>(4);
         if (!forwardCrops.isEmpty()) {
             forwardCrops.sort(Comparator.comparingDouble(p -> {
-                double dx = p.getX() + 0.5D - playerPos.getX();
-                double dz = p.getZ() + 0.5D - playerPos.getZ();
+                double dx = p.getX() + 0.5D - playerRealX;
+                double dz = p.getZ() + 0.5D - playerRealZ;
                 double distSq = dx * dx + dz * dz;
                 double dist = Math.sqrt(distSq);
                 double dot = (dx * forwardX + dz * forwardZ) / dist;
-                return distSq - (dot * 16.0D);
+                return distSq - (dot * 20.0D);
             }));
 
             selected.add(forwardCrops.get(0));
-            for (int i = 1; i < forwardCrops.size(); i++) {
+            for (int i = 1; i < forwardCrops.size() && selected.size() < 3; i++) {
                 BlockPos p = forwardCrops.get(i);
-                if (p.distSqr(selected.get(0)) >= 4.0D) {
+                boolean sufficientlyFar = true;
+                for (BlockPos s : selected) {
+                    if (p.distSqr(s) < 4.0D) {
+                        sufficientlyFar = false;
+                        break;
+                    }
+                }
+                if (sufficientlyFar) {
                     selected.add(p);
-                    break;
                 }
             }
         } else {
-            nearby.sort(Comparator.comparingDouble(p -> {
-                double dx = p.getX() + 0.5D - playerPos.getX();
-                double dz = p.getZ() + 0.5D - playerPos.getZ();
-                double distSq = dx * dx + dz * dz;
-                double dist = Math.sqrt(distSq);
+            List<BlockPos> validTurn = new ArrayList<>();
+            for (BlockPos p : nearby) {
+                if (p.getX() == playerPos.getX() && p.getZ() == playerPos.getZ() && nearby.size() > 1) {
+                    continue;
+                }
+                validTurn.add(p);
+            }
+            if (validTurn.isEmpty()) {
+                validTurn.addAll(nearby);
+            }
+            validTurn.sort(Comparator.comparingDouble(p -> {
+                double dx = p.getX() + 0.5D - playerRealX;
+                double dy = p.getY() - playerY;
+                double dz = p.getZ() + 0.5D - playerRealZ;
+                // Ciężka kara za różnicę wysokości (piętro wyżej/niżej)
+                double distSq = dx * dx + dy * dy * 25.0D + dz * dz;
+                double dist = Math.sqrt(dx * dx + dz * dz);
                 double dot = (dist > 0.1D) ? (dx * forwardX + dz * forwardZ) / dist : 1.0D;
-                double turnPenalty = (dot < -0.5D) ? 8.0D : 0.0D;
+                double turnPenalty = (dot < -0.5D) ? 12.0D : 0.0D;
                 return distSq + turnPenalty;
             }));
 
-            int count = Math.min(2, nearby.size());
+            int count = Math.min(2, validTurn.size());
             for (int i = 0; i < count; i++) {
-                selected.add(nearby.get(i));
+                selected.add(validTurn.get(i));
             }
         }
 
@@ -1380,8 +1469,10 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         // ─────────────────────────────────────────────────────────────────
         candidates.clear();
         if (!plantOnly) {
+            final int playerY = playerPos.getY();
             for (BlockPos p : toBreak) {
                 if (!isBlacklisted(p)
+                        && Math.abs(p.getY() - playerY) <= 1
                         && head.distanceToSqr(p.getX() + 0.5D, p.getY() + 0.5D, p.getZ() + 0.5D) <= reach2
                         && readyForHarvest(ctx.world(), p, ctx.world().getBlockState(p))) {
                     candidates.add(p);
@@ -1402,21 +1493,18 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     final boolean isInstant = bState.getDestroySpeed(ctx.world(), pos) == 0.0F;
                     final boolean fastMode = Baritone.settings().farmFastMode.value;
 
-                    // Dla instant-break (pszenica, marchew itp.) nie wymagamy pełnego raytracing
-                    // LOS
-                    // — zawsze obliczamy rotację bezpośrednio i wysyłamy pakiet
+                    // Dla instant-break (pszenica, marchew itp.) nie wymagamy pełnego raytracing LOS
+                    // — obliczamy rotację bezpośrednio pod warunkiem braku ściany/sufitu na drodze
                     Optional<Rotation> rot = RotationUtils.reachable(ctx, pos, blockReachDistance);
                     if (!rot.isPresent()) {
                         Vec3 centerVec = Vec3.atCenterOf(pos);
                         if (head.distanceToSqr(centerVec) <= reach2) {
-                            rot = Optional
-                                    .of(RotationUtils.calcRotationFromVec3d(head, centerVec, ctx.playerRotations()));
+                            BlockHitResult hit = ctx.world().clip(new ClipContext(head, centerVec,
+                                    ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, ctx.player()));
+                            if (hit.getType() == HitResult.Type.MISS || hit.getBlockPos().equals(pos)) {
+                                rot = Optional.of(RotationUtils.calcRotationFromVec3d(head, centerVec, ctx.playerRotations()));
+                            }
                         }
-                    }
-                    // W fast mode lub dla instant crops — zawsze próbuj, nawet bez LOS
-                    if (!rot.isPresent() && (fastMode || isInstant)) {
-                        Vec3 centerVec = Vec3.atCenterOf(pos);
-                        rot = Optional.of(RotationUtils.calcRotationFromVec3d(head, centerVec, ctx.playerRotations()));
                     }
                     if (!rot.isPresent())
                         continue;
@@ -1549,8 +1637,10 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         // ─────────────────────────────────────────────────────────────────
         if (!acted && haveSeeds) {
             List<BlockPos> plantCandidates = new ArrayList<>();
+            final int playerY = playerPos.getY();
             for (BlockPos p : openFarmland) {
                 if (!isBlacklisted(p)
+                        && Math.abs(p.getY() - playerY) <= 1
                         && head.distanceToSqr(p.getX() + 0.5D, p.getY() + 0.5D, p.getZ() + 0.5D) <= reach2) {
                     plantCandidates.add(p);
                 }
@@ -1570,8 +1660,11 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 }
                 if (!rot.isPresent()) {
                     if (head.distanceToSqr(plantTarget) <= reach2) {
-                        rot = Optional
-                                .of(RotationUtils.calcRotationFromVec3d(head, plantTarget, ctx.playerRotations()));
+                        BlockHitResult hit = ctx.world().clip(new ClipContext(head, plantTarget,
+                                ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, ctx.player()));
+                        if (hit.getType() == HitResult.Type.MISS || hit.getBlockPos().equals(pos)) {
+                            rot = Optional.of(RotationUtils.calcRotationFromVec3d(head, plantTarget, ctx.playerRotations()));
+                        }
                     }
                 }
                 if (rot.isPresent()) {
@@ -1763,6 +1856,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     if (ei.isInLava()) {
                         continue;
                     }
+                    if (Math.abs(ei.getY() - (playerPos.getY() + 0.5D)) > 1.8D) {
+                        continue; // Ignoruj itemy na suficie / innym piętrze
+                    }
                     if (PICKUP_DROPPED.contains(ei.getItem().getItem())) {
                         if (itemBlacklist.get(ei.getId()) > farmTicks || !hasRoomFor(ei.getItem())) {
                             continue;
@@ -1792,7 +1888,34 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         } catch (Throwable ignored) {
         }
 
-        nearbyDrops.sort(Comparator.comparingDouble(e -> playerPos.distSqr(e.blockPosition())));
+        // ── Tryb #praca: aktualizacja histerezy priorytetu pszenicy nad nasionami ──
+        // Gdy bot ma >100 nasion w EQ, skupia się na zbieraniu pszenicy zamiast biegania za nasionami.
+        // Histereza: stan skupienia na pszenicy utrzymuje się aż do spadku nasion do <=30 szt.
+        int seedsInInventory = countWheatSeedsInInventory();
+        int seedsHigh = Baritone.settings().pracaSeedsHighThreshold.value;
+        int seedsLow = Baritone.settings().pracaSeedsLowThreshold.value;
+        if (seedsInInventory > seedsHigh) {
+            pracaWheatPriorityState = true;
+        } else if (seedsInInventory <= seedsLow) {
+            pracaWheatPriorityState = false;
+        }
+
+        // Sortowanie dropów z ziemi:
+        // W trybie #praca, gdy aktywny jest priorytet pszenicy (nasiona > 100 aż do <= 30),
+        // pszenica (Items.WHEAT) ma bezwzględny priorytet nad nasionami (Items.WHEAT_SEEDS).
+        if (isPracaActive && pracaWheatPriorityState) {
+            nearbyDrops.sort((e1, e2) -> {
+                boolean isWheat1 = e1.getItem().is(Items.WHEAT);
+                boolean isWheat2 = e2.getItem().is(Items.WHEAT);
+                if (isWheat1 != isWheat2) {
+                    return isWheat1 ? -1 : 1; // Pszenica na początku listy
+                }
+                return Double.compare(playerPos.distSqr(e1.blockPosition()), playerPos.distSqr(e2.blockPosition()));
+            });
+        } else {
+            nearbyDrops.sort(Comparator.comparingDouble(e -> playerPos.distSqr(e.blockPosition())));
+        }
+
         pracaGroundDropsCount = nearbyDrops.size();
         lastNearestDropId = nearbyDrops.isEmpty() ? -1 : nearbyDrops.get(0).getId();
 
@@ -1810,7 +1933,23 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         }
         pracaGroundFirstState = pracaGroundFirst;
 
-        if (pracaGroundFirst && !nearbyDrops.isEmpty()) {
+        // Gdy mamy >100 nasion (pracaWheatPriorityState):
+        // Sprawdzamy czy na ziemi leży jakakolwiek pszenica.
+        // Jeśli na ziemi leżą TYLKO nasiona, a na polu wciąż rośnie dojrzała pszenica (!toBreak.isEmpty()),
+        // to bot skupia się na koszeniu pszenicy z pola, zamiast biegać specjalnie po nasiona!
+        boolean hasWheatDrops = false;
+        for (ItemEntity drop : nearbyDrops) {
+            if (drop.getItem().is(Items.WHEAT)) {
+                hasWheatDrops = true;
+                break;
+            }
+        }
+        boolean executeGroundFirst = pracaGroundFirst;
+        if (isPracaActive && pracaWheatPriorityState && !hasWheatDrops && !toBreak.isEmpty()) {
+            executeGroundFirst = false; // skup się na ścinaniu pszenicy z pola!
+        }
+
+        if (executeGroundFirst && !nearbyDrops.isEmpty()) {
             // Anti-stall dla najbliższego dropu (zapobiega blokowaniu bota na niepodnoszalnym itemie)
             ItemEntity closestDrop = nearbyDrops.get(0);
             BlockPos closestStand = BlockPos.containing(closestDrop.getX(), closestDrop.getY() + 0.1D, closestDrop.getZ());
@@ -1843,12 +1982,17 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 goalz.add(new GoalPickupItem(standPos));
             }
             if (farmTicks % 100 == 0) {
-                logDirect(String.format("§e[Praca] Tryb zbierania z ziemi (%d plonów w r=%d < %d). Zbieram: %d itemów",
-                        pracaHarvestableCount, dropRadius, threshold, nearbyDrops.size()));
+                if (pracaWheatPriorityState) {
+                    logDirect(String.format("§e[Praca] Tryb zbierania: priorytet PSZENICY (nasiona: %d > %d). Zbieram: %d itemów (%s)",
+                            seedsInInventory, seedsHigh, nearbyDrops.size(), hasWheatDrops ? "§apszenica na ziemi" : "§7nasiona"));
+                } else {
+                    logDirect(String.format("§e[Praca] Tryb zbierania z ziemi (%d plonów w r=%d < %d, nasiona: %d ≤ %d). Zbieram: %d itemów",
+                            pracaHarvestableCount, dropRadius, threshold, seedsInInventory, seedsLow, nearbyDrops.size()));
+                }
             }
 
-            // Fallback: max 2 pobliskie plony wzdłuż alei
-            if (!plantOnly && !toBreak.isEmpty()) {
+            // Fallback: pobliskie plony tylko gdy BRAK jakichkolwiek dropów
+            if (!plantOnly && !toBreak.isEmpty() && goalz.isEmpty()) {
                 List<BlockPos> fallbackGoals = selectOptimizedHarvestGoals(toBreak, playerPos);
                 for (BlockPos p : fallbackGoals) {
                     goalz.add(new GoalFarmTarget(p));
@@ -1862,7 +2006,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             // Bot biegnie sprintem wzdłuż rzędów, zbierając i sadząc plony w biegu (20 bloków/s)
             // bez zatrzymywania się na każdym klocku i bez zygzakowania po sąsiednich grządkach.
 
-            // A. Dojrzałe plony — trasa wzdłuż rzędów
+            // A. Dojrzałe plony — priorytet trasy wzdłuż rzędów
             if (!plantOnly && !toBreak.isEmpty()) {
                 harvestQueue.clear();
                 List<BlockPos> goals = selectOptimizedHarvestGoals(toBreak, playerPos);
@@ -1870,10 +2014,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     harvestQueue.add(p);
                     goalz.add(new GoalFarmTarget(p));
                 }
-            }
-
-            // B. Sadzenie pustej ziemi — trasa wzdłuż rzędów
-            if (haveSeeds && !openFarmland.isEmpty()) {
+            } else if (haveSeeds && !openFarmland.isEmpty()) {
+                // B. Sadzenie pustej ziemi — tylko gdy brak dojrzałych plonów (lub w trybie plantOnly)
+                // Zapobiega to cofaniu się do pustej ziemi tuż po ścięciu plonu podczas sprintu!
                 plantQueue.clear();
                 List<BlockPos> goals = selectOptimizedHarvestGoals(openFarmland, playerPos);
                 for (BlockPos p : goals) {
@@ -1910,15 +2053,18 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 }
             }
 
-            // Normalny tryb: zbieramy pobliskie leżące itemy (max 2 cele przechodząc przez nie)
-            int maxPickupGoals = Math.min(2, nearbyDrops.size());
-            for (int i = 0; i < maxPickupGoals; i++) {
-                ItemEntity ei = nearbyDrops.get(i);
-                if (playerPos.distSqr(ei.blockPosition()) > 30.0D * 30.0D) {
-                    break;
+            // Normalny tryb: zbieramy pobliskie leżące itemy TYLKO gdy brak aktywnych celów zbioru/sadzenia.
+            // Zapobiega to oscylacjom celów (nawrotom o 180° po każde upuszczone nasionko w trakcie biegu rzędem).
+            if (goalz.isEmpty() && !nearbyDrops.isEmpty()) {
+                int maxPickupGoals = Math.min(2, nearbyDrops.size());
+                for (int i = 0; i < maxPickupGoals; i++) {
+                    ItemEntity ei = nearbyDrops.get(i);
+                    if (playerPos.distSqr(ei.blockPosition()) > 30.0D * 30.0D) {
+                        break;
+                    }
+                    BlockPos standPos = BlockPos.containing(ei.getX(), ei.getY() + 0.1D, ei.getZ());
+                    goalz.add(new GoalPickupItem(standPos));
                 }
-                BlockPos standPos = BlockPos.containing(ei.getX(), ei.getY() + 0.1D, ei.getZ());
-                goalz.add(new GoalPickupItem(standPos));
             }
         }
 
@@ -2016,8 +2162,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     if (playerPos.distSqr(p) < 16.0D && attempts.get(p.asLong()) >= 2)
                         blacklistFor(p, 100);
                 for (Goal g : goalz) {
-                    if (g.isInGoal(playerPos.x, playerPos.y, playerPos.z) && g instanceof IGoalRenderPos grp) {
-                        blacklistFor(grp.getGoalPos(), 200);
+                    if (g instanceof IGoalRenderPos grp) {
+                        blacklistFor(grp.getGoalPos(), 160);
                     }
                 }
                 for (ItemEntity drop : nearbyDrops) {
@@ -2046,13 +2192,23 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
         if (pendingCalcFailed) {
             pendingCalcFailed = false;
+            for (Goal g : goalz) {
+                if (g instanceof IGoalRenderPos grp) {
+                    blacklistFor(grp.getGoalPos(), 100);
+                }
+            }
             if (lastNearestDropId != -1) {
                 itemBlacklist.put(lastNearestDropId, farmTicks + 100);
-            } else {
-                toBreak.stream().min(Comparator.comparingDouble(playerPos::distSqr)).ifPresent(p -> blacklistFor(p, 40));
-                openFarmland.stream().min(Comparator.comparingDouble(playerPos::distSqr))
-                        .ifPresent(p -> blacklistFor(p, 40));
             }
+            final int playerY = playerPos.getY();
+            toBreak.stream()
+                .filter(p -> Math.abs(p.getY() - playerY) <= 1)
+                .min(Comparator.comparingDouble(playerPos::distSqr))
+                .ifPresent(p -> blacklistFor(p, 60));
+            openFarmland.stream()
+                .filter(p -> Math.abs(p.getY() - playerY) <= 1)
+                .min(Comparator.comparingDouble(playerPos::distSqr))
+                .ifPresent(p -> blacklistFor(p, 60));
             currentTargetPos = null;
             targetTicks = 0;
             currentPlantTargetPos = null;
@@ -2072,20 +2228,17 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 harvestQueue.clear();
                 plantQueue.clear();
                 emptyGoalTicks = 0;
-                // Dodaj 3 najbliższe po wyczyszczeniu blacklisty
+                // Dodaj cele przez selectOptimizedHarvestGoals z zachowaniem izolacji piętra
                 if (!plantOnly && !toBreak.isEmpty()) {
-                    toBreak.stream()
-                        .filter(p -> !isBlacklisted(p))
-                        .sorted(Comparator.comparingDouble(playerPos::distSqr))
-                        .limit(3)
-                        .forEach(p -> goalz.add(new GoalFarmTarget(p)));
-                }
-                if (haveSeeds && !openFarmland.isEmpty()) {
-                    openFarmland.stream()
-                        .filter(p -> !isBlacklisted(p))
-                        .sorted(Comparator.comparingDouble(playerPos::distSqr))
-                        .limit(3)
-                        .forEach(p -> goalz.add(new GoalFarmTarget(p)));
+                    List<BlockPos> recovered = selectOptimizedHarvestGoals(toBreak, playerPos);
+                    for (BlockPos p : recovered) {
+                        goalz.add(new GoalFarmTarget(p));
+                    }
+                } else if (haveSeeds && !openFarmland.isEmpty()) {
+                    List<BlockPos> recovered = selectOptimizedHarvestGoals(openFarmland, playerPos);
+                    for (BlockPos p : recovered) {
+                        goalz.add(new GoalFarmTarget(p));
+                    }
                 }
             }
         } else {
@@ -2113,6 +2266,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         currentDropTargetId = -1;
         dropPickupWaitTicks = 0;
         pracaGroundFirstState = false;
+        pracaWheatPriorityState = false;
         currentTargetPos = null;
         targetTicks = 0;
         currentPlantTargetPos = null;

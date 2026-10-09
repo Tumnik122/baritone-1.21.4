@@ -77,7 +77,8 @@ public interface MovementHelper extends ActionCosts, Helper {
             return true;
         }
         if (BaritoneAPI.getProvider().getPrimaryBaritone() != null
-                && BaritoneAPI.getProvider().getPrimaryBaritone().getFarmProcess().isActive()) {
+                && BaritoneAPI.getProvider().getPrimaryBaritone().getFarmProcess().isActive()
+                && isFarmSoilOrStructure(b)) {
             return true;
         }
         return Baritone.settings().blocksToDisallowBreaking.value.contains(b)

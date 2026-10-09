@@ -261,14 +261,47 @@ public final class PlacementScheduler {
      */
     public List<Target> orderCandidates(List<Target> candidates, Level world, BetterBlockPos playerFeet) {
         List<Target> sorted = new ArrayList<>(candidates);
+
+        // Determine clear bounding box height if in clearing mode
+        int clearMinY = Integer.MAX_VALUE;
+        int clearMaxY = Integer.MIN_VALUE;
+        boolean hasClear = false;
+        for (Target t : candidates) {
+            if (t.want == null) {
+                hasClear = true;
+                if (t.pos.getY() < clearMinY) clearMinY = t.pos.getY();
+                if (t.pos.getY() > clearMaxY) clearMaxY = t.pos.getY();
+            }
+        }
+        final boolean shallowClear = hasClear && (clearMaxY - clearMinY + 1 <= 6);
+        final BlockPos standPos = playerFeet != null ? playerFeet.below() : null;
+
         sorted.sort((a, b) -> {
             boolean aClear = a.want == null;
             boolean bClear = b.want == null;
             if (aClear && bClear) {
-                // Clearing/excavation: TOP-DOWN (higher Y first), then closest to player
-                int dy = Integer.compare(b.pos.getY(), a.pos.getY());
+                // Ground protection: never dig the block directly beneath our feet until other blocks are done!
+                if (standPos != null) {
+                    boolean aIsStand = a.pos.equals(standPos);
+                    boolean bIsStand = b.pos.equals(standPos);
+                    if (aIsStand != bIsStand) {
+                        return aIsStand ? 1 : -1;
+                    }
+                }
+                // Clearing/excavation:
+                // Shallow arena (<= 6 blocks): BOTTOM-UP (lower Y first)!
+                // Deep excavation (> 6 blocks): TOP-DOWN (higher Y first) to avoid falling
+                int dy = shallowClear
+                        ? Integer.compare(a.pos.getY(), b.pos.getY())
+                        : Integer.compare(b.pos.getY(), a.pos.getY());
                 if (dy != 0) return dy;
-                return Double.compare(a.pos.distSqr(playerFeet), b.pos.distSqr(playerFeet));
+                if (playerFeet != null) {
+                    int distCmp = Double.compare(a.pos.distSqr(playerFeet), b.pos.distSqr(playerFeet));
+                    if (distCmp != 0) return distCmp;
+                }
+                int dx = Integer.compare(a.pos.getX(), b.pos.getX());
+                if (dx != 0) return dx;
+                return Integer.compare(a.pos.getZ(), b.pos.getZ());
             }
             if (aClear != bClear) {
                 return aClear ? -1 : 1; // Clear obstructions before placing
@@ -278,7 +311,13 @@ public final class PlacementScheduler {
             if (dy != 0) return dy;
             int dp = Integer.compare(VantagePointSolver.placementPhase(a.want), VantagePointSolver.placementPhase(b.want));
             if (dp != 0) return dp;
-            return Double.compare(a.pos.distSqr(playerFeet), b.pos.distSqr(playerFeet));
+            if (playerFeet != null) {
+                int distCmp = Double.compare(a.pos.distSqr(playerFeet), b.pos.distSqr(playerFeet));
+                if (distCmp != 0) return distCmp;
+            }
+            int dx = Integer.compare(a.pos.getX(), b.pos.getX());
+            if (dx != 0) return dx;
+            return Integer.compare(a.pos.getZ(), b.pos.getZ());
         });
         return sorted;
     }

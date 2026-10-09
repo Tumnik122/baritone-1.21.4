@@ -77,8 +77,11 @@ public class SelCommand extends Command {
                 float lineWidth = Baritone.settings().selectionLineWidth.value;
                 boolean ignoreDepth = Baritone.settings().renderSelectionIgnoreDepth.value;
                 BufferBuilder bufferBuilder = IRenderer.startLines(color, opacity, lineWidth, ignoreDepth);
-                IRenderer.emitAABB(bufferBuilder, event.getModelViewStack(), new AABB(pos1));
-                IRenderer.endLines(bufferBuilder, ignoreDepth);
+                try {
+                    IRenderer.emitAABB(bufferBuilder, event.getModelViewStack(), new AABB(pos1));
+                } finally {
+                    IRenderer.endLines(bufferBuilder, ignoreDepth);
+                }
             }
         });
     }
@@ -177,7 +180,10 @@ public class SelCommand extends Command {
                     );
                 }
                 baritone.getBuilderProcess().clearArea(clearMin, clearMax);
-                logDirect("Clearing area now");
+                int h = clearMax.y - clearMin.y + 1;
+                logDirect(String.format("Czyszczenie terenu (%dx%dx%d) — tryb: %s",
+                        clearMax.x - clearMin.x + 1, h, clearMax.z - clearMin.z + 1,
+                        h <= 6 ? "od dołu do góry" : "od góry do dołu"));
                 return;
             }
             BetterBlockPos origin = selections[0].min();
@@ -393,7 +399,7 @@ public class SelCommand extends Command {
         HSPHERE("hsphere", "hsph"),
         CYLINDER("cylinder", "cyl"),
         HCYLINDER("hcylinder", "hcyl"),
-        CLEARAREA("cleararea", "ca"),
+        CLEARAREA("cleararea", "ca", "cleararena", "arena"),
         REPLACE("replace", "r"),
         EXPAND("expand", "ex"),
         COPY("copy", "cp"),
