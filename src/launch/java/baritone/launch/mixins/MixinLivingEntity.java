@@ -47,6 +47,9 @@ public abstract class MixinLivingEntity extends Entity {
             at = @At("HEAD")
     )
     private void baritone$onJumpFromGround(CallbackInfo ci) {
+        if ((Object) this instanceof LocalPlayer) {
+            baritone.render.BlockOverlayRenderer.onPlayerJump(this.getX(), this.getY(), this.getZ());
+        }
         this.getBaritone().ifPresent(baritone -> {
             RotationMoveEvent event = new RotationMoveEvent(
                     RotationMoveEvent.Type.JUMP,

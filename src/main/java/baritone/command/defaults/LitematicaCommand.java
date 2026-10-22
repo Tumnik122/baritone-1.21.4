@@ -46,36 +46,11 @@ public class LitematicaCommand extends Command {
 
     @Override
     public void execute(String label, IArgConsumer args) throws CommandException {
-        // Case 1: No arguments -> auto-build loaded placement or single schematic file
-        if (!args.hasAny()) {
-            if (LitematicaHelper.isLitematicaPresent()) {
-                if (LitematicaHelper.hasAnyPlacements()) {
-                    baritone.getBuilderProcess().buildOpenLitematic(-1);
-                    return;
-                }
-                logDirect("Litematica is running, but no placements are loaded in GUI.");
-                logDirect("Tip: Press 'M' -> 'Load Schematics' -> 'Create Placement', or use #litematica <file> to build directly.");
-            } else {
-                logDirect("Litematica mod is not installed. Looking for .litematic files in schematics/ folder...");
-            }
-
-            List<File> files = getLitematicFiles();
-            if (files.isEmpty()) {
-                logDirect("No .litematic files found in " + schematicsDir.getPath());
-                logDirect("Usage: #litematica [list | <placement#> | <filename> [x y z]]");
-                return;
-            }
-            if (files.size() == 1) {
-                File single = files.get(0);
-                logDirect("Found single schematic: " + single.getName() + ", building at player feet...");
-                buildFromFile(single, ctx.playerFeet());
-                return;
-            }
-            logDirect("Available .litematic files in schematics/:");
-            for (File f : files) {
-                logDirect("  • " + f.getName());
-            }
-            logDirect("Use: #litematica <filename>");
+        if (!args.hasAny() || "gui".equalsIgnoreCase(args.peekString())) {
+            if (args.hasAny()) args.get();
+            net.minecraft.client.Minecraft.getInstance().execute(() -> {
+                net.minecraft.client.Minecraft.getInstance().setScreen(new com.astra.revolution.gui.AstraSchematicScreen());
+            });
             return;
         }
 

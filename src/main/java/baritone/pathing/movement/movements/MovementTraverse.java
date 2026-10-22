@@ -342,6 +342,9 @@ public class MovementTraverse extends Movement {
             MovementHelper.moveTowards(ctx, state, positionsToBreak[0]);
             return state;
         } else {
+            if (!Baritone.settings().allowPlace.value || isFarmOrTillActive()) {
+                return state.setStatus(MovementStatus.UNREACHABLE);
+            }
             wasTheBridgeBlockAlwaysThere = false;
             Block standingOn = BlockStateInterface.get(ctx, feet.below()).getBlock();
             if (standingOn.equals(Blocks.SOUL_SAND) || standingOn instanceof SlabBlock) { // see issue #118
@@ -434,7 +437,7 @@ public class MovementTraverse extends Movement {
         // Gdy gracz posiada szybki kilof i kopie prosto w korytarzu:
         // Blokujemy celownik prosto wzdłuż korytarza (yaw = kierunek ruchu, pitch = 11.5° obejmujący oba bloki),
         // trzymamy ciągły bieg w przód i sprint.
-        if (FastBreakHelper.isFastPickaxe(ctx) && !baritone.getFarmProcess().isActive() && Baritone.settings().allowBreak.value) {
+        if (FastBreakHelper.isFastPickaxe(ctx) && !isFarmOrTillActive() && Baritone.settings().allowBreak.value) {
             boolean headSolid = !MovementHelper.canWalkThrough(ctx, dest.above());
             boolean feetSolid = !MovementHelper.canWalkThrough(ctx, dest);
             if (headSolid || feetSolid) {

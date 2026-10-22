@@ -97,6 +97,9 @@ public class MovementPillar extends Movement {
             if (context.getBaritone() != null && context.getBaritone().getMineProcess() != null && context.getBaritone().getMineProcess().isCuttingLogs()) {
                 return COST_INF;
             }
+            if (context.isFarmOrTillActive() || !Baritone.settings().allowPlace.value) {
+                return COST_INF;
+            }
             // we need to place a block where we started to jump on it
             placeCost = context.costOfPlacingAt(x, y, z, fromState);
             if (placeCost >= COST_INF) {
@@ -198,6 +201,9 @@ public class MovementPillar extends Movement {
             state.setInput(Input.JUMP, true);
             return state;
         } else {
+            if (!Baritone.settings().allowPlace.value || isFarmOrTillActive()) {
+                return state.setStatus(MovementStatus.UNREACHABLE);
+            }
             // Przygotuj blok do podsadzenia
             if (!((Baritone) baritone).getInventoryBehavior().selectThrowawayForLocation(true, src.x, src.y, src.z)) {
                 return state.setStatus(MovementStatus.UNREACHABLE);

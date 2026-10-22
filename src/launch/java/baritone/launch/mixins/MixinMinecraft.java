@@ -42,6 +42,16 @@ import org.spongepowered.asm.mixin.injection.Slice;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+import com.astra.revolution.perf.AstraPerformanceConfig;
+import com.astra.revolution.gui.AstraSchematicScreen;
+import com.astra.revolution.gui.AstraMainMenuScreen;
+import com.astra.revolution.schematic.AstraSchematicManager;
+import com.astra.revolution.schematic.AstraSchematicManager.BedwarsBridgeEngine;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.TitleScreen;
+import org.spongepowered.asm.mixin.injection.ModifyVariable;
+import org.lwjgl.glfw.GLFW;
+
 import java.util.function.BiFunction;
 
 @Mixin(Minecraft.class)
@@ -102,10 +112,17 @@ public abstract class MixinMinecraft {
     private static boolean baritone$rshiftWasDown = false;
 
     @Unique
+    private static boolean astra$wasKeyRightCtrlPressed = false;
+
+    @Unique
     private long baritone$govTicks = 0L;
 
     @Inject(method = "tick", at = @At("HEAD"), cancellable = true)
     private void baritone$onTickHead(CallbackInfo ci) {
+        Minecraft self = (Minecraft) (Object) this;
+        AstraPerformanceConfig.syncWindowState(self);
+        astra$pollSchematicHotkey(self);
+
         // (1) Tryb tła przez NATYWNE ustawienie (zawsze wykonane):
         if ((Baritone.settings().noPauseWhenPathing.value || Baritone.settings().runBackgroundWhenUnfocused.value)
                 && Baritone.isPrimaryActive()) {
@@ -181,6 +198,7 @@ public abstract class MixinMinecraft {
             )
     )
     private void runTick(CallbackInfo ci) {
+        AstraSchematicManager.getInstance().onClientTick();
         this.tickProvider = TickEvent.createNextProvider();
         for (IBaritone baritone : BaritoneAPI.getProvider().getAllBaritones()) {
             TickEvent.Type type = baritone.getPlayerContext().player() != null && baritone.getPlayerContext().world() != null
@@ -212,6 +230,61 @@ public abstract class MixinMinecraft {
         } else {
             baritone$rshiftWasDown = false;
         }
+
+        try {
+            AstraSchematicManager.getInstance().onClientTick();
+        } catch (Throwable ignored) {
+        }
+
+        astra$pollSchematicHotkey((Minecraft) (Object) this);
+    }
+
+    @Unique
+    private void astra$pollSchematicHotkey(Minecraft self) {
+        if (self.getWindow() == null || self.getWindow().getWindow() == 0L) {
+            return;
+        }
+
+        long handle = self.getWindow().getWindow();
+        boolean isRightCtrlDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
+        boolean isMDown = GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_M) == GLFW.GLFW_PRESS;
+        boolean isHotkeyTriggered = isRightCtrlDown || isMDown;
+
+        if (isHotkeyTriggered && !astra$wasKeyRightCtrlPressed) {
+            astra$wasKeyRightCtrlPressed = true;
+
+            // 1. Otwieranie GUI wyłącznie podczas normalnej gry (gdy żaden inny ekran nie jest otwarty)
+            if (this.player != null && this.screen == null) {
+                self.setScreen(new AstraSchematicScreen());
+            }
+            // 2. Zamykanie GUI: Prawy Ctrl zamyka zawsze; klawisz M zamyka tylko wtedy, gdy nie piszemy w wyszukiwarce/polu nazwy
+            else if (this.screen instanceof AstraSchematicScreen schematicScreen) {
+                boolean isTypingInField = schematicScreen.isTypingInTextField()
+                        || (this.screen.getFocused() instanceof EditBox editBox && editBox.isFocused());
+
+                if (isRightCtrlDown || !isTypingInField) {
+                    self.setScreen(null);
+                }
+            }
+        } else if (!isHotkeyTriggered) {
+            astra$wasKeyRightCtrlPressed = false;
+        }
+
+        // Bezpiecznik: zwolnij sneak mostkowania, jeśli gracz otworzył ekwipunek lub czat
+        if (this.screen != null && this.player != null && BedwarsBridgeEngine.isCurrentlyBridging()) {
+            BedwarsBridgeEngine.releaseBridgeSneak(this.player);
+        }
+    }
+
+    /**
+     * Pillar 6 Guard: Ensures that if any headless hook attempts to cancel runTick rendering,
+     * the primary client (Bot #1) still executes GameRenderer#render and swaps the GLFW buffers.
+     */
+    @Inject(method = "runTick(Z)V", at = @At("TAIL"), require = 0)
+    private void astra$enforcePrimaryClientDisplayUpdate(boolean renderLevel, CallbackInfo ci) {
+        if (AstraPerformanceConfig.isPrimaryClient()) {
+            GLFW.glfwPollEvents();
+        }
     }
 
     @Inject(
@@ -238,6 +311,9 @@ public abstract class MixinMinecraft {
 
     @Inject(method = "setLevel", at = @At("RETURN"))
     private void postLoadWorld(ClientLevel world, ReceivingLevelScreen.Reason arg2, CallbackInfo ci) {
+        if (world != null && this.options != null && this.options.hideGui) {
+            this.options.hideGui = false;
+        }
         BaritoneAPI.getProvider().getPrimaryBaritone().getGameEventHandler()
                 .onWorldEvent(new WorldEvent(world, EventState.POST));
     }
@@ -265,5 +341,43 @@ public abstract class MixinMinecraft {
             return null;
         }
         return instance.screen;
+    }
+
+    /**
+     * Zastępuje domyślny TitleScreen nowym, animowanym menu głównym AstraMainMenuScreen.
+     * Obsługuje zarówno bezpośrednie wywołania TitleScreen, jak i setScreen(null) poza światem.
+     * Przytrzymanie lewego Shifta lub użycie przycisku Vanilla pozwala otworzyć vanillowe menu.
+     */
+    @ModifyVariable(
+            method = "setScreen",
+            at = @At("HEAD"),
+            argsOnly = true
+    )
+    private Screen astra$replaceTitleScreen(Screen targetScreen) {
+        if (AstraMainMenuScreen.bypassToVanillaOnce) {
+            AstraMainMenuScreen.bypassToVanillaOnce = false;
+            return targetScreen;
+        }
+
+        Minecraft mc = (Minecraft) (Object) this;
+        if (mc.getWindow() != null && mc.getWindow().getWindow() != 0L) {
+            if (GLFW.glfwGetKey(mc.getWindow().getWindow(), GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS) {
+                return targetScreen;
+            }
+        }
+
+        if (targetScreen instanceof TitleScreen && !(targetScreen instanceof AstraMainMenuScreen)) {
+            return new AstraMainMenuScreen();
+        }
+
+        if (targetScreen instanceof net.minecraft.client.gui.screens.worldselection.SelectWorldScreen && !(targetScreen instanceof com.astra.revolution.gui.AstraSingleplayerScreen)) {
+            return new com.astra.revolution.gui.AstraSingleplayerScreen(this.screen);
+        }
+
+        if (targetScreen == null && this.level == null) {
+            return new AstraMainMenuScreen();
+        }
+
+        return targetScreen;
     }
 }

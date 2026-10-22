@@ -564,8 +564,8 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
 
         if (getState() == State.MINING_ORE || getState() == State.COLLECTING_DROP) {
             if (currentTargetBlock != null) {
-                OreScanner.blacklist(currentTargetBlock);
-                logDirect("§c[Bypass Watchdog] Zblacklistowano zablokowaną rudę: " + currentTargetBlock);
+                int attempts = OreScanner.recordFailedAttempt(currentTargetBlock);
+                logDirect("§e[Bypass Watchdog] Niepowodzenie podejścia do rudy: " + currentTargetBlock + " (próba " + attempts + "/3)");
             }
             currentTargetBlock = null;
             // Cooldown — nie szukaj rud przez ~5 sekund, kopie tunel żeby uciec z obszaru
@@ -620,8 +620,20 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
             }
             logDirect("§a[Bypass Vein] Ciągłe kopanie żyły: kolejny blok " + nextReachable);
             stateMachine.transition(State.MINING_ORE);
+        } else if (!activeVeinQueue.isEmpty()) {
+            BlockPos nextVein = getNextVeinOre();
+            if (nextVein != null) {
+                currentTargetBlock = nextVein;
+                if (pendingDropPos == null) {
+                    pendingDropPos = orePos.immutable();
+                }
+                logDirect("§a[Bypass Vein] Kontynuacja żyły (podejście/odsłonięcie): kolejny cel " + nextVein);
+                stateMachine.transition(State.MINING_ORE);
+            } else {
+                beginCollectingDrop(pendingDropPos != null ? pendingDropPos : orePos, BypassDropTracker.itemsForOre(oreName));
+            }
         } else {
-            beginCollectingDrop(orePos, BypassDropTracker.itemsForOre(oreName));
+            beginCollectingDrop(pendingDropPos != null ? pendingDropPos : orePos, BypassDropTracker.itemsForOre(oreName));
         }
         // Scripts may stop/restart the process; don't overwrite their decision afterwards.
         luaEngine.fireOreBroken(oreName, oresMined);
@@ -780,7 +792,8 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
             stopNavigation();
             // A goal cell is not proof of pickup: move to the item's horizontal
             // position and wait for the matching entity to disappear.
-            walkTowards(closest.position(), false);
+            boolean shouldJump = closest.position().y > ctx.player().getY() + 0.35D;
+            walkTowards(closest.position(), shouldJump);
             return pause();
         }
         return navigateTo(goal);
@@ -1020,26 +1033,80 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
         if (hit.getType() == HitResult.Type.BLOCK) {
             BlockPos obstruction = hit.getBlockPos();
             if (!obstruction.equals(ore) && !obstruction.equals(feet.below())
-                    && (!isPassable(ctx.world(), obstruction) || ObstructionHelper.isClearableObstruction(ctx.world().getBlockState(obstruction)))
+                    && !isPassable(ctx.world(), obstruction) && !isUnbreakable(ctx.world(), obstruction)
                     && RotationUtils.reachable(ctx, obstruction, reach).isPresent()) {
                 if (!stopNavigation()) return pause();
                 mineBlockDirect(obstruction);
                 return pause();
             }
         }
+
+        // Sprawdź promienie do widocznych ścian bocznych rudy (jeśli środek jest zasłonięty)
+        for (Direction d : Direction.values()) {
+            Vec3 facePt = Vec3.atCenterOf(ore).add(d.getStepX() * 0.45D, d.getStepY() * 0.45D, d.getStepZ() * 0.45D);
+            BlockHitResult fHit = ctx.world().clip(new net.minecraft.world.level.ClipContext(eye, facePt,
+                    net.minecraft.world.level.ClipContext.Block.OUTLINE,
+                    net.minecraft.world.level.ClipContext.Fluid.NONE, ctx.player()));
+            if (fHit.getType() == HitResult.Type.BLOCK) {
+                BlockPos fObs = fHit.getBlockPos();
+                if (!fObs.equals(ore) && !fObs.equals(feet.below())
+                        && !isPassable(ctx.world(), fObs) && !isUnbreakable(ctx.world(), fObs)
+                        && RotationUtils.reachable(ctx, fObs, reach).isPresent()) {
+                    if (!stopNavigation()) return pause();
+                    mineBlockDirect(fObs);
+                    return pause();
+                }
+            }
+        }
+
+        Goal approach = new GoalGetToBlock(ore);
+        if (approach.isInGoal(feet)) {
+            // Gracz stoi bezpośrednio obok rudy (np. w ścianie tunelu, podłodze lub suficie).
+            // Zamiast bezczynnie czekać 40 ticków i rezygnować, natychmiast zlokalizuj i skop blok przeszkadzający.
+            BlockPos blocker = findInterveningBlock(feet, ore, reach);
+            if (blocker != null && RotationUtils.reachable(ctx, blocker, reach).isPresent()) {
+                if (!stopNavigation()) return pause();
+                mineBlockDirect(blocker);
+                return pause();
+            }
+            if (++oreApproachTicks >= 40) failOreApproach();
+            releaseActions();
+            return pause();
+        }
+
         if (++oreApproachTicks >= 200 || (pathCalculationFailed && navigationActive)) {
             failOreApproach();
             return pause();
         }
-        Goal approach = new GoalGetToBlock(ore);
-        if (approach.isInGoal(feet)) {
-            // An adjacent but unreachable ore needs a different approach, not
-            // three failed attempts recorded in three successive game ticks.
-            if (oreApproachTicks >= 40) failOreApproach();
-            releaseActions();
-            return pause();
-        }
         return navigateTo(approach);
+    }
+
+    private BlockPos findInterveningBlock(BlockPos feet, BlockPos ore, double reach) {
+        if (feet == null || ore == null || ctx.world() == null) return null;
+        Level world = ctx.world();
+        int minX = Math.min(feet.getX(), ore.getX());
+        int maxX = Math.max(feet.getX(), ore.getX());
+        int minY = Math.min(feet.getY(), ore.getY());
+        int maxY = Math.max(feet.getY() + 1, ore.getY());
+        int minZ = Math.min(feet.getZ(), ore.getZ());
+        int maxZ = Math.max(feet.getZ(), ore.getZ());
+
+        for (int x = minX; x <= maxX; x++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    BlockPos p = new BlockPos(x, y, z);
+                    if (p.equals(ore) || p.equals(feet) || p.equals(feet.above()) || p.equals(feet.below())) {
+                        continue;
+                    }
+                    if (!isPassable(world, p) && !isUnbreakable(world, p) && LiquidDetector.isSafeToMine(world, p)) {
+                        if (RotationUtils.reachable(ctx, p, reach).isPresent()) {
+                            return p;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private void failOreApproach() {
@@ -1124,22 +1191,24 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
         BlockPos obstructionHit = null;
         if (freshHit != null && !freshHit.equals(toBreak)) {
             BlockState fs = ctx.world().getBlockState(freshHit);
-            if (ObstructionHelper.isClearableObstruction(fs) && ObstructionHelper.isCoveringOrAdjacent(freshHit, toBreak)) {
+            if (!isUnbreakable(ctx.world(), freshHit) && !freshHit.equals(ctx.playerFeet().below())
+                    && (ObstructionHelper.isClearableObstruction(fs) || ObstructionHelper.isCoveringOrAdjacent(freshHit, toBreak))) {
                 isCoveringObstruction = true;
                 obstructionHit = freshHit;
             }
         }
         if (!isCoveringObstruction && selectedHit != null && !selectedHit.equals(toBreak)) {
             BlockState ss = ctx.world().getBlockState(selectedHit);
-            if (ObstructionHelper.isClearableObstruction(ss) && ObstructionHelper.isCoveringOrAdjacent(selectedHit, toBreak)) {
+            if (!isUnbreakable(ctx.world(), selectedHit) && !selectedHit.equals(ctx.playerFeet().below())
+                    && (ObstructionHelper.isClearableObstruction(ss) || ObstructionHelper.isCoveringOrAdjacent(selectedHit, toBreak))) {
                 isCoveringObstruction = true;
                 obstructionHit = selectedHit;
             }
         }
 
-        boolean aimed = reachable.isPresent() && RotationEngine.isSettled(settleTicks)
-                && ((freshHit != null && (freshHit.equals(toBreak) || isCoveringObstruction))
-                || (selectedHit != null && (selectedHit.equals(toBreak) || isCoveringObstruction)));
+        boolean onTarget = (freshHit != null && (freshHit.equals(toBreak) || isCoveringObstruction))
+                || (selectedHit != null && (selectedHit.equals(toBreak) || isCoveringObstruction));
+        boolean aimed = onTarget && (RotationEngine.isSettled(settleTicks) || (freshHit != null && freshHit.equals(toBreak)));
 
         if (isCoveringObstruction && obstructionHit != null) {
             AutoToolManager.selectBestTool(ctx, obstructionHit, config);
@@ -1323,6 +1392,14 @@ public class BypassProcess extends BaritoneProcessHelper implements IBaritonePro
     @Override
     public String displayName0() {
         return String.format("BYPASS [%s] (%d mined)", getState().name(), oresMined);
+    }
+
+    public BlockPos getCurrentBreakingBlock() {
+        return breakingBlock;
+    }
+
+    public BlockPos getCurrentTargetBlock() {
+        return currentTargetBlock;
     }
 
     /**

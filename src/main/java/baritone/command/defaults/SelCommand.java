@@ -39,6 +39,7 @@ import baritone.api.selection.ISelectionManager;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.BlockOptionalMeta;
 import baritone.api.utils.BlockOptionalMetaLookup;
+import baritone.api.utils.IPlayerContext;
 import baritone.process.BuilderProcess;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.IRenderer;
@@ -52,6 +53,8 @@ import net.minecraft.core.Vec3i;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.ItemStack;
 
 import java.awt.*;
 import java.util.*;
@@ -63,16 +66,24 @@ import java.util.stream.Stream;
 public class SelCommand extends Command {
 
     private ISelectionManager manager = baritone.getSelectionManager();
-    private BetterBlockPos pos1 = null;
     private ISchematic clipboard = null;
     private Vec3i clipboardOffset = null;
 
+    private BetterBlockPos getPos1() {
+        return manager.getPos1();
+    }
+
+    private void setPos1(BetterBlockPos pos) {
+        manager.setPos1(pos);
+    }
+
     public SelCommand(IBaritone baritone) {
-        super(baritone, "sel", "selection", "s");
+        super(baritone, "sel", "selection", "s", "sell");
         baritone.getGameEventHandler().registerEventListener(new AbstractGameEventListener() {
             @Override
             public void onRenderPass(RenderEvent event) {
-                if (!Baritone.settings().renderSelectionCorners.value || pos1 == null) {
+                BetterBlockPos p1 = getPos1();
+                if (!Baritone.settings().renderSelectionCorners.value || p1 == null) {
                     return;
                 }
                 Color color = Baritone.settings().colorSelectionPos1.value;
@@ -81,7 +92,7 @@ public class SelCommand extends Command {
                 boolean ignoreDepth = Baritone.settings().renderSelectionIgnoreDepth.value;
                 BufferBuilder bufferBuilder = IRenderer.startLines(color, opacity, lineWidth, ignoreDepth);
                 try {
-                    IRenderer.emitAABB(bufferBuilder, event.getModelViewStack(), new AABB(pos1));
+                    IRenderer.emitAABB(bufferBuilder, event.getModelViewStack(), new AABB(p1));
                 } finally {
                     IRenderer.endLines(bufferBuilder, ignoreDepth);
                 }
@@ -91,43 +102,73 @@ public class SelCommand extends Command {
 
     @Override
     public void execute(String label, IArgConsumer args) throws CommandException {
-        Action action = Action.getByName(args.getString());
-        if (action == null) {
-            throw new CommandInvalidTypeException(args.consumed(), "an action");
+        String firstArg = args.getString();
+        Action parsedAction = Action.getByName(firstArg);
+        int initialBoxDim = -1;
+        if (parsedAction == null) {
+            try {
+                initialBoxDim = Integer.parseInt(firstArg);
+                parsedAction = Action.BOX;
+            } catch (NumberFormatException ignored) {
+                throw new CommandInvalidTypeException(args.consumed(), "an action");
+            }
         }
+        if (parsedAction == Action.CLEAR && args.hasAny()) {
+            String peek = args.peekString().toLowerCase(Locale.ROOT);
+            if (peek.equals("arena") || peek.equals("area")) {
+                parsedAction = Action.CLEARAREA;
+                args.get(); // consume "arena" or "area"
+            }
+        }
+        final Action action = parsedAction;
         if (action == Action.POS1 || action == Action.POS2) {
-            if (action == Action.POS2 && pos1 == null) {
+            BetterBlockPos p1 = getPos1();
+            if (action == Action.POS2 && p1 == null) {
                 throw new CommandInvalidStateException("Set pos1 first before using pos2");
             }
             BetterBlockPos playerPos = ctx.viewerPos();
             BetterBlockPos pos = args.hasAny() ? args.getDatatypePost(RelativeBlockPos.INSTANCE, playerPos) : playerPos;
             args.requireMax(0);
             if (action == Action.POS1) {
-                pos1 = pos;
+                setPos1(pos);
                 logDirect("Position 1 has been set");
             } else {
-                manager.addSelection(pos1, pos);
-                pos1 = null;
+                manager.addSelection(p1, pos);
+                setPos1(null);
                 logDirect("Selection added");
             }
         } else if (action == Action.CLEAR) {
             args.requireMax(0);
-            pos1 = null;
+            setPos1(null);
             logDirect(String.format("Removed %d selections", manager.removeAllSelections().length));
         } else if (action == Action.UNDO) {
             args.requireMax(0);
-            if (pos1 != null) {
-                pos1 = null;
+            if (getPos1() != null) {
+                setPos1(null);
                 logDirect("Undid pos1");
             } else {
                 ISelection[] selections = manager.getSelections();
                 if (selections.length < 1) {
                     throw new CommandInvalidStateException("Nothing to undo!");
                 } else {
-                    pos1 = manager.removeSelection(selections[selections.length - 1]).pos1();
+                    ISelection removed = manager.removeSelection(selections[selections.length - 1]);
+                    setPos1(removed.pos1());
                     logDirect("Undid pos2");
                 }
             }
+        } else if (action == Action.BOX) {
+            int firstVal = (initialBoxDim > 0) ? initialBoxDim : args.getAs(Integer.class);
+            BoxDimensions dims = parseBoxDimensions(firstVal, args);
+            args.requireMax(0);
+            BetterBlockPos[] corners = createBoxInFrontOfPlayer(dims.width(), dims.length(), dims.height());
+            manager.removeAllSelections();
+            manager.addSelection(corners[0], corners[1]);
+            setPos1(null);
+            Direction facing = ctx.player() != null ? ctx.player().getDirection() : Direction.NORTH;
+            long volume = (long) dims.width() * dims.length() * dims.height();
+            logDirect(String.format("Zaznaczono box przed graczem [%s]: %dx%dx%d (%d bloków) od %s do %s",
+                    facing.name(), dims.width(), dims.height(), dims.length(), volume, corners[0], corners[1]));
+            return;
         } else if (action.isFillAction()) {
             PlacementScheduler.ClearMode clearMode = PlacementScheduler.ClearMode.AUTO;
             BlockOptionalMeta type;
@@ -139,19 +180,54 @@ public class SelCommand extends Command {
                 replaces = null;
                 alignment = null;
                 if (args.hasAny()) {
-                    String flag = args.getString().toLowerCase(Locale.ROOT);
-                    switch (flag) {
-                        case "auto" -> clearMode = PlacementScheduler.ClearMode.AUTO;
-                        case "topdown", "top-down", "td" -> clearMode = PlacementScheduler.ClearMode.TOP_DOWN;
-                        case "bottomup", "bottom-up", "bu" -> clearMode = PlacementScheduler.ClearMode.BOTTOM_UP;
-                        default -> throw new CommandInvalidStateException(
-                                "Nieznana flaga '" + flag + "'. Dostępne: auto | topdown | bottomup");
+                    String peek = args.peekString().toLowerCase(Locale.ROOT);
+                    if (isInteger(peek)) {
+                        int firstVal = args.getAs(Integer.class);
+                        BoxDimensions dims = parseBoxDimensions(firstVal, args);
+                        BetterBlockPos[] corners = createBoxInFrontOfPlayer(dims.width(), dims.length(), dims.height());
+                        manager.removeAllSelections();
+                        manager.addSelection(corners[0], corners[1]);
+                        setPos1(null);
+                        Direction facing = ctx.player() != null ? ctx.player().getDirection() : Direction.NORTH;
+                        logDirect(String.format("Utworzono zaznaczenie przed graczem [%s]: %dx%dx%d (%s do %s)",
+                                facing.name(), dims.width(), dims.height(), dims.length(), corners[0], corners[1]));
+                    } else {
+                        String flag = args.getString().toLowerCase(Locale.ROOT);
+                        switch (flag) {
+                            case "auto", "arena", "area" -> clearMode = PlacementScheduler.ClearMode.AUTO;
+                            case "topdown", "top-down", "td" -> clearMode = PlacementScheduler.ClearMode.TOP_DOWN;
+                            case "bottomup", "bottom-up", "bu" -> clearMode = PlacementScheduler.ClearMode.BOTTOM_UP;
+                            default -> throw new CommandInvalidStateException(
+                                    "Nieznana flaga '" + flag + "'. Dostępne: auto | arena | topdown | bottomup");
+                        }
+                        if (args.hasAny() && isInteger(args.peekString())) {
+                            int firstVal = args.getAs(Integer.class);
+                            BoxDimensions dims = parseBoxDimensions(firstVal, args);
+                            BetterBlockPos[] corners = createBoxInFrontOfPlayer(dims.width(), dims.length(), dims.height());
+                            manager.removeAllSelections();
+                            manager.addSelection(corners[0], corners[1]);
+                            setPos1(null);
+                            Direction facing = ctx.player() != null ? ctx.player().getDirection() : Direction.NORTH;
+                            logDirect(String.format("Utworzono zaznaczenie przed graczem [%s]: %dx%dx%d (%s do %s)",
+                                    facing.name(), dims.width(), dims.height(), dims.length(), corners[0], corners[1]));
+                        }
                     }
                     args.requireMax(0);
                 }
             } else {
-                type = args.getDatatypeFor(ForBlockOptionalMeta.INSTANCE);
+                if (action == Action.SET && args.hasAny() && isInteger(args.peekString())) {
+                    int firstVal = args.getAs(Integer.class);
+                    BoxDimensions dims = parseBoxDimensions(firstVal, args);
+                    BetterBlockPos[] corners = createBoxInFrontOfPlayer(dims.width(), dims.length(), dims.height());
+                    manager.removeAllSelections();
+                    manager.addSelection(corners[0], corners[1]);
+                    setPos1(null);
+                    Direction facing = ctx.player() != null ? ctx.player().getDirection() : Direction.NORTH;
+                    logDirect(String.format("Utworzono zaznaczenie przed graczem [%s]: %dx%dx%d (%s do %s)",
+                            facing.name(), dims.width(), dims.height(), dims.length(), corners[0], corners[1]));
+                }
                 if (action == Action.REPLACE) {
+                    type = args.getDatatypeFor(ForBlockOptionalMeta.INSTANCE);
                     args.requireMin(1);
                     List<BlockOptionalMeta> replacesList = new ArrayList<>();
                     replacesList.add(type);
@@ -162,10 +238,34 @@ public class SelCommand extends Command {
                     replaces = new BlockOptionalMetaLookup(replacesList.toArray(new BlockOptionalMeta[0]));
                     alignment = null;
                 } else if (action == Action.CYLINDER || action == Action.HCYLINDER) {
+                    if (args.hasAny()) {
+                        String peek = args.peekString().toLowerCase(Locale.ROOT);
+                        if (peek.equals("x") || peek.equals("y") || peek.equals("z")) {
+                            type = getHeldBlock(ctx);
+                            if (type == null) {
+                                throw new CommandInvalidStateException("Trzymaj blok w ręce lub podaj nazwę bloku: #sel " + action.names[0] + " <blok> [axis]");
+                            }
+                        } else {
+                            type = args.getDatatypeFor(ForBlockOptionalMeta.INSTANCE);
+                        }
+                    } else {
+                        type = getHeldBlock(ctx);
+                        if (type == null) {
+                            throw new CommandInvalidStateException("Trzymaj blok w ręce lub podaj nazwę bloku: #sel " + action.names[0] + " <blok> [axis]");
+                        }
+                    }
                     args.requireMax(1);
                     alignment = args.hasAny() ? args.getDatatypeFor(ForAxis.INSTANCE) : Direction.Axis.Y;
                     replaces = null;
                 } else {
+                    if (args.hasAny()) {
+                        type = args.getDatatypeFor(ForBlockOptionalMeta.INSTANCE);
+                    } else {
+                        type = getHeldBlock(ctx);
+                        if (type == null) {
+                            throw new CommandInvalidStateException("Trzymaj blok w ręce lub podaj nazwę bloku: #sel " + action.names[0] + " <blok>");
+                        }
+                    }
                     args.requireMax(0);
                     replaces = null;
                     alignment = null;
@@ -201,7 +301,7 @@ public class SelCommand extends Command {
                 long toBreak = 0;
                 boolean counted = true;
                 long volume = (long) (clearMax.x - clearMin.x + 1) * h * (clearMax.z - clearMin.z + 1);
-                if (volume > 5_000_000L) {
+                if (volume > 200_000L) {
                     counted = false;
                 } else if (world != null) {
                     BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
@@ -222,7 +322,7 @@ public class SelCommand extends Command {
                 String strategy = bp.previewStrategy(clearMode, h);
                 logDirect(String.format("Czyszczenie terenu (%dx%dx%d) | do wykopania: %s | algorytm: %s",
                         clearMax.x - clearMin.x + 1, h, clearMax.z - clearMin.z + 1,
-                        counted ? String.valueOf(toBreak) : ">5M objętości (pominięto zliczanie)", strategy));
+                        counted ? String.valueOf(toBreak) : ">200k objętości (pominięto zliczanie)", strategy));
 
                 bp.clearArea(clearMin, clearMax, clearMode);
                 return;
@@ -271,8 +371,13 @@ public class SelCommand extends Command {
                 ISchematic schematic = create.apply(new FillSchematic(size.getX(), size.getY(), size.getZ(), type));
                 composite.put(schematic, min.x - origin.x, min.y - origin.y, min.z - origin.z);
             }
+            long totalVolume = 0;
+            for (ISelection s : selections) {
+                totalVolume += (long) s.size().getX() * s.size().getY() * s.size().getZ();
+            }
             baritone.getBuilderProcess().build("Fill", composite, origin);
-            logDirect("Filling now");
+            logDirect(String.format("Wypełnianie terenu blokiem %s (%d bloków)",
+                    type.getBlock().getName().getString(), totalVolume));
         } else if (action == Action.COPY) {
             BetterBlockPos playerPos = ctx.viewerPos();
             BetterBlockPos pos = args.hasAny() ? args.getDatatypePost(RelativeBlockPos.INSTANCE, playerPos) : playerPos;
@@ -389,10 +494,121 @@ public class SelCommand extends Command {
                             return args.tabCompleteDatatype(ForDirection.INSTANCE);
                         }
                     }
+                } else if (action == Action.BOX) {
+                    if (args.hasExactlyOne()) {
+                        return new TabCompleteHelper()
+                                .append("100 100 4", "50 50 4", "20 20 4", "10 10 3")
+                                .filterPrefix(args.getString())
+                                .stream();
+                    }
                 }
             }
         }
         return Stream.empty();
+    }
+
+    record BoxDimensions(int width, int length, int height) {}
+
+    private static boolean isInteger(String s) {
+        if (s == null || s.isEmpty()) {
+            return false;
+        }
+        try {
+            Integer.parseInt(s);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private static BoxDimensions parseBoxDimensions(int firstVal, IArgConsumer args) throws CommandException {
+        int width = firstVal;
+        int length = firstVal;
+        int height = 4;
+
+        if (args.hasAny() && isInteger(args.peekString())) {
+            int secondVal = args.getAs(Integer.class);
+            if (args.hasAny() && isInteger(args.peekString())) {
+                int thirdVal = args.getAs(Integer.class);
+                width = firstVal;
+                length = secondVal;
+                height = thirdVal;
+            } else {
+                width = firstVal;
+                length = firstVal;
+                height = secondVal;
+            }
+        }
+        if (width <= 0 || length <= 0 || height <= 0) {
+            throw new CommandInvalidStateException("Wymiary zaznaczenia musza byc dodatnimi liczbami calkowitymi!");
+        }
+        return new BoxDimensions(width, length, height);
+    }
+
+    private BlockOptionalMeta getHeldBlock(IPlayerContext ctx) {
+        if (ctx.player() == null) {
+            return null;
+        }
+        ItemStack mainHand = ctx.player().getMainHandItem();
+        if (mainHand != null && !mainHand.isEmpty() && mainHand.getItem() instanceof BlockItem blockItem) {
+            return new BlockOptionalMeta(blockItem.getBlock());
+        }
+        ItemStack offHand = ctx.player().getOffhandItem();
+        if (offHand != null && !offHand.isEmpty() && offHand.getItem() instanceof BlockItem blockItem) {
+            return new BlockOptionalMeta(blockItem.getBlock());
+        }
+        return null;
+    }
+
+    private BetterBlockPos[] createBoxInFrontOfPlayer(int width, int length, int height) {
+        BetterBlockPos feet = ctx.playerFeet() != null ? ctx.playerFeet() : ctx.viewerPos();
+        if (feet == null) {
+            feet = new BetterBlockPos(0, 64, 0);
+        }
+        int px = feet.x;
+        int py = feet.y;
+        int pz = feet.z;
+        Direction facing = ctx.player() != null ? ctx.player().getDirection() : Direction.NORTH;
+
+        int halfLeft = (width - 1) / 2;
+        int halfRight = width - 1 - halfLeft;
+
+        int minX, maxX, minZ, maxZ;
+        switch (facing) {
+            case NORTH:
+                minX = px - halfLeft;
+                maxX = px + halfRight;
+                minZ = pz - length;
+                maxZ = pz - 1;
+                break;
+            case SOUTH:
+                minX = px - halfRight;
+                maxX = px + halfLeft;
+                minZ = pz + 1;
+                maxZ = pz + length;
+                break;
+            case WEST:
+                minX = px - length;
+                maxX = px - 1;
+                minZ = pz - halfRight;
+                maxZ = pz + halfLeft;
+                break;
+            case EAST:
+            default:
+                minX = px + 1;
+                maxX = px + length;
+                minZ = pz - halfLeft;
+                maxZ = pz + halfRight;
+                break;
+        }
+
+        int minY = py;
+        int maxY = py + height - 1;
+
+        return new BetterBlockPos[]{
+                new BetterBlockPos(minX, minY, minZ),
+                new BetterBlockPos(maxX, maxY, maxZ)
+        };
     }
 
     @Override
@@ -410,6 +626,8 @@ public class SelCommand extends Command {
                 "The expand/contract/shift commands use a kind of selector to choose which selections to target. Supported ones are a/all, n/newest, and o/oldest.",
                 "",
                 "Usage:",
+                "> sel <width> <length> <height> - Quickly create a box in front of the player (e.g. 'sel 100 100 4').",
+                "> sel box/b/front [w] [l] [h] - Create a selection box in front of the player.",
                 "> sel pos1/p1/1 - Set position 1 to your current position.",
                 "> sel pos1/p1/1 <x> <y> <z> - Set position 1 to a relative position.",
                 "> sel pos2/p2/2 - Set position 2 to your current position.",
@@ -424,7 +642,7 @@ public class SelCommand extends Command {
                 "> sel hsphere/hsph [block] - The same as sphere, but hollow.",
                 "> sel cylinder/cyl [block] <axis> - Fills the selection with a cylinder bounded by the sides, oriented about the given axis. (default=y)",
                 "> sel hcylinder/hcyl [block] <axis> - The same as cylinder, but hollow.",
-                "> sel cleararea/ca - Basically 'set air'.",
+                "> sel cleararea/ca [w l h] - Basically 'set air' (clears the arena, can auto-select in front).",
                 "> sel replace/r <blocks...> <with> - Replaces blocks with another block.",
                 "> sel copy/cp <x> <y> <z> - Copy the selected area relative to the specified or your position.",
                 "> sel paste/p <x> <y> <z> - Build the copied area relative to the specified or your position.",
@@ -440,6 +658,7 @@ public class SelCommand extends Command {
         POS2("pos2", "p2", "2"),
         CLEAR("clear", "c"),
         UNDO("undo", "u"),
+        BOX("box", "b", "front", "fr", "forward", "przod", "przed"),
         SET("set", "fill", "s", "f"),
         WALLS("walls", "w"),
         SHELL("shell", "shl"),

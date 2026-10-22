@@ -86,6 +86,8 @@ public class Baritone implements IBaritone {
     private final IElytraProcess elytraProcess;
     private final baritone.bypass.BypassProcess bypassProcess;
     private final baritone.process.TillProcess tillProcess;
+    private final com.astra.revolution.process.SellProcess astraSellProcess;
+    private final com.astra.revolution.process.FarmProcess astraFarmProcess;
 
     private final baritone.control.WindowsBotController windowsBotController;
     private final baritone.process.MobDefenseProcess mobDefenseProcess;
@@ -143,6 +145,10 @@ public class Baritone implements IBaritone {
             this.mobDefenseProcess       = this.registerProcess(baritone.process.MobDefenseProcess::new);
             this.tillProcess             = this.registerProcess(baritone.process.TillProcess::new);
             this.registerProcess(BackfillProcess::new);
+            this.astraSellProcess        = new com.astra.revolution.process.SellProcess(this);
+            this.astraFarmProcess        = new com.astra.revolution.process.FarmProcess(this, this.astraSellProcess);
+            this.pathingControlManager.registerProcess(this.astraSellProcess);
+            this.pathingControlManager.registerProcess(this.astraFarmProcess);
         }
 
         this.worldProvider = new WorldProvider(this);
@@ -150,6 +156,10 @@ public class Baritone implements IBaritone {
         this.commandManager = new CommandManager(this);
         this.windowsBotController.start();
         baritone.utils.BotOptimizer.init(this);
+        com.astra.revolution.perf.BaritoneMemoryGuard.init(this);
+        new com.astra.revolution.schematic.SchematicHologramRenderer(this);
+        new baritone.render.BlockOverlayRenderer(this);
+        new com.astra.revolution.visuals.AstraVisualsEngine(this);
     }
 
     public void registerBehavior(IBehavior behavior) {
@@ -257,6 +267,14 @@ public class Baritone implements IBaritone {
 
     public baritone.process.TillProcess getTillProcess() {
         return this.tillProcess;
+    }
+
+    public com.astra.revolution.process.SellProcess getAstraSellProcess() {
+        return this.astraSellProcess;
+    }
+
+    public com.astra.revolution.process.FarmProcess getAstraFarmProcess() {
+        return this.astraFarmProcess;
     }
 
     @Override

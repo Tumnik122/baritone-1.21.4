@@ -187,6 +187,12 @@ public class ExecutionControlCommands {
                 if (!HomeProcess.isAutoHomeTriggered()) {
                     HomeProcess.clearSavedMiningCommand();
                 }
+                try {
+                    com.astra.revolution.schematic.AstraSchematicManager astraManager = com.astra.revolution.schematic.AstraSchematicManager.getInstance();
+                    if (astraManager != null && astraManager.isBuilding()) {
+                        astraManager.stopBuilding();
+                    }
+                } catch (Throwable ignored) {}
                 logDirect("ok canceled");
             }
 

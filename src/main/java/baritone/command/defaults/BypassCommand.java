@@ -252,23 +252,41 @@ public class BypassCommand extends Command {
             return;
         }
 
-        // Zbieramy listę podanych rud
-        List<String> requestedOres = new ArrayList<>();
-        requestedOres.add(firstArg);
+        // Zbieramy listę podanych rud oraz opcjonalny poziom Y (np. #bypass diamond -58)
+        List<String> requestedTokens = new ArrayList<>();
+        requestedTokens.add(firstArg);
         while (args.hasAny()) {
-            requestedOres.add(args.getString().toLowerCase(Locale.ROOT));
+            requestedTokens.add(args.getString().toLowerCase(Locale.ROOT));
         }
 
         Set<String> validKeys = config.getAvailableOreKeys();
         List<String> filteredOres = new ArrayList<>();
-        for (String ore : requestedOres) {
-            if (validKeys.contains(ore)) {
-                if (!filteredOres.contains(ore)) {
-                    filteredOres.add(ore);
+        Integer customY = null;
+
+        for (String token : requestedTokens) {
+            if (validKeys.contains(token)) {
+                if (!filteredOres.contains(token)) {
+                    filteredOres.add(token);
                 }
+            } else if (token.matches("^-?\\d+$")) {
+                try {
+                    customY = Integer.parseInt(token);
+                } catch (NumberFormatException ignored) {}
+            } else if (token.startsWith("y=") && token.substring(2).matches("^-?\\d+$")) {
+                try {
+                    customY = Integer.parseInt(token.substring(2));
+                } catch (NumberFormatException ignored) {}
             } else {
-                logDirect(String.format("§c[Bypass] Nieznana ruda: '%s'. Użyj #bypass list aby sprawdzić dostępne nazwy.", ore));
+                logDirect(String.format("§c[Bypass] Nieznana ruda: '%s'. Użyj #bypass list aby sprawdzić dostępne nazwy.", token));
             }
+        }
+
+        if (customY != null) {
+            activeConfig.yLevel = Math.max(-63, Math.min(320, customY));
+            logDirect(String.format("§a[Bypass] Ustawiono docelowy poziom wydobywczy: Y=%d", activeConfig.yLevel));
+        } else if (filteredOres.contains("diamond") && activeConfig.yLevel > -58) {
+            activeConfig.yLevel = -58; // Optymalny poziom diamentów w 1.18+ / 1.21.4 (pod lawą na Y=-54, maks. gęstość)
+            logDirect("§b[Bypass] Wykryto kopanie diamentów: automatyczny poziom Y=-58 (maksymalna gęstość rudy).");
         }
 
         if (filteredOres.isEmpty()) {

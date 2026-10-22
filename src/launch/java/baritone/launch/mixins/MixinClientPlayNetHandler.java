@@ -228,6 +228,34 @@ public abstract class MixinClientPlayNetHandler extends ClientCommonPacketListen
         }
     }
 
+    @Inject(
+            method = "handleSystemChat",
+            at = @At("HEAD")
+    )
+    private void onHandleSystemChat(ClientboundSystemChatPacket packet, CallbackInfo ci) {
+        if (packet != null && packet.content() != null) {
+            String text = packet.content().getString();
+            com.astra.revolution.process.FarmProcess farm = com.astra.revolution.process.FarmProcess.getInstance();
+            if (farm != null && farm.getSellProcess() != null) {
+                farm.getSellProcess().onServerChatMessage(text);
+            }
+        }
+    }
+
+    @Inject(
+            method = "handleDisguisedChat",
+            at = @At("HEAD")
+    )
+    private void onHandleDisguisedChat(ClientboundDisguisedChatPacket packet, CallbackInfo ci) {
+        if (packet != null && packet.message() != null) {
+            String text = packet.message().getString();
+            com.astra.revolution.process.FarmProcess farm = com.astra.revolution.process.FarmProcess.getInstance();
+            if (farm != null && farm.getSellProcess() != null) {
+                farm.getSellProcess().onServerChatMessage(text);
+            }
+        }
+    }
+
     /*
     @Inject(
             method = "handleChunkData",

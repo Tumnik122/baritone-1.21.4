@@ -71,6 +71,19 @@ public class PracaCommand extends Command {
             }
         }
 
+        // Wymuś optymalne ustawienia dla maksymalnej wydajności #praca
+        Baritone.settings().farmHarvestPriority.value = false; // Natychmiastowy siew, nie odkładaj sadzenia na później!
+        Baritone.settings().farmTwoPassMode.value = false;
+        Baritone.settings().farmFastMode.value = true;
+        Baritone.settings().replantCrops.value = true;
+        Baritone.settings().farmWheatOnly.value = true;
+        Baritone.settings().allowSprint.value = true;
+        Baritone.settings().mineAvoidWater.value = true;
+        Baritone.settings().antiCheatCompat.value = true;
+        Baritone.settings().grimCompat.value = true;
+        Baritone.settings().antiCheatCompatibility.value = true;
+        Baritone.settings().grimSafeReach.value = 3.0;
+
         // Aktywuj tryb #praca w FarmProcess
         HomeProcess.setSavedMiningCommand("praca");
 
@@ -78,9 +91,11 @@ public class PracaCommand extends Command {
         BlockPos center = baritone.getPlayerContext().playerFeet();
         baritone.getFarmProcess().farmPraca(100, center);
 
-        logDirect("§a[Praca] Uruchamiam zoptymalizowany tryb pracy na farmie!");
+        logDirect("§a[Praca] Uruchamiam zoptymalizowany DO MAKA tryb pracy na farmie!");
         logDirect("§7  • Cel: §aTylko dojrzała pszenica §7(blokada niszczenia bruku/struktur: §aAKTYWNA§7)");
-        logDirect("§7  • Zasięg skanowania: §f100 bloków §7| Płynny bieg wzdłuż alei (lane traversal)");
+        logDirect("§7  • Sadzenie: §aBłyskawiczne i gwarantowane 100% replantów §7(brak pomijania grządek!)");
+        logDirect("§7  • Zbiór: §aCelowanie w dół w nasadę plonu §7(idealne przejście w zasiew bez szarpania kamery)");
+        logDirect("§7  • Zasięg skanowania: §f100 bloków §7| Płynny bieg wzdłuż alei (lane traversal, brak nawrotów 180°)");
         logDirect("§7  • Gdy nasion > §f100§7: priorytet §apszenicy§7 (mniej biegania za nasionami, aż do spadku do §f30§7)");
         logDirect("§7  • Jeśli plonów < §f200§7: priorytet §azbierania z ziemi§7 (przechodzenie przez itemy)");
         logDirect("§7  • Jeśli plonów ≥ §f200§7: szybki zbiór i replant pszenicy w rzędach");

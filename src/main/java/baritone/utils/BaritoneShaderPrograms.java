@@ -40,6 +40,12 @@ public final class BaritoneShaderPrograms {
             ShaderDefines.EMPTY
     );
 
+    public static final ShaderProgram SCHEMATIC_HOLO = new ShaderProgram(
+            ResourceLocation.fromNamespaceAndPath("baritone", "core/baritone_schematic_holo"),
+            DefaultVertexFormat.POSITION_COLOR,
+            ShaderDefines.EMPTY
+    );
+
     private static boolean registered;
 
     private BaritoneShaderPrograms() {

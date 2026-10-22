@@ -107,7 +107,7 @@ public class CalculationContext {
         this.worldData = (WorldData) baritone.getPlayerContext().worldData();
         this.bsi = new BlockStateInterface(baritone.getPlayerContext(), forUseOnAnotherThread);
         this.toolSet = new ToolSet(player);
-        this.hasThrowaway = Baritone.settings().allowPlace.value && ((Baritone) baritone).getInventoryBehavior().hasGenericThrowaway();
+        this.hasThrowaway = !isFarmOrTillActive() && Baritone.settings().allowPlace.value && ((Baritone) baritone).getInventoryBehavior().hasGenericThrowaway();
         this.hasWaterBucket = Baritone.settings().allowWaterBucketFall.value && Inventory.isHotbarSlot(player.getInventory().findSlotMatchingItem(STACK_BUCKET_WATER)) && world.dimension() != Level.NETHER;
         this.canSprint = Baritone.settings().allowSprint.value && player.getFoodData().getFoodLevel() > 6;
         this.placeBlockCost = Baritone.settings().blockPlacementPenalty.value;
@@ -208,7 +208,7 @@ public class CalculationContext {
     }
 
     public double costOfPlacingAt(int x, int y, int z, BlockState current) {
-        if (!hasThrowaway) { // only true if allowPlace is true, see constructor
+        if (!hasThrowaway || isFarmOrTillActive() || !Baritone.settings().allowPlace.value) { // only true if allowPlace is true, see constructor
             return COST_INF;
         }
         if (isPossiblyProtected(x, y, z)) {
@@ -237,8 +237,18 @@ public class CalculationContext {
         return placeBlockCost;
     }
 
+    public boolean isFarmOrTillActive() {
+        if (baritone.getFarmProcess() != null && baritone.getFarmProcess().isActive()) {
+            return true;
+        }
+        if (baritone instanceof Baritone b && b.getTillProcess() != null && b.getTillProcess().isActive()) {
+            return true;
+        }
+        return false;
+    }
+
     public double breakCostMultiplierAt(int x, int y, int z, BlockState current) {
-        if (baritone.getFarmProcess().isActive() && MovementHelper.isFarmSoilOrStructure(current.getBlock())) {
+        if (isFarmOrTillActive()) {
             return COST_INF;
         }
         if (!allowBreak && !allowBreakAnyway.contains(current.getBlock())) {
@@ -246,6 +256,13 @@ public class CalculationContext {
         }
         if (isPossiblyProtected(x, y, z)) {
             return COST_INF;
+        }
+        // Gdy nie kopiemy (#mine) i nie budujemy (#build), pather nie powinien beztrosko
+        // rozwalać ścian, podłóg z deepslate/kamienia itp. dla zaoszczędzenia paru kroków.
+        boolean isMining = (baritone.getMineProcess() != null && baritone.getMineProcess().isActive())
+                || (baritone.getBuilderProcess() != null && baritone.getBuilderProcess().isActive());
+        if (!isMining && current.getDestroySpeed(world, new BlockPos(x, y, z)) > 0.0F) {
+            return 25.0;
         }
         return 1;
     }

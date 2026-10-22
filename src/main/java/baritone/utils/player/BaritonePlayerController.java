@@ -32,6 +32,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.BlockHitResult;
 import baritone.Baritone;
 import baritone.api.BaritoneAPI;
+import baritone.utils.FastBreakHelper;
 import baritone.api.IBaritone;
 import baritone.api.utils.RayTraceUtils;
 import baritone.api.utils.Rotation;
@@ -69,6 +70,9 @@ public final class BaritonePlayerController implements IPlayerController {
         return !((IPlayerControllerMP) mc.gameMode).isHittingBlock();
     }
 
+    private BlockPos currentBreakPos = null;
+    private int breakStartTick = 0;
+
     @Override
     public boolean onPlayerDamageBlock(BlockPos pos, Direction side) {
         if (pos == null || side == null || mc.gameMode == null || mc.player == null) {
@@ -88,6 +92,20 @@ public final class BaritonePlayerController implements IPlayerController {
             }
 
             side = getSafeBreakFace(mc.player, pos, side);
+
+            // GrimAC FastBreak pacing: do not call continueDestroyBlock earlier than server allows
+            if (currentBreakPos != null && currentBreakPos.equals(pos) && mc.level != null) {
+                BlockState st = mc.level.getBlockState(pos);
+                double grimProgress = FastBreakHelper.getGrimDestroyProgress(baritone.getPlayerContext(), pos, st);
+                int minGrimTicks = (grimProgress > 0) ? (int) Math.ceil(1.0 / grimProgress) : 1;
+                int elapsed = mc.player.tickCount - breakStartTick;
+                if (elapsed < minGrimTicks) {
+                    return true;
+                }
+            } else {
+                currentBreakPos = pos.immutable();
+                breakStartTick = mc.player.tickCount;
+            }
         }
 
         syncHeldItem();
@@ -96,6 +114,8 @@ public final class BaritonePlayerController implements IPlayerController {
 
     @Override
     public void resetBlockRemoving() {
+        currentBreakPos = null;
+        breakStartTick = 0;
         mc.gameMode.stopDestroyBlock();
     }
 
@@ -109,98 +129,113 @@ public final class BaritonePlayerController implements IPlayerController {
         return mc.gameMode.getPlayerMode();
     }
 
+    private long lastInteractionTick = -1L;
+    private long lastInteractionTimeMs = 0L;
+    private long lastRightClickTick = -1L;
+    private long lastBreakTick = -1L;
+
+    public boolean canInteractThisTick() {
+        if (mc.player == null) return false;
+        long currentTick = mc.player.tickCount;
+        long now = System.currentTimeMillis();
+        final boolean isGrim = Baritone.settings().antiCheatCompatibility.value
+                || Baritone.settings().grimCompat.value
+                || Baritone.settings().antiCheatCompat.value;
+
+        long minTicks = isGrim ? 2L : 1L;
+        long minMs = isGrim ? 110L : 45L;
+        return (currentTick - lastInteractionTick) >= minTicks && (now - lastInteractionTimeMs) >= minMs;
+    }
+
+    public void markInteracted() {
+        if (mc.player != null) {
+            lastInteractionTick = mc.player.tickCount;
+        }
+        lastInteractionTimeMs = System.currentTimeMillis();
+    }
+
     @Override
     public InteractionResult processRightClickBlock(LocalPlayer player, Level world, InteractionHand hand, BlockHitResult result) {
         if (result == null || player == null || mc.gameMode == null) {
             return InteractionResult.PASS;
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // GrimAC Protection: RotationPlace (pre-flying / post-flying / raycast desync)
-        // Strategia: serverRotation (potwierdzona przez serwer w poprzednim ticku) jako PRIMARY.
-        // Dopiero gdy serverRot nie jest dostępna — fallback na kliencki celownik.
-        // ═══════════════════════════════════════════════════════════════════════
+        final boolean isGrim = Baritone.settings().antiCheatCompatibility.value
+                || Baritone.settings().grimCompat.value
+                || Baritone.settings().antiCheatCompat.value;
+
+        // Dla prawokliku (sadzenie nasion) pozwalamy na 1 interakcję na tick (50ms) zamiast 110ms spowalniającego throttla:
+        if (isGrim && player.tickCount == lastRightClickTick) {
+            return InteractionResult.PASS;
+        } else if (!isGrim && !canInteractThisTick()) {
+            return InteractionResult.PASS;
+        }
+
         BlockPos targetPos = result.getBlockPos();
-        double reach = this.getBlockReachDistance();
-        final boolean fastMode = Baritone.settings().farmFastMode.value;
+        double reach = Math.min(isGrim ? 2.95D : 4.0D, this.getBlockReachDistance());
         BlockHitResult candidateHit = null;
 
         IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(player);
 
-        // 1. GRIMAC PRIMARY: serverRotation — rotacja potwierdzona przez serwer (z poprzedniego ticku)
-        //    FarmProcess ustawia rotację przez LookBehavior → pakiet Rot leci w onPlayerUpdate PRE.
-        //    W następnym ticku serverRotation jest aktualna i akcja jest legalna dla GrimAC.
+        // 1. GRIMAC PRIMARY: serverRotation — raycast z perspektywy serwera (z poprzedniego pakietu Rot)
         if (baritone != null) {
             Rotation serverRot = baritone.getLookBehavior().getServerRotation();
             if (serverRot != null) {
-                HitResult serverHit = RayTraceUtils.rayTraceTowards(player, serverRot, reach + 0.2D, player.isCrouching());
+                HitResult serverHit = RayTraceUtils.rayTraceTowards(player, serverRot, reach, player.isCrouching());
                 if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(targetPos)) {
-                    // ✅ serverRotation trafia w blok — używamy Direction z prawdziwego raytrace
+                    // ✅ serverRotation trafia bezpośrednio w docelowy blok — używamy prawdziwego wektora i Direction
                     candidateHit = sbhr;
-                } else if (fastMode) {
-                    // fastMode: serverRotation nie trafia jeszcze w blok.
-                    // Pakiet Rot zostanie wysłany przez LookBehavior w onPlayerUpdate PRE tego ticku.
-                    // Serwer jeszcze nie przetwarza tej rotacji. Czekamy 1 tick → PASS.
-                    // (Eliminuje RotationPlace pre-flying!)
+                }
+                if (candidateHit == null && isGrim) {
+                    // Pod GrimAC: ZAKAZ klikania przez ścianę/przeszkodę! Jeśli promień nie widzi bloku, blokujemy pakiet!
                     return InteractionResult.PASS;
                 }
             }
         }
 
-        // 2. Kliencki fallback (normalny tryb lub brak Baritone)
+        // 2. Kliencki fallback (tylko non-Grim lub gdy brak serverRot)
         if (candidateHit == null) {
+            if (isGrim) {
+                return InteractionResult.PASS;
+            }
             if (mc.hitResult instanceof BlockHitResult currentHit && currentHit.getBlockPos().equals(targetPos)) {
                 candidateHit = currentHit;
             } else {
                 HitResult picked = player.pick(reach, 1.0F, false);
                 if (picked instanceof BlockHitResult pickHit && pickHit.getBlockPos().equals(targetPos)) {
                     candidateHit = pickHit;
-                } else {
-                    HitResult pickedFluid = player.pick(reach, 1.0F, true);
-                    if (pickedFluid instanceof BlockHitResult fluidHit && fluidHit.getBlockPos().equals(targetPos)) {
-                        candidateHit = fluidHit;
-                    }
                 }
             }
         }
 
-        // 3. Bez fastMode + antiCheatCompatibility: blokujemy jeśli serverRot nie trafia w blok
-        if (candidateHit != null && baritone != null && Baritone.settings().antiCheatCompatibility.value && !fastMode) {
-            Rotation serverRot = baritone.getLookBehavior().getServerRotation();
-            if (serverRot != null) {
-                HitResult serverHit = RayTraceUtils.rayTraceTowards(player, serverRot, reach, player.isCrouching());
-                boolean serverMatches = serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(targetPos);
-                if (!serverMatches) {
-                    HitResult serverFluidHit = rayTraceTowardsFluid(player, serverRot, reach);
-                    serverMatches = serverFluidHit instanceof BlockHitResult sfbhr && sfbhr.getBlockPos().equals(targetPos);
-                }
-                if (!serverMatches) {
-                    return InteractionResult.PASS;
-                }
-            }
-        }
-
-        // 4. Fallback dla Farmland/SoulSand gdy brak candidateHit (np. stoimy bezpośrednio na grządce)
-        //    Farmland ma tylko ścianę UP widoczną z góry — bezpieczny, Direction.UP jest zawsze prawidłowy.
         if (candidateHit == null) {
-            BlockState bs = world.getBlockState(targetPos);
-            if (bs.getBlock() instanceof FarmBlock || bs.is(Blocks.SOUL_SAND)) {
-                candidateHit = new BlockHitResult(
-                        new Vec3(targetPos.getX() + 0.5, targetPos.getY() + 0.9375, targetPos.getZ() + 0.5),
-                        Direction.UP, targetPos, false);
-            } else {
+            return InteractionResult.PASS;
+        }
+
+        // 3. Dla Farmland i Soul Sand — Direction.UP i blokada narzędzi
+        BlockState bsFinal = world.getBlockState(targetPos);
+        if (bsFinal.getBlock() instanceof FarmBlock || bsFinal.is(Blocks.SOUL_SAND)) {
+            if (candidateHit.getDirection() != Direction.UP) {
+                if (isGrim) {
+                    return InteractionResult.PASS; // GrimAC wymaga uderzenia w ścianę UP
+                }
+                candidateHit = new BlockHitResult(candidateHit.getLocation(), Direction.UP, targetPos, false);
+            }
+
+            // ZABEZPIECZENIE ANTY-FLAG / ZERO-TOOL-ON-FARMLAND:
+            net.minecraft.world.item.ItemStack held = player.getItemInHand(hand);
+            if (!held.isEmpty() && (held.getItem() instanceof net.minecraft.world.item.DiggerItem || held.getItem() instanceof net.minecraft.world.item.SwordItem)) {
                 return InteractionResult.PASS;
             }
         }
 
-        // 5. Dla Farmland i Soul Sand — wymuszamy Direction.UP (jedyna legalna ściana dla nasion)
-        BlockState bsFinal = world.getBlockState(targetPos);
-        if (bsFinal.getBlock() instanceof FarmBlock || bsFinal.is(Blocks.SOUL_SAND)) {
-            candidateHit = new BlockHitResult(candidateHit.getLocation(), Direction.UP, targetPos, false);
-        }
-
         syncHeldItem();
-        return mc.gameMode.useItemOn(player, hand, candidateHit);
+        InteractionResult res = mc.gameMode.useItemOn(player, hand, candidateHit);
+        if (res.consumesAction()) {
+            lastRightClickTick = player.tickCount;
+            markInteracted();
+        }
+        return res;
     }
 
     private HitResult rayTraceTowardsFluid(LocalPlayer player, Rotation rotation, double reach) {
@@ -223,29 +258,48 @@ public final class BaritonePlayerController implements IPlayerController {
             return false;
         }
 
-        final boolean fastMode = Baritone.settings().farmFastMode.value;
+        final boolean isGrim = Baritone.settings().antiCheatCompatibility.value || Baritone.settings().grimCompat.value || Baritone.settings().antiCheatCompat.value;
+        BlockState bs = mc.level != null ? mc.level.getBlockState(loc) : null;
+        boolean isInstant = bs != null && bs.getDestroySpeed(mc.level, loc) == 0.0F;
+
+        if (isInstant) {
+            if (isGrim && mc.player.tickCount == lastBreakTick) {
+                return false;
+            } else if (!isGrim && !canInteractThisTick()) {
+                return false;
+            }
+        } else {
+            if (!canInteractThisTick()) {
+                return false;
+            }
+        }
+
         // GrimAC Protection: RotationBreak & PositionBreakA
         IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(mc.player);
-        if (baritone != null && (Baritone.settings().antiCheatCompatibility.value || Baritone.settings().grimCompat.value || Baritone.settings().antiCheatCompat.value)) {
+        if (baritone != null && isGrim) {
             Rotation serverRot = baritone.getLookBehavior().getServerRotation();
-            if (serverRot != null) {
-                HitResult serverHit = RayTraceUtils.rayTraceTowards(mc.player, serverRot, getBlockReachDistance(), mc.player.isCrouching());
-                if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(loc)) {
-                    face = sbhr.getDirection();
-                } else if (!fastMode) {
-                    return false;
-                }
-                // W fastMode: serverRotation nie trafia — FarmProcess.isServerRotationAimed() już to sprawdza
-                // i nie wywołuje clickBlock jeśli nie trafia. Jeśli jednak tu dotarliśmy, kontynuuj.
-            } else if (mc.hitResult instanceof BlockHitResult bhr && bhr.getBlockPos().equals(loc)) {
-                face = bhr.getDirection();
+            if (serverRot == null) {
+                return false;
             }
-
-            face = getSafeBreakFace(mc.player, loc, face);
+            double reach = Math.min(3.0D, Math.min(Baritone.settings().grimSafeReach.value, getBlockReachDistance()));
+            HitResult serverHit = RayTraceUtils.rayTraceTowards(mc.player, serverRot, reach, mc.player.isCrouching());
+            if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(loc)) {
+                face = sbhr.getDirection();
+            } else {
+                // serverRotation nie przecina jeszcze bloku na serwerze! Czekamy aż rotacja zostanie zsynchronizowana.
+                return false;
+            }
         }
 
         syncHeldItem();
-        return mc.gameMode.startDestroyBlock(loc, face);
+        currentBreakPos = loc.immutable();
+        breakStartTick = mc.player.tickCount;
+        boolean breakResult = mc.gameMode.startDestroyBlock(loc, face);
+        if (breakResult) {
+            lastBreakTick = mc.player.tickCount;
+            markInteracted();
+        }
+        return breakResult;
     }
 
     /**

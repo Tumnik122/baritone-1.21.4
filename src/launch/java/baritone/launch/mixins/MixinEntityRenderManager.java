@@ -37,6 +37,11 @@ public class MixinEntityRenderManager implements IEntityRenderManager {
             require = 0
     )
     private <E extends Entity> void onShouldRender(E entity, Frustum frustum, double camX, double camY, double camZ, CallbackInfoReturnable<Boolean> cir) {
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc != null && entity == mc.player && com.astra.revolution.visuals.AstraVisualsEngine.getActiveDisguise() != com.astra.revolution.visuals.AstraVisualsEngine.DisguiseModel.OFF) {
+            cir.setReturnValue(false);
+            return;
+        }
         if (!FpsOptimizer.shouldRenderEntity(entity, frustum, camX, camY, camZ)) {
             cir.setReturnValue(false);
         }

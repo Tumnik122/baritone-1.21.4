@@ -1,0 +1,24 @@
+# ==============================================================================
+# ASTRA BARITONE - KONFIGURACJA PROXY DLA FLOTY BOTOW (proxies.txt)
+# ==============================================================================
+# Serwery Minecraft (w tym anarchia.gg) nakładają limit: 1 połączenie z 1 adresu IP.
+# Próba wejścia 2 botów z tego samego IP domowego skutkuje błędem:
+# "Nie udało się połączyć cię z serwerem LIMBO. Spróbuj ponownie później."
+#
+# Aby uruchomić 2, 3 lub 5 botów jednocześnie, wpisz poniżej adresy proxy.
+# Każda linijka odpowiada kolejnemu botowi (lub rotuje):
+#
+# FORMATY OBSŁUGIWANE:
+#   1. host:port                    (np. 185.220.101.5:1080)
+#   2. host:port:username:password  (np. 185.220.101.5:1080:mojlogin:mojehaslo)
+#   3. socks5://user:pass@host:port (np. socks5://jan:tajne@185.220.101.5:1080)
+#   4. http://user:pass@host:port   (np. http://jan:tajne@185.220.101.5:8080)
+#   5. direct                       (oznacza bezpośrednie połączenie z Twojego domowego IP)
+#
+# PRZYKŁAD KONFIGURACJI DLA 2 BOTÓW:
+# Linijka 1 (dla Bota #1): direct (korzysta z Twojego domowego internetu)
+# Linijka 2 (dla Bota #2): ip_proxy:port (korzysta z proxy / innego IP)
+#
+# Odkomentuj poniżej i wklej swoje proxy:
+direct
+# 127.0.0.1:10808

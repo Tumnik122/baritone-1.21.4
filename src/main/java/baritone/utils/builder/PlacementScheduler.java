@@ -2,6 +2,7 @@ package baritone.utils.builder;
 
 import baritone.Baritone;
 import baritone.api.utils.BetterBlockPos;
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.Level;
@@ -120,9 +121,14 @@ public final class PlacementScheduler {
         return Mth.clamp(Baritone.settings().builderPlacementVerifyHardCapTicks.value, 1, 20);
     }
 
+    private static boolean isFastPlacementMode() {
+        Minecraft mc = Minecraft.getInstance();
+        return (mc != null && mc.hasSingleplayerServer()) || !Baritone.settings().antiCheatCompat.value;
+    }
+
     /** True when a new click is allowed right now. */
     public boolean canPlaceNow() {
-        return pendingVerification == null && cooldownTicks == 0;
+        return (isFastPlacementMode() || pendingVerification == null) && cooldownTicks == 0;
     }
 
     /**
@@ -131,8 +137,9 @@ public final class PlacementScheduler {
      */
     public void onPlaced(BlockPos pos, BlockState state, int tick) {
         pendingVerification = new Pending(pos, state, tick);
-        cooldownTicks = Math.max(2, Baritone.settings().builderPlacementCooldownTicks.value);
-        markRecentlyPlaced(pos, 40L);
+        boolean fast = isFastPlacementMode();
+        cooldownTicks = fast ? 0 : Math.max(0, Baritone.settings().builderPlacementCooldownTicks.value);
+        markRecentlyPlaced(pos, fast ? 10L : 40L);
         lastPlacedPos = pos.immutable();
     }
 
@@ -187,8 +194,9 @@ public final class PlacementScheduler {
     /** @deprecated Use {@link #onPlaced(BlockPos, BlockState, int)} */
     @Deprecated
     public void notifyPlaced(BlockPos pos) {
-        cooldownTicks = Math.max(2, Baritone.settings().builderPlacementCooldownTicks.value);
-        markRecentlyPlaced(pos, 40L);
+        boolean fast = isFastPlacementMode();
+        cooldownTicks = fast ? 0 : Math.max(0, Baritone.settings().builderPlacementCooldownTicks.value);
+        markRecentlyPlaced(pos, fast ? 10L : 40L);
         lastPlacedPos = pos.immutable();
     }
 
@@ -317,8 +325,10 @@ public final class PlacementScheduler {
                         int pa = arenaPhase(ay, playerFeet);
                         int pb = arenaPhase(by, playerFeet);
                         if (pa != pb) return Integer.compare(pa, pb);
-                        if (pa == 1) { int c = Integer.compare(ay, by); if (c != 0) return c; } // ceiling: bottom-up
-                        if (pa == 2) { int c = Integer.compare(by, ay); if (c != 0) return c; } // floor: top-down
+                        // Faza 1 (sufit): czyść TOP-DOWN (najwyższe pierwsze), zapobiegając wiszącym blokom i zsypom żwiru
+                        if (pa == 1) { int c = Integer.compare(by, ay); if (c != 0) return c; }
+                        // Faza 2 (podłoga): czyść TOP-DOWN (warstwa po warstwie w dół)
+                        if (pa == 2) { int c = Integer.compare(by, ay); if (c != 0) return c; }
                     }
                     case TOP_DOWN -> { int c = Integer.compare(by, ay); if (c != 0) return c; }
                     case BOTTOM_UP -> { int c = Integer.compare(ay, by); if (c != 0) return c; }
@@ -334,13 +344,15 @@ public final class PlacementScheduler {
                 return Integer.compare(a.pos.getZ(), b.pos.getZ());
             }
 
-            // Construction: BOTTOM-UP (lower Y first), then topological phase, then closest
+            // Construction: BOTTOM-UP (lower Y first), then topological phase, then BACK-TO-FRONT (furthest first)
             int dy = Integer.compare(a.pos.getY(), b.pos.getY());
             if (dy != 0) return dy;
             int dp = Integer.compare(VantagePointSolver.placementPhase(a.want), VantagePointSolver.placementPhase(b.want));
             if (dp != 0) return dp;
             if (playerFeet != null) {
-                int distCmp = Double.compare(a.pos.distSqr(playerFeet), b.pos.distSqr(playerFeet));
+                // Back-to-Front: w obrębie tej samej warstwy buduj od najdalszych punktów w stronę gracza.
+                // Zapobiega to blokowaniu linii wzroku (Line of Sight) i zamykaniu się bota w narożnikach.
+                int distCmp = Double.compare(b.pos.distSqr(playerFeet), a.pos.distSqr(playerFeet));
                 if (distCmp != 0) return distCmp;
             }
             int dx = Integer.compare(a.pos.getX(), b.pos.getX());

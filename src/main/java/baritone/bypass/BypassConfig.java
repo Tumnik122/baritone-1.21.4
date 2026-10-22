@@ -7,7 +7,7 @@ import java.util.*;
  */
 public class BypassConfig {
 
-    public int yLevel = -55;
+    public int yLevel = -58;
 
     // Tunnel
     public String pattern = "branch";

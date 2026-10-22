@@ -88,6 +88,13 @@ public interface IPathingBehavior extends IBehavior {
     }
 
     /**
+     * @return If the path calculation failed on the last tick
+     */
+    default boolean calcFailedLastTick() {
+        return false;
+    }
+
+    /**
      * Cancels the pathing behavior or the current path calculation, and all processes that could be controlling path.
      * <p>
      * Basically, "MAKE IT STOP".

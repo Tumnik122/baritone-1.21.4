@@ -45,3 +45,10 @@ libs/lwjgl-platform-2.9.4-nightly-20150209-natives-osx.jar
 libs/java-objc-bridge-1.1.jar
 
 visual-backup*/
+temp_*.py
+test_*.py
+bot_port*.txt
+gemini_*.txt
+gemini_optimizer_spec.json
+*.bak
+

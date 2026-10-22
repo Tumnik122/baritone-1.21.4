@@ -58,6 +58,27 @@ public final class AutoToolManager {
         }
 
         if (bestSlot == -1) {
+            // Hotbar nie posiada odpowiedniego narzędzia — przeszukaj główny ekwipunek (sloty 9-35)
+            int bestInvSlot = -1;
+            for (int i = 9; i < 36; i++) {
+                ItemStack stack = inv.getItem(i);
+                if (!isUsable(stack, state, config)) {
+                    continue;
+                }
+                double speed = ToolSet.calculateSpeedVsBlock(stack, state);
+                if (speed > bestSpeed) {
+                    bestSpeed = speed;
+                    bestInvSlot = i;
+                }
+            }
+
+            if (bestInvSlot != -1) {
+                // Przenieś sprawne narzędzie z ekwipunku na aktywny slot hotbara
+                int targetHotbarSlot = inv.selected;
+                ctx.playerController().windowClick(player.containerMenu.containerId, bestInvSlot, targetHotbarSlot, net.minecraft.world.inventory.ClickType.SWAP, player);
+                ctx.playerController().syncHeldItem();
+                return true;
+            }
             return false;
         }
         inv.selected = bestSlot;

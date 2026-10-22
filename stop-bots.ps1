@@ -14,7 +14,7 @@ try {
         $cl = $p.CommandLine
         if (-not $cl) { continue }
 
-        $isBaritoneBot = ($cl -match '(?i)knot\.KnotClient' -or $cl -match '(?i)devlaunchinjector' -or ($cl -match '(?i)gradle.*daemon' -and $cl -match [regex]::Escape($repo)))
+        $isBaritoneBot = ($cl -match [regex]::Escape($repo) -and ($cl -match '(?i)knot\.KnotClient' -or $cl -match '(?i)devlaunchinjector' -or $cl -match '-Dastra\.botNum' -or $cl -match '-DbotNum=' -or $cl -match '(?i)gradle.*daemon'))
         if ($isBaritoneBot) {
             Write-Host "  [*] Zamykanie procesu PID $($p.ProcessId)..." -ForegroundColor Gray
             try {

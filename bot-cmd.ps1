@@ -156,6 +156,18 @@ function Send-CommandToBot([int]$bNum, [string]$cmd) {
         return
     }
 
+    if ($cmd -match '^(render|headless)\s+(on|off|true|false)') {
+        $turnOff = $cmd -match '(off|false)'
+        $headlessState = if ($cmd.StartsWith("render")) { $turnOff } else { -not $turnOff }
+        try {
+            $r = Invoke-RestMethod -Uri "$url/api/render?headless=$headlessState" -Method Get -TimeoutSec 2
+            Write-Host "[OK] [Bot #$bNum] Tryb Headless: $($r.headless) (3D Render: $(!$r.headless))" -ForegroundColor Green
+        } catch {
+            Write-Host "[!] Blad przelaczania trybu renderowania dla bota #$bNum" -ForegroundColor Red
+        }
+        return
+    }
+
     $type = "auto"
     if ($cmd.ToLower().StartsWith("chat ") -or $cmd.ToLower().StartsWith("say ")) {
         $cmd = $cmd.Substring($cmd.IndexOf(' ') + 1).Trim()

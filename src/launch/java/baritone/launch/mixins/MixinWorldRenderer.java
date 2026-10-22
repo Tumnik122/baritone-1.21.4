@@ -70,4 +70,16 @@ public class MixinWorldRenderer {
             ibaritone.getGameEventHandler().onRenderPass(new RenderEvent(deltaTracker.getGameTimeDeltaPartialTick(false), poseStack, matrix4f2));
         }
     }
+
+    @Inject(
+            method = "renderBlockOutline",
+            at = @At("HEAD"),
+            cancellable = true,
+            require = 0
+    )
+    private void onRenderBlockOutline(Camera camera, net.minecraft.client.renderer.MultiBufferSource.BufferSource bufferSource, PoseStack poseStack, boolean bl, CallbackInfo ci) {
+        if (BaritoneAPI.getSettings().clientBlockOverlay.value) {
+            ci.cancel();
+        }
+    }
 }

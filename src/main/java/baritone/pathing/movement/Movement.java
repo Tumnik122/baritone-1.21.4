@@ -180,7 +180,20 @@ public abstract class Movement implements IMovement, MovementHelper {
         return currentState.getStatus();
     }
 
+    protected boolean isFarmOrTillActive() {
+        if (baritone.getFarmProcess() != null && baritone.getFarmProcess().isActive()) {
+            return true;
+        }
+        if (baritone instanceof Baritone b && b.getTillProcess() != null && b.getTillProcess().isActive()) {
+            return true;
+        }
+        return false;
+    }
+
     public boolean hasUnbrokenPositionsToBreak() {
+        if (isFarmOrTillActive()) {
+            return false;
+        }
         if (positionsToBreak == null || positionsToBreak.length == 0) {
             return false;
         }
@@ -189,7 +202,7 @@ public abstract class Movement implements IMovement, MovementHelper {
                 BlockState bState = BlockStateInterface.get(ctx, pos);
                 if (!bState.getFluidState().isEmpty() || bState.is(net.minecraft.world.level.block.Blocks.BEDROCK)
                         || bState.getDestroySpeed(ctx.world(), pos) < 0
-                        || (baritone.getFarmProcess().isActive() && MovementHelper.isFarmSoilOrStructure(bState.getBlock()))) {
+                        || isFarmOrTillActive()) {
                     continue; // Płynów, Bedrocka i gleby/konstrukcji farmy nie traktujemy jako bloki do wykopania!
                 }
                 return true;
@@ -202,6 +215,10 @@ public abstract class Movement implements IMovement, MovementHelper {
         if (state.getStatus() == MovementStatus.WAITING) {
             return true;
         }
+        if (isFarmOrTillActive()) {
+            currentMiningPos = null;
+            return true;
+        }
 
         // If we are already mining a specific block from positionsToBreak and it's not yet broken,
         // stick to it until it breaks to avoid target flapping between multiple blocks.
@@ -209,7 +226,7 @@ public abstract class Movement implements IMovement, MovementHelper {
             BlockState currentBsi = BlockStateInterface.get(ctx, currentMiningPos);
             if (MovementHelper.canWalkThrough(ctx, currentMiningPos) || !currentBsi.getFluidState().isEmpty()
                     || currentBsi.is(net.minecraft.world.level.block.Blocks.BEDROCK) || currentBsi.getDestroySpeed(ctx.world(), currentMiningPos) < 0
-                    || (baritone.getFarmProcess().isActive() && MovementHelper.isFarmSoilOrStructure(currentBsi.getBlock()))) {
+                    || isFarmOrTillActive()) {
                 currentMiningPos = null;
                 // Poprzedni blok rozbity lub bedrock — natychmiast anuluj cel!
             } else {
@@ -252,7 +269,7 @@ public abstract class Movement implements IMovement, MovementHelper {
             BlockState bState = BlockStateInterface.get(ctx, blockPos);
             if (!bState.getFluidState().isEmpty() || bState.is(net.minecraft.world.level.block.Blocks.BEDROCK)
                     || bState.getDestroySpeed(ctx.world(), blockPos) < 0
-                    || (baritone.getFarmProcess().isActive() && MovementHelper.isFarmSoilOrStructure(bState.getBlock()))) {
+                    || isFarmOrTillActive()) {
                 continue;
             }
             HitResult trace = RayTraceUtils.rayTraceTowards(ctx.player(), ctx.playerRotations(), ctx.playerController().getBlockReachDistance(), false);
@@ -279,7 +296,7 @@ public abstract class Movement implements IMovement, MovementHelper {
                 continue; // Nie próbuj kopać wody ani lawy
             }
             if (bState.is(net.minecraft.world.level.block.Blocks.BEDROCK) || bState.getDestroySpeed(ctx.world(), blockPos) < 0
-                    || (baritone.getFarmProcess().isActive() && MovementHelper.isFarmSoilOrStructure(bState.getBlock()))) {
+                    || isFarmOrTillActive()) {
                 if (!MovementHelper.canWalkThrough(ctx, blockPos)) {
                     somethingInTheWay = true; // Bedrock lub gleba farmy blokuje przejście, ale nie możemy jej wykopać
                 }
@@ -446,6 +463,10 @@ public abstract class Movement implements IMovement, MovementHelper {
 
     public List<BlockPos> toPlace(BlockStateInterface bsi) {
         if (toPlaceCached != null) {
+            return toPlaceCached;
+        }
+        if (isFarmOrTillActive() || !Baritone.settings().allowPlace.value) {
+            toPlaceCached = Collections.emptyList();
             return toPlaceCached;
         }
         List<BlockPos> result = new ArrayList<>();

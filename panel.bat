@@ -29,12 +29,14 @@ if not "!ACTIVE_PORT!"=="" (
 echo [!] Zaden bot nie jest obecnie wlaczony (porty 21420-21430 sa zamkniete).
 echo     Strona WWW jest hostowana wewnatrz procesu gry uruchomionego bota.
 echo.
-set /p START_BOT="Czy chcesz uruchomic boty teraz? [5 / 1 / N, domyslnie 5]: "
-if "!START_BOT!"=="" set START_BOT=5
+set /p START_BOT="Czy chcesz uruchomic boty teraz? [2 / 1 / 5 / N, domyslnie: 2]: "
+if "!START_BOT!"=="" set START_BOT=2
 if /i "!START_BOT!"=="n" goto :eof
 
 if "!START_BOT!"=="1" (
     call "%REPO%\start-bots.bat" 1
+) else if "!START_BOT!"=="2" (
+    call "%REPO%\start-bots.bat" 2
 ) else if "!START_BOT!"=="5" (
     call "%REPO%\start-bots.bat" 5
 ) else (

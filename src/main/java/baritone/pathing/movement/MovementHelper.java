@@ -76,10 +76,14 @@ public interface MovementHelper extends ActionCosts, Helper {
         if (b == Blocks.BEDROCK || state.is(Blocks.BEDROCK)) {
             return true;
         }
-        if (BaritoneAPI.getProvider().getPrimaryBaritone() != null
-                && BaritoneAPI.getProvider().getPrimaryBaritone().getFarmProcess().isActive()
-                && isFarmSoilOrStructure(b)) {
-            return true;
+        if (BaritoneAPI.getProvider().getPrimaryBaritone() != null) {
+            IBaritone primary = BaritoneAPI.getProvider().getPrimaryBaritone();
+            if (primary.getFarmProcess() != null && primary.getFarmProcess().isActive()) {
+                return true;
+            }
+            if (primary instanceof Baritone bBaritone && bBaritone.getTillProcess() != null && bBaritone.getTillProcess().isActive()) {
+                return true;
+            }
         }
         return Baritone.settings().blocksToDisallowBreaking.value.contains(b)
                 || b == Blocks.ICE // ice becomes water, and water can mess up the path
@@ -217,12 +221,18 @@ public interface MovementHelper extends ActionCosts, Helper {
                 || block == Blocks.SUGAR_CANE
                 || block instanceof FlowerBlock
                 || block instanceof TallFlowerBlock
+                || block instanceof BushBlock
+                || block instanceof DoublePlantBlock
                 || block == Blocks.SHORT_GRASS
+                || block == Blocks.TALL_GRASS
                 || block == Blocks.FERN
+                || block == Blocks.LARGE_FERN
                 || block == Blocks.DEAD_BUSH
                 || block instanceof SaplingBlock
                 || block == Blocks.SEAGRASS
-                || block == Blocks.TALL_SEAGRASS) {
+                || block == Blocks.TALL_SEAGRASS
+                || block instanceof BaseRailBlock
+                || block instanceof RedStoneWireBlock) {
             return YES;
         }
         if (state.isPathfindable(PathComputationType.LAND)) {
@@ -279,12 +289,18 @@ public interface MovementHelper extends ActionCosts, Helper {
                 || block == Blocks.SUGAR_CANE
                 || block instanceof FlowerBlock
                 || block instanceof TallFlowerBlock
+                || block instanceof BushBlock
+                || block instanceof DoublePlantBlock
                 || block == Blocks.SHORT_GRASS
+                || block == Blocks.TALL_GRASS
                 || block == Blocks.FERN
+                || block == Blocks.LARGE_FERN
                 || block == Blocks.DEAD_BUSH
                 || block instanceof SaplingBlock
                 || block == Blocks.SEAGRASS
-                || block == Blocks.TALL_SEAGRASS) {
+                || block == Blocks.TALL_SEAGRASS
+                || block instanceof BaseRailBlock
+                || block instanceof RedStoneWireBlock) {
             return true;
         }
 
@@ -322,10 +338,16 @@ public interface MovementHelper extends ActionCosts, Helper {
                 || block == Blocks.SUGAR_CANE
                 || block instanceof FlowerBlock
                 || block instanceof TallFlowerBlock
+                || block instanceof BushBlock
+                || block instanceof DoublePlantBlock
                 || block == Blocks.SHORT_GRASS
+                || block == Blocks.TALL_GRASS
                 || block == Blocks.FERN
+                || block == Blocks.LARGE_FERN
                 || block == Blocks.DEAD_BUSH
-                || block instanceof SaplingBlock) {
+                || block instanceof SaplingBlock
+                || block instanceof BaseRailBlock
+                || block instanceof RedStoneWireBlock) {
             return YES;
         }
         // door, fence gate, liquid, trapdoor have been accounted for, nothing else uses the world or pos parameters
@@ -373,10 +395,16 @@ public interface MovementHelper extends ActionCosts, Helper {
                 || block == Blocks.SUGAR_CANE
                 || block instanceof FlowerBlock
                 || block instanceof TallFlowerBlock
+                || block instanceof BushBlock
+                || block instanceof DoublePlantBlock
                 || block == Blocks.SHORT_GRASS
+                || block == Blocks.TALL_GRASS
                 || block == Blocks.FERN
+                || block == Blocks.LARGE_FERN
                 || block == Blocks.DEAD_BUSH
-                || block instanceof SaplingBlock) {
+                || block instanceof SaplingBlock
+                || block instanceof BaseRailBlock
+                || block instanceof RedStoneWireBlock) {
             return true;
         }
         return state.isPathfindable(PathComputationType.LAND);
@@ -534,6 +562,9 @@ public interface MovementHelper extends ActionCosts, Helper {
         if (MovementHelper.isLava(state) && Baritone.settings().assumeWalkOnLava.value) {
             return MAYBE;
         }
+        if (block instanceof BaseRailBlock) {
+            return MAYBE;
+        }
         if (block instanceof SlabBlock) {
             if (!Baritone.settings().allowWalkOnBottomSlab.value) {
                 if (state.getValue(SlabBlock.TYPE) != SlabType.BOTTOM) {
@@ -567,6 +598,10 @@ public interface MovementHelper extends ActionCosts, Helper {
 
         if (MovementHelper.isLava(state) && !MovementHelper.isFlowing(x, y, z, state, bsi) && Baritone.settings().assumeWalkOnLava.value) { // if we get here it means that assumeWalkOnLava must be true, so put it last
             return true;
+        }
+
+        if (block instanceof BaseRailBlock) {
+            return canWalkOn(bsi, x, y - 1, z);
         }
 
         return false; // If we don't recognise it then we want to just return false to be safe.
@@ -1058,6 +1093,20 @@ public interface MovementHelper extends ActionCosts, Helper {
     }
 
     static PlaceResult attemptToPlaceABlock(MovementState state, IBaritone baritone, BlockPos placeAt, boolean preferDown, boolean wouldSneak) {
+        if (!Baritone.settings().allowPlace.value) {
+            state.setStatus(MovementStatus.UNREACHABLE);
+            return PlaceResult.NO_OPTION;
+        }
+        if (baritone != null) {
+            if (baritone.getFarmProcess() != null && baritone.getFarmProcess().isActive()) {
+                state.setStatus(MovementStatus.UNREACHABLE);
+                return PlaceResult.NO_OPTION;
+            }
+            if (baritone instanceof Baritone b && b.getTillProcess() != null && b.getTillProcess().isActive()) {
+                state.setStatus(MovementStatus.UNREACHABLE);
+                return PlaceResult.NO_OPTION;
+            }
+        }
         IPlayerContext ctx = baritone.getPlayerContext();
         Optional<Rotation> direct = RotationUtils.reachable(ctx, placeAt, wouldSneak); // we assume that if there is a block there, it must be replacable
         boolean found = false;

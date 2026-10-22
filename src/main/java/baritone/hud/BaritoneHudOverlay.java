@@ -103,11 +103,18 @@ public final class BaritoneHudOverlay {
         try {
             baritone.bypass.BypassHudOverlay.render(guiGraphics, deltaTracker);
         } catch (Throwable ignored) {}
+        try {
+            com.statuspillhud.client.StatusPillHud.getInstance().render(guiGraphics, deltaTracker);
+        } catch (Throwable ignored) {}
     }
 
     private static void render0(GuiGraphics g, DeltaTracker deltaTracker) {
         Minecraft mc = Minecraft.getInstance();
         if (!Baritone.settings().showHudOverlay.value || mc.options.hideGui || mc.player == null) {
+            return;
+        }
+        // Gdy aktywny jest nowoczesny Wild Pill HUD, stary panel Baritone Stealth nie renderuje się
+        if (com.astra.revolution.gui.BaritoneBypassScreen.wildPillHud) {
             return;
         }
         IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
@@ -334,6 +341,9 @@ public final class BaritoneHudOverlay {
         String posCfg = Baritone.settings().hudPosition.value.trim().toUpperCase();
 
         int startX = 6, startY = 6;
+        if (com.astra.revolution.gui.BaritoneBypassScreen.wildPillHud && (posCfg.equals("TOP_LEFT") || posCfg.isEmpty())) {
+            startY = 40; // Przesunięcie poniżej docka Wild Pill HUD (wysokość 26 + margines)
+        }
         switch (posCfg) {
             case "TOP_RIGHT"    -> startX = Math.max(6, screenW - W - 6);
             case "BOTTOM_LEFT"  -> startY = Math.max(6, screenH - H - 6);

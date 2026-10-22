@@ -131,9 +131,8 @@ public final class OreScanner {
                     Block block = state.getBlock();
 
                     if (selectedOreBlocks.contains(block)) {
-                        // Sprawdź czy nie za lawą / czy bezpieczny do wykopania
+                        // Sprawdź czy bezpieczny do wykopania (nie dodawaj do trwałej czarnej listy, aby nie tracić rudy na zawsze!)
                         if (!LiquidDetector.isSafeToMine(world, pos)) {
-                            blacklist(pos); // Ruda za płynem/lawą -> natychmiastowa czarna lista
                             continue;
                         }
 
@@ -193,7 +192,6 @@ public final class OreScanner {
 
                     if (targetOreBlocks.contains(b)) {
                         if (!LiquidDetector.isSafeToMine(world, p)) {
-                            blacklist(p);
                             continue;
                         }
 

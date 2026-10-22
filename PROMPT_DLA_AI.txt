@@ -1,0 +1,268 @@
+# ==============================================================================
+# PROMPT DLA AI: ELIMINACJA DRŻENIA KAMERY, BLOKOWANIA SIĘ PRZY WODZIE
+# I BŁĘDNYCH CZERWONYCH PÓL W ASTRASCHEMATICMANAGER (MINECRAFT 1.21.4 FABRIC)
+# ==============================================================================
+
+Jesteś elitarnym inżynierem oprogramowania i głównym architektem silnika budowania w Minecraft 1.21.4 (Mojang mappings, Fabric, mechanika Baritone / Litematica).
+Twoim zadaniem jest przeanalizowanie, naprawienie i wdrożenie kompletnych poprawek do kodu silnika autonomicznego budowania (`AstraSchematicManager.java`, `AstraSchematic.java`, `SchematicHologramRenderer.java`).
+
+Poniżej znajduje się pełna analiza zachowania bota na podstawie zrzutów ekranu ze świata gry, dogłębna diagnoza techniczna 5 źródeł błędów oraz dokładny kod naprawczy.
+
+---
+
+## 1. ANALIZA ZRZUTÓW EKRANU I OBJAWÓW W GRZE
+
+1. **Zrzut ekranu 1 (Układ bazowy):**
+   - Bot rozpoczyna budowę dolnej warstwy automatycznej farmy trzciny cukrowej.
+   - Postawił rząd bloków ziemi (5 bloków dirtu), obok znajduje się wyznaczona w schemacie rynna wodna (niebieskie obrysy wokseli wody).
+   - W ekwipunku gracza znajduje się wiadro z wodą (`Items.WATER_BUCKET`).
+
+2. **Zrzut ekranu 2 (Moment zbugowania się bota):**
+   - Gracz stoi w 1-kratkowej rynnie z wodą tuż obok posadzonej trzciny cukrowej (`SugarCaneBlock`). Wiadro wody zostało zużyte (w hotbarze pojawiło się puste wiadro `Items.BUCKET`).
+   - Wokół wody pojawiły się gigantyczne, jaskrawoczerwone półprzezroczyste prostopadłościany (`PlacementStatus.WRONG_BLOCK`).
+   - **Kamera bota gwałtownie trzęsie się i drży w osiach Yaw/Pitch (20 razy na sekundę), bot nie może się ruszyć (0.0 bps) i całkowicie zamarza w miejscu.**
+   - Warstwa tłoków (`PistonBaseBlock`) i obserwatorów (`ObserverBlock`) za trzciną nigdy nie zostaje postawiona.
+
+---
+
+## 2. DOKŁADNA DIAGNOZA TECHNICZNA (5 PRZYCZYN W KODZIE)
+
+### PRZYCZYNA 1: Pętla wojny o rotację kamery między niszczeniem bloku a Baritone (Gwałtowne drżenie kamery)
+- W metodzie `processPostInteractOrBreakWrongPass`:
+  Gdy wykryto `wrongBlockPos`, bot żąda obrotu kamery w stronę bloku:
+  `rotationController.requestRotation(bestBreakRot, AimPriority.PLACEMENT_RAYCAST, 3);`
+  Następnie w tym samym ticku wykonuje raycast `level.clip(...)`.
+- Jeśli raycast w ticku 0 jeszcze nie trafił w `wrongBlockPos` (np. rotacja potrzebuje 1 ticku na płynne wygładzenie, kąt jest minimalnie odchylony lub w celu znajduje się woda):
+  Kod natychmiast anulował niszczenie (`stopDestroyBlock`), zerował stan i **zwracał `false`**!
+- Zwrócenie `false` powodowało, że w tym samym ticku silnik przechodził do kolejnych kroków:
+  1. `processFastSynchronizedPlacement` – żądał innej rotacji do postawienia kolejnego bloku.
+  2. `executeNavigationAndBridgingPass` – uruchamiał nawigację Baritone (`setGoalAndPath`), która brutalnie przestawiała kąty kamery na węzeł ścieżki.
+- W następnym ticku `processPostInteractOrBreakWrongPass` znowu wykrywał `wrongBlockPos`, anulował Baritone (`cancelEverything()`) i obracał głowę z powrotem.
+- **Efekt:** W każdym ticku głowa gracza była szarpana między dwoma różnymi kątami – powstał efekt „drżącej kamery”.
+
+### PRZYCZYNA 2: Paraliż ruchowy (Ledge Sneak) w 1-kratkowej wodzie
+- W metodzie `enforceGlobalLedgeSafety`:
+  Gdy gracz stoi w 1-kratkowej rynnie z wodą, `feetPos = player.blockPosition()` zawiera wodę, a `belowPos = feetPos.below()` to twarda ziemia pod wodą.
+- Warunek `if (!belowState.getFluidState().isEmpty())` sprawdzał stan podłoża `belowPos` zamiast stóp gracza `feetPos`!
+- W efekcie silnik uznawał, że gracz stoi na krawędzi niebezpiecznej przepaści i wymuszał permanentne kucanie: `setPlayerSneak(player, true)`.
+- **W mechanice silnika Minecraft kucanie w wodzie uniemożliwia podskoczenie i wejście na sąsiedni pełny blok (blokuje step-up). Bot staje się fizycznie uwięziony na dnie rynny wodnej.**
+
+### PRZYCZYNA 3: Odrzucanie płytkiej wody w `isStandablePosition`
+- W klasie `SchematicBuildNavigator.isStandablePosition`:
+  ```java
+  if (!feetState.getFluidState().isEmpty() || !headState.getFluidState().isEmpty()) {
+      return false;
+  }
+  ```
+- Warunek ten bezwzględnie odrzucał każde pole, na którym na poziomie stóp (`feetState`) znajduje się woda, nawet jeśli pod spodem jest twardy blok ziemi, a głowa gracza jest w powietrzu!
+- W rezultacie:
+  - Gdy gracz wpadł do rynny, silnik uznawał jego pozycję za nielegalną.
+  - Metody `findReachableStandingPositions` oraz `findNearestStandableToTarget` odrzucały wszystkie pozycje w rynnie farmy.
+  - Nawigacja zwracała `REQUIRES_BRIDGE_OR_SCAFFOLD`, zliczając `taskStuckTicks` aż do zamrożenia bota.
+
+### PRZYCZYNA 4: Przedwczesny `break` w `ScaffoldingSolver.findNextScaffoldTask`
+- W metodzie `findNextScaffoldTask`:
+  ```java
+  for (BlockPos stepPos : cachedSupportChain) {
+      if (stepPos.equals(floatingTargetPos)) {
+          break; // BŁĄD! Przerywało pętlę ZANIM sprawdzono stepPos!
+      }
+      BlockState current = level.getBlockState(stepPos);
+      ...
+  }
+  ```
+- Gdy wyznaczono rusztowanie pod brakujące stanowisko stania za tłokami (`axialStandGround`), `floatingTargetPos` było ostatnim (często jedynym) blokiem łańcucha.
+- Przez `break` blok ten **nigdy nie zostawał wytypowany do postawienia**, więc bot nie mógł zbudować podestu, aby wejść za trzcinę i postawić tłoki.
+
+### PRZYCZYNA 5: Płynąca woda oznaczana jako czerwony `WRONG_BLOCK`
+- Po rozlaniu wody z wiaderka ciecz rozlewa się na sąsiednie kratki powietrza.
+- W `SchematicHologramRenderer.evaluatePlacementStatus`:
+  Dla sąsiednich kratek schemat miał stan `AIR`, a w świecie pojawiła się woda (`Blocks.WATER`).
+  Metoda nie ignorowała cieczy w pustej przestrzeni i zwracała `PlacementStatus.WRONG_BLOCK`.
+- Z kolei w `DirectionalStateSolver.requiresBreakAndReplace` brakowało wykluczenia bloków cieczy (`LiquidBlock`), przez co bot próbował niszczyć rozlaną wodę kilofem! Ponieważ raycast `ClipContext.Fluid.NONE` przenika przez wodę, cel nigdy nie trafiał w blok, potęgując drżenie kamery.
+
+---
+
+## 3. PEŁNE KODY NAPRAWCZE DLA PROJEKTU
+
+Zastosuj poniższe zmiany w odpowiednich plikach:
+
+### A. W pliku `AstraSchematicManager.java`:
+
+1. **Zezwolenie na ruch w płytkiej wodzie w `isPlayerNearDangerousLedge`:**
+```java
+        // Jeśli pod stopami lub w stopach jest płytka woda (np. 1-kratkowa rynna z twardym dnem), NIE wymuszaj kucania!
+        if (player.isInWater() || !level.getFluidState(feetPos).isEmpty()) {
+            BlockState bottomUnderFeet = level.getBlockState(feetPos.below());
+            if (!bottomUnderFeet.isAir() && !bottomUnderFeet.canBeReplaced() && !bottomUnderFeet.getFluidState().is(FluidTags.LAVA)) {
+                return false;
+            }
+        }
+        if (!belowState.getFluidState().isEmpty()) {
+            if (belowState.getFluidState().is(FluidTags.LAVA)) {
+                return true;
+            }
+            BlockState troughBottom = level.getBlockState(belowPos.below());
+            if (!troughBottom.isAir() && !troughBottom.canBeReplaced() && !troughBottom.getFluidState().is(FluidTags.LAVA)) {
+                return false;
+            }
+            return player.onGround();
+        }
+```
+
+2. **Wykluczenie niszczenia cieczy i blokada skakania kamery w `processPostInteractOrBreakWrongPass`:**
+```java
+        // Wyszukiwanie błędnego bloku: pomijaj ciecze
+        if (activeTask != null && !activeTask.isScaffold()) {
+            BlockPos pos = activeTask.targetPos();
+            if (!pos.equals(directlyUnderFeet) && !buildQueue.isDeferred(pos)) {
+                BlockState desired = activeTask.desiredState();
+                BlockState worldState = level.getBlockState(pos);
+                if (!worldState.getFluidState().isEmpty() || worldState.getBlock() instanceof LiquidBlock) {
+                    // Nigdy nie próbuj niszczyć cieczy kilofem!
+                } else if (DirectionalStateSolver.requiresBreakAndReplace(worldState, desired)
+                        && eyePos.distanceToSqr(Vec3.atCenterOf(pos)) <= maxReachSq) {
+                    wrongBlockPos = pos;
+                    wrongBlockWorld = worldState;
+                }
+            }
+        }
+
+        // Raycast i obsługa niszczenia:
+        if (hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(wrongBlockPos)) {
+            currentPhase = Phase.BREAKING_WRONG_BLOCK;
+            if (!breakingWrongStarted) {
+                breakingWrongStarted = true;
+                breakingWrongTicks = 0;
+                GrimPacketOrder.startBreak(player, wrongBlockPos, hit.getDirection());
+            } else if (mc.gameMode != null) {
+                breakingWrongTicks++;
+                if (mc.gameMode.continueDestroyBlock(wrongBlockPos, hit.getDirection())) {
+                    player.swing(InteractionHand.MAIN_HAND);
+                }
+            }
+            setStatusBannerMessage("⛏ Poprawianie bloku: "
+                    + wrongBlockWorld.getBlock().getName().getString() + " [" + wrongBlockPos.toShortString() + "]");
+            return true;
+        } else {
+            // Stabilizacja kamery: utrzymuj fazę BREAKING_WRONG_BLOCK przez kilka ticków
+            // zamiast natychmiastowego resetowania i oddawania sterowania do Baritone!
+            currentPhase = Phase.BREAKING_WRONG_BLOCK;
+            if (this.breakingWrongTotalAttemptTicks > 12) {
+                if (mc.gameMode != null) {
+                    mc.gameMode.stopDestroyBlock();
+                }
+                buildQueue.deferVoxel(wrongBlockPos, 50);
+                this.breakingWrongStarted = false;
+                this.breakingWrongPos = null;
+                this.breakingWrongTicks = 0;
+                this.breakingWrongTotalAttemptTicks = 0;
+                return false;
+            }
+            return true;
+        }
+```
+
+3. **Zabezpieczenie w `findVisibleBreakRotation`:**
+```java
+        BlockState targetState = level.getBlockState(targetPos);
+        if (targetState.isAir() || targetState.canBeReplaced() || targetState.getBlock() instanceof LiquidBlock || !targetState.getFluidState().isEmpty()) {
+            return null;
+        }
+```
+
+4. **Wykluczenie płynów w `DirectionalStateSolver.requiresBreakAndReplace`:**
+```java
+        public static boolean requiresBreakAndReplace(BlockState worldState, BlockState desiredState) {
+            if (worldState == null || desiredState == null || worldState.isAir() || worldState.canBeReplaced()) {
+                return false;
+            }
+            if (worldState.getBlock() instanceof LiquidBlock || !worldState.getFluidState().isEmpty()) {
+                return false;
+            }
+            if (worldState.getBlock() == desiredState.getBlock() && isDoubleSlab(desiredState)) {
+                return false;
+            }
+            ...
+```
+
+5. **Zezwolenie na stanie w 1-kratkowej wodzie w `isStandablePosition`:**
+```java
+            if (!headState.getFluidState().isEmpty()) {
+                return false;
+            }
+
+            if (feetState.getFluidState().is(FluidTags.LAVA)) {
+                return false;
+            }
+
+            boolean feetPassable = feetState.isAir()
+                    || !feetState.getFluidState().isEmpty()
+                    || feetState.getBlock() instanceof BaseRailBlock
+                    || feetState.getCollisionShape(level, feetPos).isEmpty();
+            boolean headPassable = headState.isAir() || headState.getCollisionShape(level, headPos).isEmpty();
+            return feetPassable && headPassable;
+```
+
+6. **Naprawa wyznaczania rusztowania w `ScaffoldingSolver.findNextScaffoldTask`:**
+```java
+            for (BlockPos stepPos : cachedSupportChain) {
+                BlockState current = level.getBlockState(stepPos);
+                if (current.isAir() || current.canBeReplaced() || !current.getFluidState().isEmpty()) {
+                    if (placementEngine.hasAdjacentSupportBlock(stepPos)) {
+                        return Optional.of(new SchematicBuildQueue.BuildTask(stepPos, scaffoldState, true));
+                    }
+                }
+                if (stepPos.equals(floatingTargetPos)) {
+                    break;
+                }
+            }
+```
+
+---
+
+### B. W pliku `AstraSchematic.java`:
+Akceptacja dowolnej wody (źródło lub woda płynąca w rynnie) w `matchesStateSemantics`:
+```java
+        // 1. Obsługa bloków czystej wody (Blocks.WATER)
+        if (targetState.is(Blocks.WATER)) {
+            net.minecraft.world.level.material.FluidState worldFluid = (level != null && pos != null)
+                    ? level.getFluidState(pos)
+                    : worldState.getFluidState();
+            return worldFluid.is(net.minecraft.tags.FluidTags.WATER);
+        }
+```
+
+---
+
+### C. W pliku `SchematicHologramRenderer.java`:
+Ignorowanie rozlanej wody w pustych przestrzeniach w `evaluatePlacementStatus` (likwidacja fałszywych czerwonych obrysów):
+```java
+    private PlacementStatus evaluatePlacementStatus(Level level, BlockPos pos, BlockState worldState, BlockState targetState) {
+        if (targetState.isAir() && worldState.isAir()) {
+            return PlacementStatus.EMPTY_IGNORE;
+        }
+        if (targetState.isAir() && (worldState.getBlock() instanceof net.minecraft.world.level.block.LiquidBlock || !worldState.getFluidState().isEmpty())) {
+            return PlacementStatus.EMPTY_IGNORE;
+        }
+        if (AstraSchematic.matchesStateSemantics(level, pos, worldState, targetState)) {
+            return PlacementStatus.CORRECT;
+        }
+        if (worldState.isAir()) {
+            return PlacementStatus.MISSING;
+        }
+        if (worldState.is(targetState.getBlock())) {
+            return PlacementStatus.STATE_MISMATCH;
+        }
+        return PlacementStatus.WRONG_BLOCK;
+    }
+```
+
+---
+
+## 4. WERYFIKACJA KOMPILACJI
+
+Po wprowadzeniu powyższych zmian uruchom w terminalu projektu:
+`./gradlew.bat compileJava`
+Kompilacja musi zakończyć się sukcesem (`BUILD SUCCESSFUL`).
+Bot natychmiast przestanie drżeć kamerą, bez przeszkód przejdzie przez wodę, usunie fałszywe czerwone pola i bez zatrzymywania wybuduje całą farmę.

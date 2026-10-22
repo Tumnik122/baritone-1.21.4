@@ -13,6 +13,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.*;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.Property;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -88,12 +89,12 @@ public final class BlockStateResolver {
         if (want == null || have == null) {
             return false;
         }
-        // FIX: fuzzy match — same block type, ignoring minor state differences
-        if (Baritone.settings().builderFuzzyBlockMatch.value) {
-            return want.getBlock() == have.getBlock();
-        }
         if (want.getBlock() != have.getBlock()) {
             return false;
+        }
+        // FIX: fuzzy match — same block type, ignoring minor state differences
+        if (Baritone.settings().builderFuzzyBlockMatch.value) {
+            return true;
         }
         for (Property<?> p : want.getProperties()) {
             if (DYNAMIC_PROPERTIES.contains(p.getName())) {
@@ -146,8 +147,8 @@ public final class BlockStateResolver {
             if (statesMatch(wanted, cur)) {
                 return false; // already done
             }
-            if (!(cur.getBlock() instanceof AirBlock) && !isReplaceable(cur) && cur.getFluidState().isEmpty()) {
-                return false; // something solid is in the way now
+            if (!(cur.getBlock() instanceof AirBlock) && cur.getFluidState().isEmpty()) {
+                return false; // occupied by grass/foliage or solid block
             }
             return isUsableSupport(world, support, world.getBlockState(support), face);
         }
@@ -164,15 +165,14 @@ public final class BlockStateResolver {
         if (statesMatch(want, cur)) {
             return null; // target already built
         }
-        if (!(cur.getBlock() instanceof AirBlock) && !isReplaceable(cur) && cur.getFluidState().isEmpty()) {
-            return null; // occupied by solid obstruction (needs break phase)
+        if (!(cur.getBlock() instanceof AirBlock) && cur.getFluidState().isEmpty()) {
+            return null; // occupied by grass/foliage or solid obstruction (clear first)
         }
         if (!Baritone.settings().rotationResolver.value) {
             return legacyResolve(world, player, target, want);
         }
-        // For redstone-dependent blocks (wire, comparator, repeater) canSurvive may
-        // fail if neighboring blocks aren't yet placed. Skip the check for those —
-        // the server will reject the placement gracefully if it truly can't survive.
+        // For redstone-dependent blocks (wire, comparator, repeater) and vegetation (sugar cane, crops, stems)
+        // canSurvive may fail if neighboring fluid/support isn't yet placed or synced. Skip check for those.
         boolean skipSurviveCheck = want.getBlock() instanceof RedStoneWireBlock
                 || want.getBlock() instanceof DiodeBlock  // repeater + comparator
                 || want.getBlock() instanceof TorchBlock
@@ -187,7 +187,13 @@ public final class BlockStateResolver {
                 || want.getBlock() instanceof LanternBlock
                 || want.getBlock() instanceof TripWireBlock
                 || want.getBlock() instanceof TripWireHookBlock
-                || want.getBlock() instanceof CarpetBlock;
+                || want.getBlock() instanceof CarpetBlock
+                || want.getBlock() instanceof SugarCaneBlock
+                || want.getBlock() instanceof CropBlock
+                || want.getBlock() instanceof StemBlock
+                || want.getBlock() instanceof BushBlock
+                || want.getBlock() instanceof CactusBlock
+                || want.getBlock() instanceof BambooStalkBlock;
         if (!skipSurviveCheck) {
             try {
                 if (!want.canSurvive(world, target)) {
@@ -216,11 +222,11 @@ public final class BlockStateResolver {
                     continue;
                 }
                 for (double height : HIT_HEIGHTS) {
-                    Vec3 hit = hitVecOnFace(support, face, height);
+                    Vec3 hit = hitVecOnFace(world, support, supportState, face, height);
                     if (!isVisible(world, player, support, hit)) {
                         continue;
                     }
-                    double reach = Baritone.settings().antiCheatCompat.value ? 4.0D : Baritone.settings().builderPlacementReach.value;
+                    double reach = Baritone.settings().antiCheatCompat.value ? Math.min(3.85D, Baritone.settings().builderPlacementReach.value) : Baritone.settings().builderPlacementReach.value;
                     BlockHitResult hitResult = new BlockHitResult(hit, face, support, false);
 
                     // 1. First test: natural rotation pointing directly at hit point (most human and GrimAC-safe)
@@ -277,7 +283,7 @@ public final class BlockStateResolver {
         if (statesMatch(want, cur)) {
             return null;
         }
-        if (!(cur.getBlock() instanceof AirBlock) && !isReplaceable(cur) && cur.getFluidState().isEmpty()) {
+        if (!(cur.getBlock() instanceof AirBlock) && cur.getFluidState().isEmpty()) {
             return null;
         }
         for (Direction supportDir : SUPPORT_SEARCH_ORDER) {
@@ -286,7 +292,7 @@ public final class BlockStateResolver {
             if (!isUsableSupport(world, support, world.getBlockState(support), face)) {
                 continue;
             }
-            Vec3 hit = hitVecOnFace(support, face, 0.5);
+            Vec3 hit = hitVecOnFace(world, support, world.getBlockState(support), face, 0.5);
             if (!isVisible(world, player, support, hit)) {
                 continue;
             }
@@ -307,10 +313,120 @@ public final class BlockStateResolver {
         if (item != null && item != net.minecraft.world.item.Items.AIR) {
             return item;
         }
+
+        // Farmland & Paths (place as dirt)
+        if (b instanceof FarmBlock || b instanceof DirtPathBlock) return net.minecraft.world.item.Items.DIRT;
+
+        // Redstone & Wire
         if (b instanceof RedStoneWireBlock) return net.minecraft.world.item.Items.REDSTONE;
+        if (b instanceof TripWireBlock) return net.minecraft.world.item.Items.STRING;
+
+        // Torches
         if (b == Blocks.REDSTONE_WALL_TORCH) return net.minecraft.world.item.Items.REDSTONE_TORCH;
         if (b == Blocks.WALL_TORCH) return net.minecraft.world.item.Items.TORCH;
         if (b == Blocks.SOUL_WALL_TORCH) return net.minecraft.world.item.Items.SOUL_TORCH;
+
+        // Liquids & Buckets
+        if (b == Blocks.WATER) return net.minecraft.world.item.Items.WATER_BUCKET;
+        if (b == Blocks.LAVA) return net.minecraft.world.item.Items.LAVA_BUCKET;
+        if (b == Blocks.POWDER_SNOW) return net.minecraft.world.item.Items.POWDER_SNOW_BUCKET;
+        if (b instanceof WaterlilyBlock) return net.minecraft.world.item.Items.LILY_PAD;
+
+        // Crops & Seeds
+        if (b instanceof CarrotBlock) return net.minecraft.world.item.Items.CARROT;
+        if (b instanceof PotatoBlock) return net.minecraft.world.item.Items.POTATO;
+        if (b instanceof CropBlock) return net.minecraft.world.item.Items.WHEAT_SEEDS;
+        if (b instanceof BeetrootBlock) return net.minecraft.world.item.Items.BEETROOT_SEEDS;
+        if (b instanceof NetherWartBlock) return net.minecraft.world.item.Items.NETHER_WART;
+        if (b instanceof CocoaBlock) return net.minecraft.world.item.Items.COCOA_BEANS;
+        if (b instanceof StemBlock sb) {
+            return sb == Blocks.PUMPKIN_STEM ? net.minecraft.world.item.Items.PUMPKIN_SEEDS : net.minecraft.world.item.Items.MELON_SEEDS;
+        }
+        if (b instanceof AttachedStemBlock asb) {
+            return asb == Blocks.ATTACHED_PUMPKIN_STEM ? net.minecraft.world.item.Items.PUMPKIN_SEEDS : net.minecraft.world.item.Items.MELON_SEEDS;
+        }
+        if (b instanceof SweetBerryBushBlock) return net.minecraft.world.item.Items.SWEET_BERRIES;
+        if (b instanceof PitcherCropBlock) return net.minecraft.world.item.Items.PITCHER_POD;
+        if (b instanceof TorchflowerCropBlock) return net.minecraft.world.item.Items.TORCHFLOWER_SEEDS;
+
+        // Plants & Vines
+        if (b instanceof BambooSaplingBlock) return net.minecraft.world.item.Items.BAMBOO;
+        if (b instanceof CaveVines || b instanceof CaveVinesPlantBlock) return net.minecraft.world.item.Items.GLOW_BERRIES;
+        if (b instanceof KelpPlantBlock) return net.minecraft.world.item.Items.KELP;
+        if (b instanceof WeepingVinesPlantBlock) return net.minecraft.world.item.Items.WEEPING_VINES;
+        if (b instanceof TwistingVinesPlantBlock) return net.minecraft.world.item.Items.TWISTING_VINES;
+        if (b instanceof BigDripleafStemBlock) return net.minecraft.world.item.Items.BIG_DRIPLEAF;
+
+        // Wall Signs (dynamically resolve matching standing sign item)
+        if (b instanceof WallSignBlock) {
+            String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b).getPath();
+            String standingPath = path.replace("_wall_sign", "_sign");
+            net.minecraft.world.item.Item signItem = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(
+                    net.minecraft.resources.ResourceLocation.withDefaultNamespace(standingPath))
+                    .map(net.minecraft.core.Holder::value)
+                    .orElse(net.minecraft.world.item.Items.AIR);
+            if (signItem != net.minecraft.world.item.Items.AIR) {
+                return signItem;
+            }
+            return net.minecraft.world.item.Items.OAK_SIGN;
+        }
+        if (b instanceof WallHangingSignBlock) {
+            String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b).getPath();
+            String standingPath = path.replace("_wall_hanging_sign", "_hanging_sign");
+            net.minecraft.world.item.Item signItem = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(
+                    net.minecraft.resources.ResourceLocation.withDefaultNamespace(standingPath))
+                    .map(net.minecraft.core.Holder::value)
+                    .orElse(net.minecraft.world.item.Items.AIR);
+            if (signItem != net.minecraft.world.item.Items.AIR) {
+                return signItem;
+            }
+            return net.minecraft.world.item.Items.OAK_HANGING_SIGN;
+        }
+
+        // Wall Banners
+        if (b instanceof WallBannerBlock) {
+            String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b).getPath();
+            String standingPath = path.replace("_wall_banner", "_banner");
+            net.minecraft.world.item.Item bannerItem = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(
+                    net.minecraft.resources.ResourceLocation.withDefaultNamespace(standingPath))
+                    .map(net.minecraft.core.Holder::value)
+                    .orElse(net.minecraft.world.item.Items.AIR);
+            if (bannerItem != net.minecraft.world.item.Items.AIR) {
+                return bannerItem;
+            }
+            return net.minecraft.world.item.Items.WHITE_BANNER;
+        }
+
+        // Wall Skulls / Heads
+        if (b instanceof WallSkullBlock) {
+            String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b).getPath();
+            String standingPath = path.replace("wall_", "");
+            net.minecraft.world.item.Item skullItem = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(
+                    net.minecraft.resources.ResourceLocation.withDefaultNamespace(standingPath))
+                    .map(net.minecraft.core.Holder::value)
+                    .orElse(net.minecraft.world.item.Items.AIR);
+            if (skullItem != net.minecraft.world.item.Items.AIR) {
+                return skullItem;
+            }
+            return net.minecraft.world.item.Items.SKELETON_SKULL;
+        }
+
+        // Wall Coral Fans
+        if (b instanceof BaseCoralWallFanBlock) {
+            String path = net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b).getPath();
+            String fanPath = path.replace("_wall_fan", "_fan");
+            net.minecraft.world.item.Item fanItem = net.minecraft.core.registries.BuiltInRegistries.ITEM.get(
+                    net.minecraft.resources.ResourceLocation.withDefaultNamespace(fanPath))
+                    .map(net.minecraft.core.Holder::value)
+                    .orElse(net.minecraft.world.item.Items.AIR);
+            if (fanItem != net.minecraft.world.item.Items.AIR) {
+                return fanItem;
+            }
+        }
+
+        // Candle Cakes
+        if (b instanceof CandleCakeBlock) return net.minecraft.world.item.Items.CANDLE;
+
         return net.minecraft.world.item.Items.AIR;
     }
 
@@ -346,8 +462,9 @@ public final class BlockStateResolver {
         if (state.getBlock() instanceof AirBlock) {
             return false;
         }
-        if (!state.getFluidState().isEmpty()) {
-            return false; // liquids can't be clicked
+        // Allow clicking against solid waterlogged blocks; disallow pure liquids or replaceable fluid blocks
+        if (state.getBlock() instanceof LiquidBlock || (state.canBeReplaced() && !state.getFluidState().isEmpty())) {
+            return false;
         }
         if (isReplaceable(state)) {
             return false; // would place INTO it instead of against it
@@ -355,16 +472,26 @@ public final class BlockStateResolver {
         return world.hasChunkAt(support);
     }
 
-    /** Click point on a face, nudged 0.001 into the support to avoid boundary ambiguity. */
-    private static Vec3 hitVecOnFace(BlockPos support, Direction face, double height) {
-        double x = support.getX() + 0.5 + face.getStepX() * 0.499;
-        double z = support.getZ() + 0.5 + face.getStepZ() * 0.499;
-        double y;
-        switch (face) {
-            case UP -> y = support.getY() + 0.999;
-            case DOWN -> y = support.getY() + 0.001;
-            default -> y = support.getY() + height; // side faces: height controls HALF / slab TYPE
-        }
+    /** Click point on a face, nudged 0.001 into the support shape to avoid boundary ambiguity. */
+    private static Vec3 hitVecOnFace(Level world, BlockPos support, BlockState supportState, Direction face, double height) {
+        net.minecraft.world.phys.shapes.VoxelShape shape = supportState.getShape(world, support);
+        AABB bounds = shape.isEmpty() ? new AABB(0, 0, 0, 1, 1, 1) : shape.bounds();
+
+        double x = support.getX() + switch (face) {
+            case EAST -> bounds.maxX - 0.001;
+            case WEST -> bounds.minX + 0.001;
+            default -> (bounds.minX + bounds.maxX) * 0.5;
+        };
+        double z = support.getZ() + switch (face) {
+            case SOUTH -> bounds.maxZ - 0.001;
+            case NORTH -> bounds.minZ + 0.001;
+            default -> (bounds.minZ + bounds.maxZ) * 0.5;
+        };
+        double y = support.getY() + switch (face) {
+            case UP -> bounds.maxY - 0.001;
+            case DOWN -> bounds.minY + 0.001;
+            default -> bounds.minY + (bounds.maxY - bounds.minY) * height;
+        };
         return new Vec3(x, y, z);
     }
 
@@ -452,19 +579,27 @@ public final class BlockStateResolver {
         double dz = Math.cos(yawRad) * xz;
         Vec3 end = eye.add(dx * reach, dy * reach, dz * reach);
         BlockHitResult clip = world.clip(new ClipContext(
-                eye, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player));
-        return clip != null
-                && clip.getType() == HitResult.Type.BLOCK
-                && support.equals(clip.getBlockPos())
-                && clip.getDirection() == face;
+                eye, end, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+        if (clip == null || clip.getType() != HitResult.Type.BLOCK) {
+            return false;
+        }
+        if (support.equals(clip.getBlockPos()) && clip.getDirection() == face) {
+            return true;
+        }
+        // If the ray hit the block adjacent to support along face, and it's replaceable (e.g. grass, fern, snow)
+        BlockPos targetPos = support.relative(face);
+        return clip.getBlockPos().equals(targetPos) && isReplaceable(world.getBlockState(targetPos));
     }
 
-    /** The straight line eye -> hit must land on the support block (COLLIDER for GrimAC parity). */
+    /** The straight line eye -> hit must land on the support block (OUTLINE for GrimAC parity). */
     private static boolean isVisible(Level world, LocalPlayer player, BlockPos support, Vec3 hit) {
         Vec3 eye = player.getEyePosition();
         BlockHitResult clip = world.clip(new ClipContext(
-                eye, hit, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player));
-        return clip != null && support.equals(clip.getBlockPos());
+                eye, hit, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player));
+        if (clip == null) return false;
+        if (support.equals(clip.getBlockPos())) return true;
+        // If the ray hit a replaceable block (e.g. short grass, flowers), it doesn't obstruct placement
+        return isReplaceable(world.getBlockState(clip.getBlockPos()));
     }
 
     /**

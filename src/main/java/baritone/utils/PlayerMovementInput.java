@@ -51,8 +51,12 @@ public class PlayerMovementInput extends ClientInput {
         boolean autoEatSuppress = handler != null && handler.baritone != null
                 && handler.baritone.getAutoEatProcess() != null
                 && handler.baritone.getAutoEatProcess().isSuppressingMovement();
+        boolean safeInventorySwapping = handler != null && handler.baritone != null
+                && handler.baritone.getInventoryBehavior() != null
+                && handler.baritone.getInventoryBehavior().swapController != null
+                && handler.baritone.getInventoryBehavior().swapController.isBusy();
 
-        if (chatSuppressed || autoDropCleaning || homeTeleporting || autoEatSuppress || (screenOpen && (!Baritone.settings().inputWhileScreenOpen.value || (strictAntiCheat && isContainerScreen)))) {
+        if (chatSuppressed || autoDropCleaning || homeTeleporting || autoEatSuppress || safeInventorySwapping || (screenOpen && (!Baritone.settings().inputWhileScreenOpen.value || (strictAntiCheat && isContainerScreen)))) {
             this.keyPresses = new net.minecraft.world.entity.player.Input(
                     false, false, false, false, false, false, false);
             this.forwardImpulse = 0.0F;
@@ -68,18 +72,18 @@ public class PlayerMovementInput extends ClientInput {
         boolean right    = handler.isInputForcedDown(Input.MOVE_RIGHT);
         boolean jump     = handler.isInputForcedDown(Input.JUMP);
         boolean sneak    = handler.isInputForcedDown(Input.SNEAK);
-        boolean sprint   = handler.isInputForcedDown(Input.SPRINT);
+        boolean rawSprint = handler.isInputForcedDown(Input.SPRINT);
 
         boolean isBreaking = handler != null && handler.isInputForcedDown(Input.CLICK_LEFT);
-        if (isBreaking) {
-            sprint = false;
-        }
 
         net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
 
-        // Niemal natychmiastowy sprint przy chodzeniu (zgodny z fizyką Vanilla i GrimAC):
-        // Jeśli bot idzie w przód i dozwolony jest sprint, włącz sprint natychmiast w 1. ticku (jak wciśnięty klawisz sprintu w MC)
-        if (forward && !backward && !sneak && !isBreaking && Baritone.settings().allowSprint.value) {
+        // GrimAC 1.21.4 Simulation Fix: Sprint jest fizycznie legalny TYLKO przy ruchu w przód,
+        // bez wciskania w tył, bez skradania, bez kopania i przy głodzie > 6
+        boolean canSprintVanilla = forward && !backward && !sneak && !isBreaking;
+        boolean sprint = false;
+
+        if (canSprintVanilla && (rawSprint || Baritone.settings().allowSprint.value)) {
             if (player != null && player.getFoodData().getFoodLevel() > 6
                     && !player.hasEffect(net.minecraft.world.effect.MobEffects.BLINDNESS)
                     && (!player.horizontalCollision || player.minorHorizontalCollision)) {
@@ -90,15 +94,15 @@ public class PlayerMovementInput extends ClientInput {
             }
         }
 
-        // GrimAC / Vanilla physics: Nigdy nie sprintuj na powierzchni wody bez sprintInWater
-        if (player != null && player.isInWater() && !player.isUnderWater() && !Baritone.settings().sprintInWater.value) {
-            sprint = false;
-        }
-
         this.keyPresses = new net.minecraft.world.entity.player.Input(
                 forward, backward, left, right, jump, sneak, sprint);
 
         this.forwardImpulse = (forward == backward) ? 0.0F : (forward ? 1.0F : -1.0F);
         this.leftImpulse    = (left == right)       ? 0.0F : (left ? 1.0F : -1.0F);
+
+        if (sneak) {
+            this.forwardImpulse *= 0.3F;
+            this.leftImpulse    *= 0.3F;
+        }
     }
 }

@@ -422,6 +422,17 @@ public final class PathRenderer implements IRenderer {
             IRenderer.emitLine(bufferBuilder, stack, minX, y, maxZ, minX, max, maxZ, 0.0F, 1.0F, 0.0F);
         }
 
+        // Futuristic Sci-Fi Corner Brackets
+        renderCornerBrackets(bufferBuilder, stack, minX, maxX, minZ, maxZ, minY, maxY);
+
+        // Ground Cyber Beacon Ring
+        if (maxY - minY <= 12.0) {
+            double cx = (minX + maxX) * 0.5;
+            double cz = (minZ + maxZ) * 0.5;
+            double r = Math.max(0.42, Math.hypot((maxX - minX) * 0.5, (maxZ - minZ) * 0.5) * 0.95);
+            renderFloorBeaconRing(bufferBuilder, stack, cx, minY + 0.003D, cz, r, System.currentTimeMillis());
+        }
+
         if (setupRender) {
             IRenderer.endLines(bufferBuilder, settings.renderGoalIgnoreDepth.value);
         }
@@ -432,12 +443,58 @@ public final class PathRenderer implements IRenderer {
         if (WorldFxShaders.isUsable()) {
             AABB cam = new AABB(minX, minY, minZ, maxX, maxY, maxZ);
             WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_HOLO, settings.renderGoalIgnoreDepth.value, false);
-            WorldFxShaders.holoBox(cam, colorIn, 0.55F);
+            WorldFxShaders.holoBox(cam, colorIn, 0.60F);
             WorldFxShaders.end();
         } else if (settings.renderFilledBoxes.value && settings.renderShaderEffects.value) {
             BufferBuilder fill = IRenderer.startFilledHolo(colorIn, Math.max(0.18F, settings.filledBoxAlpha.value), settings.renderGoalIgnoreDepth.value);
             IRenderer.emitFilledAABB(fill, stack, new AABB(minX + posX(), minY + posY(), minZ + posZ(), maxX + posX(), maxY + posY(), maxZ + posZ()));
             IRenderer.endFilled(fill, settings.renderGoalIgnoreDepth.value);
+        }
+    }
+
+    private static void renderCornerBrackets(BufferBuilder buf, PoseStack stack, double minX, double maxX, double minZ, double maxZ, double minY, double maxY) {
+        double blX = Math.min(0.24, (maxX - minX) * 0.35);
+        double blY = Math.min(0.24, (maxY - minY) * 0.25);
+        double blZ = Math.min(0.24, (maxZ - minZ) * 0.35);
+
+        double[] xs = {minX, maxX};
+        double[] ys = {minY, maxY};
+        double[] zs = {minZ, maxZ};
+
+        for (double x : xs) {
+            double dx = (x == minX) ? blX : -blX;
+            for (double y : ys) {
+                double dy = (y == minY) ? blY : -blY;
+                for (double z : zs) {
+                    double dz = (z == minZ) ? blZ : -blZ;
+                    IRenderer.emitLine(buf, stack, x, y, z, x + dx, y, z, 1.0F, 0.0F, 0.0F);
+                    IRenderer.emitLine(buf, stack, x, y, z, x, y + dy, z, 0.0F, 1.0F, 0.0F);
+                    IRenderer.emitLine(buf, stack, x, y, z, x, y, z + dz, 0.0F, 0.0F, 1.0F);
+                }
+            }
+        }
+    }
+
+    private static void renderFloorBeaconRing(BufferBuilder buf, PoseStack stack, double cx, double cy, double cz, double radius, long timeMs) {
+        int segs = 32;
+        double rot = (timeMs / 2400.0) * Math.PI * 2.0;
+        double prevX = cx + Math.cos(rot) * radius;
+        double prevZ = cz + Math.sin(rot) * radius;
+        for (int i = 1; i <= segs; i++) {
+            double angle = rot + (Math.PI * 2.0 / segs) * i;
+            double nextX = cx + Math.cos(angle) * radius;
+            double nextZ = cz + Math.sin(angle) * radius;
+            IRenderer.emitLine(buf, stack, prevX, cy, prevZ, nextX, cy, nextZ, 0.0F, 1.0F, 0.0F);
+            prevX = nextX;
+            prevZ = nextZ;
+        }
+        for (int i = 0; i < 4; i++) {
+            double angle = -rot + (Math.PI * 0.5) * i;
+            double x1 = cx + Math.cos(angle) * (radius - 0.04);
+            double z1 = cz + Math.sin(angle) * (radius - 0.04);
+            double x2 = cx + Math.cos(angle) * (radius + 0.12);
+            double z2 = cz + Math.sin(angle) * (radius + 0.12);
+            IRenderer.emitLine(buf, stack, x1, cy, z1, x2, cy, z2, 0.0F, 1.0F, 0.0F);
         }
     }
 
@@ -481,10 +538,11 @@ public final class PathRenderer implements IRenderer {
         BufferBuilder buf = IRenderer.startLines(Color.WHITE, 0.55F * alphaMult,
                 settings.pathRenderLineWidthPixels.value * widthMult, settings.renderPathIgnoreDepth.value, additiveHalo);
 
-        // We render all segments in a single batched buffer pass
+        // We render all segments with Bezier Corner Rounding & Directional Speed Chevrons
         for (int i = startIndex; i < total - 1; i++) {
             BetterBlockPos start = positions.get(i);
             BetterBlockPos end = positions.get(i + 1);
+            BetterBlockPos next = (i + 2 < total) ? positions.get(i + 2) : null;
 
             float alpha = 0.55F;
             if (fadeOut) {
@@ -519,7 +577,59 @@ public final class PathRenderer implements IRenderer {
             }
 
             IRenderer.glColor(segColor, alpha);
-            emitPathLine(buf, stack, start.x, start.y, start.z, end.x, end.y, end.z, offset);
+
+            // Sprawdzenie czy w punkcie 'end' jest zakręt (narożnik A*)
+            if (next != null && (end.x - start.x != next.x - end.x || end.z - start.z != next.z - end.z)) {
+                // Zaokrąglenie narożnika łukiem Beziera (Quadratic Bezier Corner Rounding)
+                double ax = Mth.lerp(0.68D, start.x, end.x);
+                double ay = Mth.lerp(0.68D, start.y, end.y);
+                double az = Mth.lerp(0.68D, start.z, end.z);
+
+                double bx = Mth.lerp(0.32D, end.x, next.x);
+                double by = Mth.lerp(0.32D, end.y, next.y);
+                double bz = Mth.lerp(0.32D, end.z, next.z);
+
+                // Odcinek prosty do punktu wejścia w łuk A
+                emitPathLine(buf, stack, start.x, start.y, start.z, ax, ay, az, offset);
+
+                // Łuk Beziera (3 segmenty C^2)
+                double pPrevX = ax, pPrevY = ay, pPrevZ = az;
+                for (int step = 1; step <= 3; step++) {
+                    double u = (double) step / 3.0D;
+                    double invU = 1.0D - u;
+                    double qx = invU * invU * ax + 2.0D * invU * u * end.x + u * u * bx;
+                    double qy = invU * invU * ay + 2.0D * invU * u * end.y + u * u * by;
+                    double qz = invU * invU * az + 2.0D * invU * u * end.z + u * u * bz;
+
+                    emitPathLine(buf, stack, pPrevX, pPrevY, pPrevZ, qx, qy, qz, offset);
+                    pPrevX = qx; pPrevY = qy; pPrevZ = qz;
+                }
+            } else {
+                emitPathLine(buf, stack, start.x, start.y, start.z, end.x, end.y, end.z, offset);
+            }
+
+            // Directional Speed Chevrons (> > >) płynące w stronę celu
+            if (i % 2 == 0) {
+                double speedPhase = ((timeMs % 1200L) / 1200.0D);
+                double chevPos = Mth.lerp(speedPhase, 0.25D, 0.75D);
+                double cx = Mth.lerp(chevPos, start.x, end.x);
+                double cy = Mth.lerp(chevPos, start.y, end.y);
+                double cz = Mth.lerp(chevPos, start.z, end.z);
+
+                double dx = end.x - start.x;
+                double dz = end.z - start.z;
+                double len = Math.hypot(dx, dz);
+                if (len > 0.001D) {
+                    double nx = -dz / len * 0.16D;
+                    double nz = dx / len * 0.16D;
+                    double fwdX = dx / len * 0.16D;
+                    double fwdZ = dz / len * 0.16D;
+
+                    IRenderer.glColor(Color.WHITE, alpha * 0.90F);
+                    emitPathLine(buf, stack, cx - fwdX + nx, cy, cz - fwdZ + nz, cx + fwdX, cy, cz + fwdZ, offset);
+                    emitPathLine(buf, stack, cx - fwdX - nx, cy, cz - fwdZ - nz, cx + fwdX, cy, cz + fwdZ, offset);
+                }
+            }
         }
 
         IRenderer.endLines(buf, settings.renderPathIgnoreDepth.value);
@@ -562,6 +672,7 @@ public final class PathRenderer implements IRenderer {
         });
         IRenderer.endLines(bufferBuilder, settings.renderSelectionBoxesIgnoreDepth.value);
     }
+
     private static void drawGoalOrbitParticles(PoseStack stack, IPlayerContext ctx, Goal goal) {
         if (!(goal instanceof IGoalRenderPos)) return;
         BlockPos goalPos = ((IGoalRenderPos) goal).getGoalPos();
@@ -571,20 +682,90 @@ public final class PathRenderer implements IRenderer {
         double cz = goalPos.getZ() + 0.5 - posZ();
 
         long t = System.currentTimeMillis();
-        double angleBase = (t / 1200.0) * Math.PI * 2.0;
-        double radius = 0.85;
-        int numOrbs = 6;
+        double angleBase = (t / 1400.0) * Math.PI * 2.0;
+        double radius = 0.88;
+        int numOrbs = 8;
+
+        // Double-Helix DNA Orbiting Strands:
+        double helixH = 2.4D;
+        int helixSteps = 24;
+        double omega = (t / 900.0D) * Math.PI * 2.0D;
+        double k = Math.PI * 2.0D / 1.6D;
+        double rHelix = 0.58D;
+
+        BufferBuilder helixBuf = IRenderer.startLines(Color.WHITE, 0.85F, settings.pathRenderLineWidthPixels.value * 1.6F, settings.renderGoalIgnoreDepth.value);
+        for (int h = 0; h < helixSteps; h++) {
+            double yA = (double) h / helixSteps * helixH;
+            double yB = (double) (h + 1) / helixSteps * helixH;
+
+            double phi1A = k * yA - omega;
+            double phi1B = k * yB - omega;
+            double phi2A = phi1A + Math.PI;
+            double phi2B = phi1B + Math.PI;
+
+            // Nici helisy 1 (Neon Cyan) i 2 (Lilac Violet)
+            IRenderer.glColor(new Color(0, 240, 255), 0.85F);
+            IRenderer.emitLine(helixBuf, stack,
+                    cx + Math.cos(phi1A) * rHelix, cy + yA, cz + Math.sin(phi1A) * rHelix,
+                    cx + Math.cos(phi1B) * rHelix, cy + yB, cz + Math.sin(phi1B) * rHelix
+            );
+
+            IRenderer.glColor(new Color(199, 125, 255), 0.85F);
+            IRenderer.emitLine(helixBuf, stack,
+                    cx + Math.cos(phi2A) * rHelix, cy + yA, cz + Math.sin(phi2A) * rHelix,
+                    cx + Math.cos(phi2B) * rHelix, cy + yB, cz + Math.sin(phi2B) * rHelix
+            );
+
+            // Poprzeczki łączące helisę co 4 stopnie
+            if (h % 4 == 0) {
+                IRenderer.glColor(Color.WHITE, 0.60F);
+                IRenderer.emitLine(helixBuf, stack,
+                        cx + Math.cos(phi1A) * rHelix, cy + yA, cz + Math.sin(phi1A) * rHelix,
+                        cx + Math.cos(phi2A) * rHelix, cy + yA, cz + Math.sin(phi2A) * rHelix
+                );
+            }
+        }
+        IRenderer.endLines(helixBuf, settings.renderGoalIgnoreDepth.value);
 
         if (WorldFxShaders.isUsable()) {
             WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_ORB, settings.renderGoalIgnoreDepth.value, true);
+
+            // Layer 1: Outer Primary Celestial Ring with dynamic stardust comet tails
             for (int i = 0; i < numOrbs; i++) {
                 double angle = angleBase + (Math.PI * 2.0 / numOrbs) * i;
                 float ox = (float) (cx + Math.cos(angle) * radius);
                 float oz = (float) (cz + Math.sin(angle) * radius);
-                float oy = (float) (cy + Math.sin(angle * 2 + t / 700.0) * 0.22);
-                float hue = (float) (((angle / (Math.PI * 2.0)) + (t / 3000.0)) % 1.0);
-                WorldFxShaders.billboard(ox, oy, oz, 0.14F, Color.getHSBColor(hue, 0.9F, 1.0F), 0.9F, (float) i);
+                float oy = (float) (cy + Math.sin(angle * 2.0 + t / 650.0) * 0.26);
+
+                float hue = (float) (((angle / (Math.PI * 2.0)) + (t / 3500.0)) % 1.0);
+                Color orbColor = Color.getHSBColor(hue, 0.88F, 1.0F);
+
+                // Fading comet trail
+                for (int tr = 2; tr >= 1; tr--) {
+                    double trAngle = angle - tr * 0.09;
+                    float trX = (float) (cx + Math.cos(trAngle) * radius);
+                    float trZ = (float) (cz + Math.sin(trAngle) * radius);
+                    float trY = (float) (cy + Math.sin(trAngle * 2.0 + t / 650.0) * 0.26);
+                    float trFade = 0.40F - tr * 0.15F;
+                    WorldFxShaders.billboard(trX, trY, trZ, 0.08F - tr * 0.02F, orbColor, trFade, (float) (i + tr));
+                }
+
+                // Lead radiant celestial star
+                WorldFxShaders.billboard(ox, oy, oz, 0.13F, orbColor, 0.95F, (float) i);
             }
+
+            // Layer 2: Inner Counter-Rotating Shimmer Gyroscope (4 micro-sparks)
+            double innerAngleBase = -(t / 1800.0) * Math.PI * 2.0;
+            double innerRadius = 0.55;
+            for (int j = 0; j < 4; j++) {
+                double angle = innerAngleBase + (Math.PI * 0.5) * j;
+                float ix = (float) (cx + Math.cos(angle) * innerRadius);
+                float iz = (float) (cz + Math.sin(angle) * innerRadius);
+                float iy = (float) (cy + Math.cos(angle * 2.0 + t / 800.0) * 0.18);
+                float innerHue = (float) (((angle / (Math.PI * 2.0)) + (t / 2500.0) + 0.5) % 1.0);
+                WorldFxShaders.billboard(ix, iy, iz, 0.09F, Color.getHSBColor(innerHue, 0.75F, 1.0F), 0.75F, (float) (j + 10));
+            }
+
             WorldFxShaders.end();
             return;
         }

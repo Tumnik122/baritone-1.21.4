@@ -289,6 +289,7 @@ public class AnarchiaLoginAutomation {
 
         if (state != State.CONNECTING && state != State.RETRYING && state != State.WAITING_RESOURCE_PACK) {
             if (isDisconnectScreen) {
+                checkLimboDisconnect(mc, screenName);
                 resetSessionFlags();
                 triggerRetry("Wykryto ekran rozłączenia (" + screenName + ")", 60);
                 return;
@@ -304,6 +305,7 @@ public class AnarchiaLoginAutomation {
             case CONNECTING -> {
                 timerTicks++;
                 if (isDisconnectScreen) {
+                    checkLimboDisconnect(mc, screenName);
                     resetSessionFlags();
                     triggerRetry("Błąd połączenia z serwerem (" + screenName + ")", 60);
                     return;
@@ -787,6 +789,19 @@ public class AnarchiaLoginAutomation {
                 } catch (Throwable ignored) {}
             }
         }
+    }
+
+    private void checkLimboDisconnect(Minecraft mc, String screenName) {
+        try {
+            String details = "";
+            if (mc.screen != null && mc.screen.getNarrationMessage() != null) {
+                details = mc.screen.getNarrationMessage().getString();
+            }
+            if (details.toLowerCase(Locale.ROOT).contains("limbo") || details.toLowerCase(Locale.ROOT).contains("nie udało się połączyć")) {
+                log("§c[AutoLogin] [LIMBO] Serwer anarchia.gg odrzucił drugie połączenie z tego samego IP!");
+                log("§e[AutoLogin] Porada: Wpisz proxy do pliku 'proxies.txt' (np. ip:port), aby uruchomić 2 lub więcej botów naraz.");
+            }
+        } catch (Throwable ignored) {}
     }
 
     private void log(String msg) {

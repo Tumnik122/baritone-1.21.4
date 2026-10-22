@@ -14,6 +14,7 @@ import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.*;
+import net.minecraft.world.level.block.piston.PistonBaseBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.Property;
@@ -106,7 +107,10 @@ public final class VantagePointSolver {
 
     public static Optional<Aim> resolveAim(Level world, Entity viewer, Vec3 feet, BlockPos target, BlockState desired,
                                            double minReach, double maxReach) {
-        Item item = desired.getBlock().asItem();
+        Item item = BlockStateResolver.getItemForState(desired);
+        if (item == Items.AIR) {
+            item = desired.getBlock().asItem();
+        }
         if (item == Items.AIR) {
             return Optional.empty();
         }
@@ -225,6 +229,9 @@ public final class VantagePointSolver {
 
     public static int placementPhase(BlockState s) {
         Block b = s.getBlock();
+        if (b instanceof LiquidBlock) {
+            return 0; // Fluids placed early with solid foundation
+        }
         if (b instanceof BaseRailBlock) {
             RailShape shape = null;
             if (s.hasProperty(BlockStateProperties.RAIL_SHAPE)) {
@@ -355,9 +362,14 @@ public final class VantagePointSolver {
     }
 
     private static boolean isHazard(BlockState s) {
+        if (s == null || s.isAir()) return false;
+        Block b = s.getBlock();
         return s.is(Blocks.FIRE) || s.is(Blocks.SOUL_FIRE) || s.is(Blocks.MAGMA_BLOCK) || s.is(Blocks.CACTUS)
                 || s.is(Blocks.CAMPFIRE) || s.is(Blocks.SOUL_CAMPFIRE) || s.is(Blocks.COBWEB)
-                || s.is(Blocks.SWEET_BERRY_BUSH) || s.is(Blocks.POWDER_SNOW) || s.is(Blocks.WITHER_ROSE);
+                || s.is(Blocks.SWEET_BERRY_BUSH) || s.is(Blocks.POWDER_SNOW) || s.is(Blocks.WITHER_ROSE)
+                || b instanceof ObserverBlock || b instanceof PistonBaseBlock || b instanceof DispenserBlock
+                || b instanceof HopperBlock || b instanceof SugarCaneBlock || b instanceof CropBlock
+                || b instanceof FarmBlock;
     }
 
     private static boolean simulatesTo(Level world, Entity viewer, ItemStack stack, BlockState desired, BlockPos target,

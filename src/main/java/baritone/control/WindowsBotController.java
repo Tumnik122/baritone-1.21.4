@@ -120,6 +120,8 @@ public class WindowsBotController extends Behavior implements Helper {
         }));
 
         server.createContext("/api/accounts", new AccountsHandler());
+        server.createContext("/api/render", new RenderToggleHandler());
+        server.createContext("/render", new RenderToggleHandler());
         server.start();
         running = true;
 
@@ -871,6 +873,39 @@ public class WindowsBotController extends Behavior implements Helper {
                         + botId + ", zaloguj się na konto '" + account
                         + "' przez IAS, a następnie wywołaj POST ?bot=" + botId + "&account=" + account
                         + " ponownie, lub po prostu uruchom bota — konto zostanie zapamiętane automatycznie.");
+            }
+        }
+    }
+
+    private class RenderToggleHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
+            String query = exchange.getRequestURI().getQuery();
+            boolean headless = query == null || !query.contains("headless=false");
+            if (com.astra.revolution.perf.AstraPerformanceConfig.isPrimaryClient()) {
+                headless = false;
+            }
+            com.astra.revolution.perf.AstraPerformanceConfig.HEADLESS_MODE.set(headless);
+            try {
+                net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+                if (mc != null && mc.getWindow() != null) {
+                    long handle = mc.getWindow().getWindow();
+                    if (handle != 0L) {
+                        if (headless) {
+                            org.lwjgl.glfw.GLFW.glfwHideWindow(handle);
+                        } else {
+                            org.lwjgl.glfw.GLFW.glfwShowWindow(handle);
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+            String json = String.format("{\"success\":true,\"headless\":%b}", headless);
+            byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(bytes);
             }
         }
     }

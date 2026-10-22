@@ -31,6 +31,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import java.awt.*;
+import org.lwjgl.opengl.GL11;
 
 public interface IRenderer {
 
@@ -105,6 +106,11 @@ public interface IRenderer {
 
         if (ignoreDepth) {
             RenderSystem.disableDepthTest();
+        } else {
+            RenderSystem.enableDepthTest();
+            RenderSystem.depthFunc(GL11.GL_LEQUAL);
+            GL11.glEnable(GL11.GL_POLYGON_OFFSET_LINE);
+            GL11.glPolygonOffset(-2.5F, -2.5F);
         }
         if (settings.renderShaderEffects.value) {
             try {
@@ -131,6 +137,9 @@ public interface IRenderer {
 
         if (ignoredDepth) {
             RenderSystem.enableDepthTest();
+        } else {
+            GL11.glPolygonOffset(0.0F, 0.0F);
+            GL11.glDisable(GL11.GL_POLYGON_OFFSET_LINE);
         }
 
         RenderSystem.enableCull();
@@ -139,22 +148,19 @@ public interface IRenderer {
     }
 
     static void emitLine(BufferBuilder bufferBuilder, PoseStack stack, double x1, double y1, double z1, double x2, double y2, double z2) {
-        final double dx = x2 - x1;
-        final double dy = y2 - y1;
-        final double dz = z2 - z1;
+        float dx = (float) (x2 - x1);
+        float dy = (float) (y2 - y1);
+        float dz = (float) (z2 - z1);
 
-        final double invMag = 1.0 / Math.sqrt(dx * dx + dy * dy + dz * dz);
-        final float nx = (float) (dx * invMag);
-        final float ny = (float) (dy * invMag);
-        final float nz = (float) (dz * invMag);
-
-        emitLine(bufferBuilder, stack, x1, y1, z1, x2, y2, z2, nx, ny, nz);
+        PoseStack.Pose pose = stack.last();
+        bufferBuilder.addVertex(pose, (float) x1, (float) y1, (float) z1).setColor(color[0], color[1], color[2], color[3]).setNormal(pose, dx, dy, dz);
+        bufferBuilder.addVertex(pose, (float) x2, (float) y2, (float) z2).setColor(color[0], color[1], color[2], color[3]).setNormal(pose, -dx, -dy, -dz);
     }
 
     static void emitLine(BufferBuilder bufferBuilder, PoseStack stack, double x1, double y1, double z1, double x2, double y2, double z2, float nx, float ny, float nz) {
         PoseStack.Pose pose = stack.last();
         bufferBuilder.addVertex(pose, (float) x1, (float) y1, (float) z1).setColor(color[0], color[1], color[2], color[3]).setNormal(pose, nx, ny, nz);
-        bufferBuilder.addVertex(pose, (float) x2, (float) y2, (float) z2).setColor(color[0], color[1], color[2], color[3]).setNormal(pose, nx, ny, nz);
+        bufferBuilder.addVertex(pose, (float) x2, (float) y2, (float) z2).setColor(color[0], color[1], color[2], color[3]).setNormal(pose, -nx, -ny, -nz);
     }
 
     static void emitAABB(BufferBuilder bufferBuilder, PoseStack stack, AABB aabb) {
@@ -174,18 +180,44 @@ public interface IRenderer {
     }
 
     static void emitAABB(BufferBuilder bufferBuilder, PoseStack stack, double x1, double y1, double z1, double x2, double y2, double z2) {
-        emitLine(bufferBuilder, stack, x1, y1, z1, x2, y1, z1, 0, -1, 0);
-        emitLine(bufferBuilder, stack, x2, y1, z1, x2, y1, z2, 1, 0, 0);
-        emitLine(bufferBuilder, stack, x2, y1, z2, x1, y1, z2, 0, 0, 1);
-        emitLine(bufferBuilder, stack, x1, y1, z2, x1, y1, z1, -1, 0, 0);
-        emitLine(bufferBuilder, stack, x1, y1, z1, x1, y2, z1, 0, 0, -1);
-        emitLine(bufferBuilder, stack, x2, y1, z1, x2, y2, z1, 0, 0, -1);
-        emitLine(bufferBuilder, stack, x2, y1, z2, x2, y2, z2, 0, 0, 1);
-        emitLine(bufferBuilder, stack, x1, y1, z2, x1, y2, z2, 0, 0, 1);
-        emitLine(bufferBuilder, stack, x1, y2, z1, x2, y2, z1, 0, 1, 0);
-        emitLine(bufferBuilder, stack, x2, y2, z1, x2, y2, z2, 1, 0, 0);
-        emitLine(bufferBuilder, stack, x2, y2, z2, x1, y2, z2, 0, 0, 1);
-        emitLine(bufferBuilder, stack, x1, y2, z2, x1, y2, z1, -1, 0, 0);
+        emitLine(bufferBuilder, stack, x1, y1, z1, x2, y1, z1);
+        emitLine(bufferBuilder, stack, x2, y1, z1, x2, y1, z2);
+        emitLine(bufferBuilder, stack, x2, y1, z2, x1, y1, z2);
+        emitLine(bufferBuilder, stack, x1, y1, z2, x1, y1, z1);
+        emitLine(bufferBuilder, stack, x1, y1, z1, x1, y2, z1);
+        emitLine(bufferBuilder, stack, x2, y1, z1, x2, y2, z1);
+        emitLine(bufferBuilder, stack, x2, y1, z2, x2, y2, z2);
+        emitLine(bufferBuilder, stack, x1, y1, z2, x1, y2, z2);
+        emitLine(bufferBuilder, stack, x1, y2, z1, x2, y2, z1);
+        emitLine(bufferBuilder, stack, x2, y2, z1, x2, y2, z2);
+        emitLine(bufferBuilder, stack, x2, y2, z2, x1, y2, z2);
+        emitLine(bufferBuilder, stack, x1, y2, z2, x1, y2, z1);
+    }
+
+    static void emitLine(BufferBuilder bufferBuilder, PoseStack stack, double x1, double y1, double z1, double x2, double y2, double z2, Color c, float alpha) {
+        float dx = (float) (x2 - x1);
+        float dy = (float) (y2 - y1);
+        float dz = (float) (z2 - z1);
+
+        PoseStack.Pose pose = stack.last();
+        float[] comps = c.getColorComponents(null);
+        bufferBuilder.addVertex(pose, (float) x1, (float) y1, (float) z1).setColor(comps[0], comps[1], comps[2], alpha).setNormal(pose, dx, dy, dz);
+        bufferBuilder.addVertex(pose, (float) x2, (float) y2, (float) z2).setColor(comps[0], comps[1], comps[2], alpha).setNormal(pose, -dx, -dy, -dz);
+    }
+
+    static void emitAABB(BufferBuilder bufferBuilder, PoseStack stack, double x1, double y1, double z1, double x2, double y2, double z2, Color c, float alpha) {
+        emitLine(bufferBuilder, stack, x1, y1, z1, x2, y1, z1, c, alpha);
+        emitLine(bufferBuilder, stack, x2, y1, z1, x2, y1, z2, c, alpha);
+        emitLine(bufferBuilder, stack, x2, y1, z2, x1, y1, z2, c, alpha);
+        emitLine(bufferBuilder, stack, x1, y1, z2, x1, y1, z1, c, alpha);
+        emitLine(bufferBuilder, stack, x1, y1, z1, x1, y2, z1, c, alpha);
+        emitLine(bufferBuilder, stack, x2, y1, z1, x2, y2, z1, c, alpha);
+        emitLine(bufferBuilder, stack, x2, y1, z2, x2, y2, z2, c, alpha);
+        emitLine(bufferBuilder, stack, x1, y1, z2, x1, y2, z2, c, alpha);
+        emitLine(bufferBuilder, stack, x1, y2, z1, x2, y2, z1, c, alpha);
+        emitLine(bufferBuilder, stack, x2, y2, z1, x2, y2, z2, c, alpha);
+        emitLine(bufferBuilder, stack, x2, y2, z2, x1, y2, z2, c, alpha);
+        emitLine(bufferBuilder, stack, x1, y2, z2, x1, y2, z1, c, alpha);
     }
 
     static void emitLine(BufferBuilder bufferBuilder, PoseStack stack, Vec3 start, Vec3 end) {
@@ -209,6 +241,11 @@ public interface IRenderer {
 
         if (ignoreDepth) {
             RenderSystem.disableDepthTest();
+        } else {
+            RenderSystem.enableDepthTest();
+            RenderSystem.depthFunc(GL11.GL_LEQUAL);
+            RenderSystem.enablePolygonOffset();
+            RenderSystem.polygonOffset(-1.5F, -1.5F);
         }
         if (settings.renderShaderEffects.value) {
             try {
@@ -243,6 +280,9 @@ public interface IRenderer {
 
         if (ignoredDepth) {
             RenderSystem.enableDepthTest();
+        } else {
+            RenderSystem.polygonOffset(0.0F, 0.0F);
+            RenderSystem.disablePolygonOffset();
         }
 
         RenderSystem.enableCull();
@@ -254,6 +294,51 @@ public interface IRenderer {
         AABB toDraw = aabb.move(-renderManager.renderPosX(), -renderManager.renderPosY(), -renderManager.renderPosZ());
         PoseStack.Pose pose = stack.last();
         float r = color[0], g = color[1], b = color[2], a = color[3];
+        float minX = (float) toDraw.minX, minY = (float) toDraw.minY, minZ = (float) toDraw.minZ;
+        float maxX = (float) toDraw.maxX, maxY = (float) toDraw.maxY, maxZ = (float) toDraw.maxZ;
+
+        // Bottom (-Y)
+        bufferBuilder.addVertex(pose, minX, minY, minZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, minY, minZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, minY, maxZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, minX, minY, maxZ).setColor(r, g, b, a);
+
+        // Top (+Y)
+        bufferBuilder.addVertex(pose, minX, maxY, maxZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, maxY, maxZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, maxY, minZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, minX, maxY, minZ).setColor(r, g, b, a);
+
+        // North (-Z)
+        bufferBuilder.addVertex(pose, minX, maxY, minZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, maxY, minZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, minY, minZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, minX, minY, minZ).setColor(r, g, b, a);
+
+        // South (+Z)
+        bufferBuilder.addVertex(pose, minX, minY, maxZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, minY, maxZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, maxY, maxZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, minX, maxY, maxZ).setColor(r, g, b, a);
+
+        // West (-X)
+        bufferBuilder.addVertex(pose, minX, minY, minZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, minX, minY, maxZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, minX, maxY, maxZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, minX, maxY, minZ).setColor(r, g, b, a);
+
+        // East (+X)
+        bufferBuilder.addVertex(pose, maxX, maxY, minZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, maxY, maxZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, minY, maxZ).setColor(r, g, b, a);
+        bufferBuilder.addVertex(pose, maxX, minY, minZ).setColor(r, g, b, a);
+    }
+
+    static void emitFilledAABB(BufferBuilder bufferBuilder, PoseStack stack, AABB aabb, Color c, float alpha) {
+        AABB toDraw = aabb.move(-renderManager.renderPosX(), -renderManager.renderPosY(), -renderManager.renderPosZ());
+        PoseStack.Pose pose = stack.last();
+        float[] comps = c.getColorComponents(null);
+        float r = comps[0], g = comps[1], b = comps[2], a = alpha;
         float minX = (float) toDraw.minX, minY = (float) toDraw.minY, minZ = (float) toDraw.minZ;
         float maxX = (float) toDraw.maxX, maxY = (float) toDraw.maxY, maxZ = (float) toDraw.maxZ;
 

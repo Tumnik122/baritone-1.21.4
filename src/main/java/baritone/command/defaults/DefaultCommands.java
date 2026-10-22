@@ -71,7 +71,8 @@ public final class DefaultCommands {
                 new CommandAlias(baritone, "sethome", "Sets your home waypoint", "waypoints save home"),
                 new HomeCommand(baritone),
                 new SelCommand(baritone),
-                new CommandAlias(baritone, Arrays.asList("selclear", "cleararea"), "Clears the selected area", "sel cleararea"),
+                new CommandAlias(baritone, Arrays.asList("selclear", "sellclear", "clearsel"), "Clears all selections", "sel clear"),
+                new CommandAlias(baritone, "cleararea", "Clears the selected area", "sel cleararea"),
                 new ElytraCommand(baritone),
                 new AiStatusCommand(baritone),
                 new BypassCommand(baritone),
@@ -84,7 +85,8 @@ public final class DefaultCommands {
                 new BotOptimizerCommand(baritone),
                 new AnarchiaCommand(baritone),
                 new PracaCommand(baritone),
-                new TestCommand(baritone)
+                new TestCommand(baritone),
+                new OverlayCommand(baritone)
         ));
         ExecutionControlCommands prc = new ExecutionControlCommands(baritone);
         commands.add(prc.pauseCommand);

@@ -94,6 +94,13 @@ public class HomeCommand extends Command {
                     }
                     if (targetHome != 1) {
                         autoDeposit = false;
+                        if (targetHome == 2 && args.hasAny()) {
+                            String sub = args.getString().toLowerCase(Locale.ROOT);
+                            if (sub.equals("praca") || sub.equals("work") || sub.equals("robota") || sub.equals("resume") || sub.equals("farm")) {
+                                homeProcess.teleportToHome2AndResume(sub.equals("resume") ? HomeProcess.getSavedMiningCommand() : sub);
+                                return;
+                            }
+                        }
                     } else if (args.hasAny()) {
                         String sub = args.getString().toLowerCase(Locale.ROOT);
                         if (sub.equals("stay") || sub.equals("only")) {
@@ -124,6 +131,9 @@ public class HomeCommand extends Command {
             String first = args.getString().toLowerCase(Locale.ROOT);
             if (first.equals("1")) {
                 return Stream.of("stay");
+            }
+            if (first.equals("2")) {
+                return Stream.of("praca", "resume");
             }
         }
         return Stream.empty();

@@ -190,6 +190,9 @@ public class MovementAscend extends Movement {
 
         BlockState jumpingOnto = BlockStateInterface.get(ctx, positionToPlace);
         if (!inWater && !MovementHelper.canWalkOn(ctx, positionToPlace, jumpingOnto)) {
+            if (!Baritone.settings().allowPlace.value || isFarmOrTillActive()) {
+                return state.setStatus(MovementStatus.UNREACHABLE);
+            }
             ticksWithoutPlacement++;
             if (MovementHelper.attemptToPlaceABlock(state, baritone, dest.below(), false, true) == PlaceResult.READY_TO_PLACE) {
                 state.setInput(Input.SNEAK, true);

@@ -44,12 +44,15 @@ import org.lwjgl.opengl.GL30;
  */
 public final class HudShaders {
 
-    public static final int MODE_PANEL = 0;
-    public static final int MODE_BAR   = 1;
-    public static final int MODE_PILL  = 2;
+    public static final int MODE_PANEL   = 0;
+    public static final int MODE_BAR     = 1;
+    public static final int MODE_PILL    = 2;
     public static final int MODE_DIVIDER = 3;
-    public static final int MODE_VITAL = 4;
-    public static final int MODE_RADAR = 5;
+    public static final int MODE_VITAL   = 4;
+    public static final int MODE_RADAR   = 5;
+    public static final int MODE_WILD_DOCK  = 6;
+    public static final int MODE_WILD_BADGE = 7;
+    public static final int MODE_WILD_PILL  = 8;
 
     private static final long START = System.nanoTime();
 
@@ -198,7 +201,7 @@ public final class HudShaders {
                     float mask = 1.0 - smoothstep(uProgress - 0.015, uProgress + 0.015, vUV.x);
                     float warn = uProgress < 0.35 ? (0.5 + 0.5 * sin(uTime * 8.0)) : 1.0;
                     fragColor = vec4(col, aa * mask * warn);
-                } else {
+                } else if (uMode == 5) {
                     vec2 c = vUV * 2.0 - 1.0;
                     float rad = length(c);
                     float ring = 1.0 - smoothstep(0.92, 1.0, rad);
@@ -221,6 +224,30 @@ public final class HudShaders {
                     }
                     col += vec3(0.4, 1.0, 0.8) * exp(-length(c) * 14.0) * 0.45;
                     fragColor = vec4(col, aa * ring * 0.88);
+                } else if (uMode == 6) {
+                    // ═══ WILD CLIENT DOCK (Frosted Glass Blur + Dark Slate Glass + SDF Border) ═══
+                    vec2 uv = mix(uUvRect.xy, uUvRect.zw, vec2(vUV.x, 1.0 - vUV.y));
+                    vec3 glass = backdropBlur(uv);
+                    vec3 col = mix(glass, vec3(0.045, 0.055, 0.085), 0.80);
+                    float topGlow = smoothstep(2.5, 0.0, p.y) * 0.16;
+                    col += vec3(topGlow);
+                    float border = 1.0 - smoothstep(0.4, 1.3, abs(d));
+                    col = mix(col, vec3(1.0, 1.0, 1.0), border * 0.20);
+                    fragColor = vec4(col, 0.92 * aa);
+                } else if (uMode == 7) {
+                    // ═══ WILD CLIENT BADGE LOGO (Neon Cyan Gradient + Glow + 3D Sheen) ═══
+                    vec3 col = uAccent;
+                    col += vec3(1.0) * 0.30 * smoothstep(uSize.y, 0.0, p.y);
+                    float border = 1.0 - smoothstep(0.3, 1.2, abs(d));
+                    col = mix(col, vec3(1.0, 1.0, 1.0), border * 0.25);
+                    fragColor = vec4(col, 0.98 * aa);
+                } else {
+                    // ═══ WILD CLIENT SUB-PILL (Deep Obsidian Capsule 0xB80E101A + Sharp SDF Border) ═══
+                    vec3 col = vec3(0.055, 0.063, 0.102);
+                    col += vec3(1.0) * 0.07 * smoothstep(uSize.y, 0.0, p.y);
+                    float border = 1.0 - smoothstep(0.3, 1.2, abs(d));
+                    col = mix(col, vec3(1.0, 1.0, 1.0), border * 0.14);
+                    fragColor = vec4(col, 0.86 * aa);
                 }
             }
             """;
@@ -252,7 +279,7 @@ public final class HudShaders {
             return;
         }
 
-        Matrix4f mvp = new Matrix4f(RenderSystem.getProjectionMatrix())
+        Matrix4f mvp = new Matrix4f().setOrtho(0.0f, (float) Math.max(1, gg.guiWidth()), (float) Math.max(1, gg.guiHeight()), 0.0f, -1000.0f, 3000.0f)
                 .mul(gg.pose().last().pose());
 
         // ── pozycja panelu w NDC → UV snapshotu (ogólna, odporna na scale) ──

@@ -44,6 +44,10 @@ afterEvaluate {
 
     tasks.named("runClient") {
         jvmArgs(
+            "-Xms1024M",
+            "-Xmx2048M",
+            "-XX:+UseG1GC",
+            "-XX:MaxGCPauseMillis=10",
             "--add-opens", "java.base/java.nio.file=ALL-UNNAMED",
             "--add-opens", "jdk.zipfs/jdk.nio.zipfs=ALL-UNNAMED"
         )
@@ -125,6 +129,48 @@ afterEvaluate {
             newArgs.add(chosenNick)
         }
         setArgs(newArgs)
+    }
+
+    tasks.register('exportBotRuntime') {
+        dependsOn tasks.named('classes'), tasks.named('processResources')
+
+        doLast {
+            def runClientTask = tasks.named('runClient', JavaExec).get()
+            def outDir = file("${project.buildDir}/bot-runtime")
+            outDir.mkdirs()
+
+            // 1. Export full classpath (Minecraft mapped jar + Fabric + Unimined + Mods + Kotlin + Baritone)
+            def cpFiles = runClientTask.classpath.files.collect { it.absolutePath }
+            def cpString = cpFiles.join(File.pathSeparator)
+            file("${outDir}/classpath.txt").text = "-cp\n\"${cpString.replace('\\', '\\\\')}\"\n"
+
+            // 2. Export Unimined/Fabric system properties and JVM arguments (Mixin, DLI, natives)
+            def jvmFlags = []
+            runClientTask.jvmArgs.each { arg ->
+                if (!arg.startsWith("-Xmx") && !arg.startsWith("-Xms") && !arg.startsWith("-XX:+Use") && !arg.startsWith("-XX:G1") && !arg.startsWith("-XX:MaxGCPauseMillis")) {
+                    jvmFlags << "\"${arg.replace('\\', '\\\\').replace('"', '\\"')}\""
+                }
+            }
+            runClientTask.systemProperties.each { k, v ->
+                if (k == 'botNum' || k == 'BOT_NUM' || k.startsWith('astra.')) {
+                    return
+                }
+                if (v != null) {
+                    jvmFlags << "\"-D${k}=${v.toString().replace('\\', '\\\\').replace('"', '\\"')}\""
+                } else {
+                    jvmFlags << "\"-D${k}\""
+                }
+            }
+            file("${outDir}/unimined-jvm-args.txt").text = jvmFlags.join("\n")
+
+            // 3. Export Main Class and Game Arguments
+            def mcName = runClientTask.mainClass.isPresent() ? runClientTask.mainClass.get() : runClientTask.main
+            file("${outDir}/main-class.txt").text = mcName
+            def gameArgs = runClientTask.args.collect { "\"${it.replace('\\', '\\\\')}\"" }.join(" ")
+            file("${outDir}/game-args.txt").text = gameArgs
+
+            println "[AstraBot] Exported standalone bot runtime to: ${outDir.absolutePath}"
+        }
     }
 }
 

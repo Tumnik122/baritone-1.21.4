@@ -38,6 +38,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+import baritone.utils.inventory.SafeInventorySwapController;
 import java.util.ArrayList;
 import java.util.OptionalInt;
 import java.util.Random;
@@ -45,17 +46,25 @@ import java.util.function.Predicate;
 
 public final class InventoryBehavior extends Behavior implements Helper {
 
+    public final SafeInventorySwapController swapController;
     int ticksSinceLastInventoryMove;
     int[] lastTickRequestedMove; // not everything asks every tick, so remember the request while coming to a halt
 
     public InventoryBehavior(Baritone baritone) {
         super(baritone);
+        this.swapController = new SafeInventorySwapController(baritone);
     }
 
     @Override
     public void onTick(TickEvent event) {
         if (!Baritone.settings().allowInventory.value) {
             return;
+        }
+        if (event.getType() == TickEvent.Type.IN) {
+            swapController.onTick();
+            if (swapController.isBusy()) {
+                return;
+            }
         }
         if (event.getType() == TickEvent.Type.OUT) {
             return;
@@ -81,11 +90,9 @@ public final class InventoryBehavior extends Behavior implements Helper {
     public boolean attemptToPutOnHotbar(int inMainInvy, Predicate<Integer> disallowedHotbar) {
         OptionalInt destination = getTempHotbarSlot(disallowedHotbar);
         if (destination.isPresent()) {
-            if (!requestSwapWithHotBar(inMainInvy, destination.getAsInt())) {
-                return false;
-            }
+            return swapController.requestSafeTransfer(inMainInvy, destination.getAsInt(), false, s -> true);
         }
-        return true;
+        return false;
     }
 
     public OptionalInt getTempHotbarSlot(Predicate<Integer> disallowedHotbar) {
@@ -189,28 +196,25 @@ public final class InventoryBehavior extends Behavior implements Helper {
 
     public boolean throwaway(boolean select, Predicate<? super ItemStack> desired, boolean allowInventory) {
         LocalPlayer p = ctx.player();
+        if (p == null) {
+            return false;
+        }
         NonNullList<ItemStack> inv = p.getInventory().items;
         for (int i = 0; i < 9; i++) {
             ItemStack item = inv.get(i);
-            // this usage of settings() is okay because it's only called once during pathing
-            // (while creating the CalculationContext at the very beginning)
-            // and then it's called during execution
-            // since this function is never called during cost calculation, we don't need to migrate
-            // acceptableThrowawayItems to the CalculationContext
             if (desired.test(item)) {
                 if (select) {
-                    p.getInventory().selected = i;
-                    baritone.getPlayerContext().playerController().syncHeldItem();
+                    if (p.getInventory().selected != i) {
+                        p.getInventory().selected = i;
+                        baritone.getPlayerContext().playerController().syncHeldItem();
+                    }
+                    ItemStack held = p.getInventory().getSelected();
+                    return !held.isEmpty() && desired.test(held);
                 }
                 return true;
             }
         }
         if (desired.test(p.getInventory().offhand.get(0))) {
-            // main hand takes precedence over off hand
-            // that means that if we have block A selected in main hand and block B in off hand, right clicking places block B
-            // we've already checked above ^ and the main hand can't possible have an acceptablethrowawayitem
-            // so we need to select in the main hand something that doesn't right click
-            // so not a shovel, not a hoe, not a block, etc
             for (int i = 0; i < 9; i++) {
                 ItemStack item = inv.get(i);
                 if (item.isEmpty() || item.getItem() instanceof PickaxeItem) {
@@ -227,9 +231,11 @@ public final class InventoryBehavior extends Behavior implements Helper {
             for (int i = 9; i < 36; i++) {
                 if (desired.test(inv.get(i))) {
                     if (select) {
-                        requestSwapWithHotBar(i, 7);
-                        p.getInventory().selected = 7;
-                        baritone.getPlayerContext().playerController().syncHeldItem();
+                        int targetSlot = 7;
+                        swapController.requestSafeTransfer(i, targetSlot, false, desired::test);
+                        // KRYTYCZNE: Przedmiotu nie ma jeszcze w hotbarze! Zwracamy false,
+                        // aby caller (np. FarmProcess) NIE klikał dotychczas trzymanym przedmiotem (np. kilofem)
+                        return false;
                     }
                     return true;
                 }

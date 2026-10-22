@@ -78,8 +78,12 @@ public class WaterClutchBehavior extends Behavior implements Helper {
             return;
         }
 
-        // Nigdy nie clutchuj podczas pracy bota na farmie (#farm)
+        // Nigdy nie clutchuj podczas pracy bota na farmie (#farm) lub orania (#zaorz)
         if (baritone.getFarmProcess() != null && baritone.getFarmProcess().isActive()) {
+            clutching = false;
+            return;
+        }
+        if (baritone instanceof Baritone b && b.getTillProcess() != null && b.getTillProcess().isActive()) {
             clutching = false;
             return;
         }

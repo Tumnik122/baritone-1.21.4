@@ -49,6 +49,9 @@ public class TestCommand extends Command {
         } else if (sub.equals("deposit") || sub.equals("home") || sub.equals("cycle")) {
             String resumeCmd = args.hasAny() ? args.rawRest().trim() : null;
             b.getHomeProcess().startTestCycle(resumeCmd);
+        } else if (sub.equals("praca") || sub.equals("work") || sub.equals("home2")) {
+            logDirect("§a[Test] Testuję procedurę /home -> Zielone łóżko (Home 2) i wznowienie #praca...");
+            b.getHomeProcess().teleportToHome2AndResume("praca");
         } else if (sub.startsWith("mine")) {
             // np. #test mine iron
             String resumeCmd = sub + (args.hasAny() ? " " + args.rawRest().trim() : "");
@@ -63,7 +66,7 @@ public class TestCommand extends Command {
     @Override
     public Stream<String> tabComplete(String label, IArgConsumer args) {
         if (args.hasExactlyOne()) {
-            return Stream.of("deposit", "clean", "sort", "mine iron");
+            return Stream.of("deposit", "clean", "sort", "mine iron", "praca");
         }
         return Stream.empty();
     }

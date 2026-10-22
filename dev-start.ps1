@@ -46,8 +46,8 @@ if ($InstanceNum -le 0) {
     $isBot1Running = $false
     foreach ($jp in $runningJava) {
         $cmd = $jp.CommandLine
-        if ($cmd -and ($cmd -match '(?i)knot\.KnotClient' -or $cmd -match '(?i)knot\.Knot\b')) {
-            if ($cmd -match '(?i)fabric[\\/]run[\\/]client["\s]' -or $cmd -match '(?i)-DbotNum=1\b') {
+        if ($cmd) {
+            if ($cmd -match 'client[\\/]+jvm-launch-args' -or $cmd -match 'fabric[\\/]+run[\\/]+client["''\s\\]' -or $cmd -match '--username"?\s+"?Gamer6844' -or $cmd -match '(?i)-DbotNum=1\b') {
                 $isBot1Running = $true
                 break
             }

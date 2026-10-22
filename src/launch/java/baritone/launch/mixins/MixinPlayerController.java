@@ -69,7 +69,10 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             BlockPos pos,
             net.minecraft.core.Direction direction,
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
-        if (baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
+        boolean isGrim = baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value
+                || baritone.api.BaritoneAPI.getSettings().grimCompat.value
+                || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value;
+        if (!isGrim && baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
             this.destroyDelay = 0;
         }
     }
@@ -87,7 +90,10 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             BlockPos pos,
             net.minecraft.core.Direction direction,
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
-        if (baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
+        boolean isGrim = baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value
+                || baritone.api.BaritoneAPI.getSettings().grimCompat.value
+                || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value;
+        if (!isGrim && baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
             this.destroyDelay = 0;
         }
     }

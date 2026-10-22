@@ -26,6 +26,12 @@ import net.minecraft.core.Direction;
  */
 public interface ISelectionManager {
 
+    default BetterBlockPos getPos1() {
+        return null;
+    }
+
+    default void setPos1(BetterBlockPos pos) {}
+
     /**
      * Adds a new selection. The added selection is returned.
      *

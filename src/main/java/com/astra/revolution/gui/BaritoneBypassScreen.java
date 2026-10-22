@@ -1,526 +1,1306 @@
-// ============================================================================
-//  BaritoneBypassScreen.java — BARITONE ASTRA // REVOLUTION (v2.4)
-//  Fabric 1.21.4 · Oficjalne mapowania Mojmap (Unimined) · 100% natywny render
-//
-//  Umieść plik w:  src/main/java/com/astra/revolution/gui/BaritoneBypassScreen.java
-//  (jeśli używasz innego pakietu — zmień linię `package` i odpowiednio ścieżkę).
-//  Zapisz plik w kodowaniu UTF-8 (polskie znaki w opisach modułów).
-//
-//  Otwieranie GUI (przykład, w twoim kodzie klienckim):
-//      if (InputConstants.isKeyPressed(minecraft.getWindow().getWindow(),
-//                                     BaritoneBypassScreen.OPEN_KEY)) {
-//          minecraft.setScreen(new BaritoneBypassScreen());
-//      }
-//
-//  Stan modułów jest eksportowany przez publiczne pola statyczne tej klasy
-//  (np. BaritoneBypassScreen.fastBreakInstamine) — czytaj je w handlerach
-//  tick / pakiet. Integracja z Baritone odbywa się przez odbicie (reflection),
-//  więc projekt kompiluje się BEZ twardej zależności od Baritone.
-// ============================================================================
-
 package com.astra.revolution.gui;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-import java.util.function.Consumer;
-
-import baritone.Baritone;
-import baritone.api.BaritoneAPI;
-import baritone.api.utils.SettingsUtil;
-import baritone.hud.AiActionLogger;
+import com.mojang.blaze3d.platform.GlStateManager;
+import com.mojang.blaze3d.platform.Window;
+import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.client.resources.sounds.SimpleSoundInstance;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.network.chat.Component;
-import net.minecraft.sounds.SoundEvents;
-
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.ItemStack;
+import org.lwjgl.BufferUtils;
 import org.lwjgl.glfw.GLFW;
+import org.lwjgl.opengl.GL11;
+import org.lwjgl.opengl.GL14;
+import org.lwjgl.opengl.GL15;
+import org.lwjgl.opengl.GL20;
+import org.lwjgl.opengl.GL30;
 
+import java.lang.reflect.Method;
+import java.nio.FloatBuffer;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+import baritone.api.BaritoneAPI;
+import baritone.api.utils.SettingsUtil;
+import com.astra.revolution.visuals.AstraVisualsEngine;
+
+/**
+ * BaritoneBypassScreen V2 (10/10 Obsidian & Lilac Glass - Zero Glow-Box Edition)
+ * Zawiera zunifikowany Design System (Obsidian & Lilac Glass),
+ * sprzętowo akcelerowany silnik OpenGL 3.3 SDF (VenturaSdfRenderer)
+ * oraz wektorowy system ikon (VectorIcon) współdzielony z AstraSchematicScreen.
+ */
 public class BaritoneBypassScreen extends Screen {
 
-    // ========================================================================
-    //  SEKCJA 1 · GEOMETRIA (wszystko window-relative, hit-testy = render)
-    // ========================================================================
-    private static final int WINDOW_W = 560;
-    private static final int WINDOW_H = 360;
-    private static final int TOPBAR_H = 34;
-    private static final int SIDEBAR_W = 140;
-    private static final int FOOTER_H = 16;
-
-    private static final int CONTENT_X = SIDEBAR_W + 1;                  // 141
-    private static final int CONTENT_Y = TOPBAR_H + 1;                  // 35
-    private static final int CONTENT_W = WINDOW_W - CONTENT_X - 1;      // 418
-    private static final int CONTENT_H = WINDOW_H - CONTENT_Y - FOOTER_H; // 309
-
-    private static final int CARD_X    = CONTENT_X + 8;                 // 149
-    private static final int CARD_W    = CONTENT_W - 16;                // 402
-    private static final int CARD_H    = 46;
-    private static final int CARD_STEP = 52;                            // karta + odstęp
-    private static final int HEADER_H  = 30;                            // nagłówek sekcji
-
-    // Pozycje widgetów względem lewego-górnego narożnika karty.
-    private static final int TOGGLE_X = 352, TOGGLE_Y = 14, TOGGLE_W = 38, TOGGLE_H = 18;
-    private static final int SLIDER_X = 240, SLIDER_W = 150, SLIDER_TRACK_Y = 25, SLIDER_TRACK_H = 4;
-    private static final int CYCLE_X  = 262, CYCLE_Y  = 14, CYCLE_W  = 128, CYCLE_H  = 18;
-
-    // ========================================================================
-    //  SEKCJA 2 · PALETA „CLEAN OBSIDIAN / DARK GLASSMORPHISM”
-    // ========================================================================
-    private static final int C_WINDOW_BG   = 0xE6090C12; // midnight obsidian, 90%
-    private static final int C_SIDEBAR_BG  = 0xFF10151F;
-    private static final int C_CARD_BG     = 0xFF121722;
-    private static final int C_CARD_BG_ALT = 0xFF171E2B;
-    private static final int C_BORDER      = 0xFF232D3F;
-    private static final int C_BORDER_HOT  = 0xFF33425E;
-    private static final int C_CYAN        = 0xFF00E5FF;
-    private static final int C_PURPLE      = 0xFF9D4EDD;
-    private static final int C_INACTIVE    = 0xFF2A3447;
-    private static final int C_TEXT_MAIN   = 0xFFF0F4FC;
-    private static final int C_TEXT_DIM    = 0xFF8C9BAE;
-    private static final int C_TEXT_FAINT  = 0xFF54637D;
-    private static final int C_GREEN       = 0xFF35E08A;
-    private static final int C_RED         = 0xFFFF4757;
-    private static final int C_AMBER       = 0xFFE0A100;
-
-    // ========================================================================
-    //  SEKCJA 3 · IKONY PIXEL-ART 8x8 ('X' = zapalony piksel)
-    //  (emoji z SMP nie renderują się w vanilla foncie — stąd własne glify)
-    // ========================================================================
-    private static final String[] ICON_BOLT = {
-            ".....XX.",
-            "....XX..",
-            "...XX...",
-            ".XXXXX..",
-            "..XX....",
-            ".XX.....",
-            "XX......",
-            "........"
-    };
-    private static final String[] ICON_SHIELD = {
-            "XXXXXXXX",
-            "X......X",
-            "X..XX..X",
-            "X.XXXX.X",
-            "X..XX..X",
-            "X......X",
-            ".X....X.",
-            "..XXXX.."
-    };
-    private static final String[] ICON_ROBOT = {
-            "...X....",
-            ".XXXXXX.",
-            ".X.XX.X.",
-            ".XXXXXX.",
-            "..XXXX..",
-            "X.XXXX.X",
-            "X.XXXX.X",
-            "..X..X.."
-    };
-    private static final String[] ICON_WAVE = {
-            "........",
-            "........",
-            "XX..XX..",
-            "..XX..XX",
-            "XX..XX..",
-            "..XX..XX",
-            "........",
-            "........"
-    };
-    private static final String[] ICON_EYE = {
-            "........",
-            "..XXXX..",
-            ".X....X.",
-            "X..XX..X",
-            ".X....X.",
-            "..XXXX..",
-            "........",
-            "........"
-    };
-
-    // ========================================================================
-    //  SEKCJA 4 · PUBLICZNY STAN RUNTIME (do odczytu przez resztę moda)
-    // ========================================================================
-    public static final String VERSION = "v2.4";
+    // =========================================================================
+    // POLA KOMPATYBILNOŚCI WSTECZNEJ (BARITONE / ANARCHIA COMMAND / MIXINS)
+    // =========================================================================
     public static int OPEN_KEY = GLFW.GLFW_KEY_RIGHT_SHIFT;
-
-    // ⚡ Mining & Speed
-    public static boolean fastBreakInstamine  = false;
-    public static boolean autoDetectEfficiency = false;
-    public static boolean multiBlockQueue     = false;
-    public static float   miningRange         = 4.5f;
-
-    // 🛡️ GrimAC Bypass
-    public static boolean raytraceLOS        = true;
-    public static boolean smoothRotations    = true;
-    public static float   rotationSpeed      = 140.0f;
-    public static int     rotationMode       = 2;          // 0=PACKET 1=TICK 2=SMOOTH
-    public static boolean strictPlace        = true;
-    public static boolean combatLogDetector  = false;
-
-    // 🤖 Automation & Anarchia
-    public static boolean anarchiaMode        = false;
-    public static boolean autoDropTrash       = false;
-    public static boolean autoSortInventory   = false;
-    public static float   dropDelay           = 2.0f;
-    public static boolean autoEat             = false;
-    public static float   autoEatThreshold    = 15.0f;
-    public static boolean autoHomeOnFull      = false;
-    public static boolean itemLockProtection  = false;
-
-    // 🌊 Movement & Safety
-    public static boolean waterAvoid          = true;
-    public static boolean waterBuoyancy       = false;
-    public static boolean lavaReflex          = false;
-    public static float   lavaScanRadius      = 3.0f;
-    public static boolean avoidFluidProximity = true;
-    public static float   fluidAvoidDistance  = 3.0f;
-    public static boolean antiSuffocation     = false;
-    public static boolean tunnelFloatGuard    = false;
-    public static boolean disconnectOnLowHealth = false;
-    public static float   disconnectHealthHearts = 6.0f;
-    public static boolean disconnectOnFall    = false;
-    public static float   disconnectFallDistance = 5.0f;
-    public static boolean autoWaterClutch     = true;
-
-    // 👁️ Visuals & HUD
-    public static boolean hudEnabled         = false;
-    public static boolean oreEsp             = false;
-    public static int     espMode            = 0;          // 0=OUTLINE 1=TRACERS 2=BOTH
-    public static boolean pathTrail          = false;
-    public static float   hudScale           = 100.0f;
-    public static float   guiOpacity         = 0.90f;      // „Dark Mode Intensity”
-
-    /** Ustaw na true z zewnątrz (np. proces górowania), aby dioda pokazała ACTIVE. */
+    public static boolean wildPillHud = true;
+    public static boolean anarchiaMode = false;
+    public static boolean autoDropTrash = true;
+    public static boolean autoSortInventory = true;
+    public static boolean itemLockProtection = true;
+    public static boolean disconnectOnLowHealth = true;
+    public static float disconnectHealthHearts = 6.0f;
+    public static boolean disconnectOnFall = true;
+    public static float disconnectFallDistance = 5.0f;
     public static volatile boolean BOT_ACTIVE = false;
 
-    // ========================================================================
-    //  SEKCJA 5 · MODEL DANYCH
-    // ========================================================================
-    private static final float[] SAVED_SCROLL = new float[10];
+    private static boolean staticSearchFocusedState = false;
 
-    private final List<Category> categories;
-    private int selectedCategory = 0;
+    // =========================================================================
+    // MOST KOMPATYBILNOŚCI Z HUD (STATUS CAPSULE HUD & BARITONE TELEMETRY)
+    // =========================================================================
+    public static final class AstraBaritoneBridge {
+        private static final AstraBaritoneBridge INSTANCE = new AstraBaritoneBridge();
+        public static AstraBaritoneBridge getInstance() { return INSTANCE; }
 
-    // ========================================================================
-    //  SEKCJA 6 · STAN OKNA / INTERAKCJI / ANIMACJI
-    // ========================================================================
-    private int windowX = 0;
-    private int windowY = 0;
-    private boolean positioned = false;
+        private boolean statusCapsuleHud = true;
+        public boolean isStatusCapsuleHud() { return statusCapsuleHud; }
+        public void setStatusCapsuleHud(boolean val) { this.statusCapsuleHud = val; }
 
-    private boolean draggingWindow = false;
-    private double dragOffX = 0.0;
-    private double dragOffY = 0.0;
-    private SliderModule draggingSlider = null;
+        private static String manualTaskOverride = null;
+        private static float cachedTps = 20.0f;
+        private static long lastTickMeasureMs = System.currentTimeMillis();
 
-    private long openTime = 0L;
+        public static void setActiveTaskOverride(String task) {
+            manualTaskOverride = task;
+        }
+
+        public static String getActiveTaskName() {
+            if (manualTaskOverride != null && !manualTaskOverride.isBlank()) {
+                return manualTaskOverride.toUpperCase(Locale.ROOT);
+            }
+            try {
+                if (com.astra.revolution.schematic.AstraSchematicManager.getInstance() != null
+                        && com.astra.revolution.schematic.AstraSchematicManager.getInstance().isActive()) {
+                    return "SCHEM";
+                }
+            } catch (Throwable ignored) {
+            }
+            try {
+                Class<?> apiClass = Class.forName("baritone.api.BaritoneAPI");
+                Method getProvider = apiClass.getMethod("getProvider");
+                Object provider = getProvider.invoke(null);
+                Object primary = provider.getClass().getMethod("getPrimaryBaritone").invoke(provider);
+
+                Object pathingBehavior = primary.getClass().getMethod("getPathingBehavior").invoke(primary);
+                boolean isPathing = (boolean) pathingBehavior.getClass().getMethod("isPathing").invoke(pathingBehavior);
+
+                Object mineProcess = primary.getClass().getMethod("getMineProcess").invoke(primary);
+                if ((boolean) mineProcess.getClass().getMethod("isActive").invoke(mineProcess)) return "MINE";
+
+                Object builderProcess = primary.getClass().getMethod("getBuilderProcess").invoke(primary);
+                if ((boolean) builderProcess.getClass().getMethod("isActive").invoke(builderProcess)) return "BUILD";
+
+                Object farmProcess = primary.getClass().getMethod("getFarmProcess").invoke(primary);
+                if ((boolean) farmProcess.getClass().getMethod("isActive").invoke(farmProcess)) return "FARM";
+
+                Object followProcess = primary.getClass().getMethod("getFollowProcess").invoke(primary);
+                if ((boolean) followProcess.getClass().getMethod("isActive").invoke(followProcess)) return "FOLLOW";
+
+                if (isPathing) return "PATH";
+            } catch (Throwable ignored) {
+            }
+            return "IDLE";
+        }
+
+        public static boolean isBaritoneActive() {
+            return !"IDLE".equalsIgnoreCase(getActiveTaskName());
+        }
+
+        public static int getPingMs() {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.player == null || mc.getConnection() == null) return 0;
+            PlayerInfo info = mc.getConnection().getPlayerInfo(mc.player.getUUID());
+            return info != null ? Math.max(0, info.getLatency()) : 0;
+        }
+
+        public static float getServerTps() {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.level == null) return 20.0f;
+            long now = System.currentTimeMillis();
+            if (now - lastTickMeasureMs > 1000L) {
+                lastTickMeasureMs = now;
+                float tickRate = mc.level.tickRateManager().tickrate();
+                cachedTps = Mth.clamp(tickRate, 0.0f, 20.0f);
+            }
+            return cachedTps;
+        }
+
+        public static double getPlayerSpeedBps() {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.player == null) return 0.0;
+            double dx = mc.player.getX() - mc.player.xo;
+            double dz = mc.player.getZ() - mc.player.zo;
+            return Math.hypot(dx, dz) * 20.0;
+        }
+
+        public static int getOccupiedInventorySlots() {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.player == null) return 0;
+            Inventory inv = mc.player.getInventory();
+            int used = 0;
+            for (int i = 0; i < 36; i++) {
+                ItemStack stack = inv.items.get(i);
+                if (!stack.isEmpty()) used++;
+            }
+            return used;
+        }
+    }
+
+    public static boolean isTypingInTextField() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.screen instanceof BaritoneBypassScreen bbs) {
+            return bbs.searchFocused;
+        }
+        return staticSearchFocusedState;
+    }
+
+    public static void drawCenteredRowTextStatic(GuiGraphics g, Font font, String text, float x, float cy, int color) {
+        if (text == null || text.isEmpty()) return;
+        Font f = (font != null) ? font : Minecraft.getInstance().font;
+        g.drawString(f, text, Math.round(x), (int) (cy - f.lineHeight * 0.5f + 1.0f), color, false);
+    }
+
+    public static void drawCenteredRowTextStatic(GuiGraphics g, Font font, String text, float x, float rowY, float rowH, int color) {
+        if (text == null || text.isEmpty()) return;
+        Font f = (font != null) ? font : Minecraft.getInstance().font;
+        int yPos = Math.round(rowY + (rowH - f.lineHeight) * 0.5f) + 1;
+        g.drawString(f, text, Math.round(x), yPos, color, false);
+    }
+
+    public static void drawCenteredRowTextStatic(GuiGraphics g, String text, float x, float rowY, float rowH, int color) {
+        drawCenteredRowTextStatic(g, Minecraft.getInstance().font, text, x, rowY, rowH, color);
+    }
+
+    public static void drawCenteredRowTextStatic(GuiGraphics g, Font font, Component text, float x, float rowY, float rowH, int color) {
+        if (text == null) return;
+        Font f = (font != null) ? font : Minecraft.getInstance().font;
+        int yPos = Math.round(rowY + (rowH - f.lineHeight) * 0.5f) + 1;
+        g.drawString(f, text, Math.round(x), yPos, color, false);
+    }
+
+    // =========================================================================
+    // WYMIARY OKNA (WSPÓLNE DLA OBU EKRANÓW)
+    // =========================================================================
+    public static final float WIN_WIDTH     = 690.0f;
+    public static final float WIN_HEIGHT    = 430.0f;
+    public static final float SIDEBAR_WIDTH = 156.0f;
+    public static final float TOPBAR_HEIGHT = 42.0f;
+    public static final float WIN_RADIUS    = 12.0f;
+    public static final float CARD_RADIUS   = 8.5f;
+
+    // =========================================================================
+    // DESIGN SYSTEM: OBSIDIAN & LILAC GLASS (PALETA V2 10/10)
+    // =========================================================================
+    // Tła powierzchni szklanych (ARGB) - skorygowany kontrast kart względem tła
+    public static final int COL_BG_MAIN        = 0xCC09090E; // Półprzezroczyste czarne szkło okna (~80% krycia)
+    public static final int COL_BG_SIDEBAR     = 0xD60C0C13; // Głęboki obsydian panelu bocznego
+    public static final int COL_BG_TOPBAR      = 0xD60C0C13; // Głęboki obsydian górnego paska
+    public static final int COL_BG_SIDEBAR_ACT = 0x26A78BFA; // Półprzezroczyste lawendowe podświetlenie aktywnego tabu
+    public static final int COL_BG_CARD        = 0xBA100F18; // Wyraźnie odcięta karta z ametystową nutą (Poprawka V2)
+    public static final int COL_BG_CARD_HOVER  = 0xD4191726; // Karta po najechaniu kursorem (płynny lerp hover)
+    public static final int COL_BG_FIELD       = 0xB80A0A10; // Wnętrza pól tekstowych, inputów, tagów i wskaźników
+    public static final int COL_BG_POPUP       = 0xEE0D0C14; // Pływające menu popup
+    public static final int COL_WINDOW_SHADOW  = 0x90000000; // Głęboki drop-shadow okna głównego (blur 16px, offset +8px)
+
+    // Obramowania i linie podziału (subtelne, matowe szkło, NIE jaskrawy neon!)
+    public static final int COL_BORDER_WINDOW   = 0x28A78BFA; // Delikatna ramka okna (1px)
+    public static final int COL_BORDER_CARD     = 0x18FFFFFF; // Subtelna szklana ramka karty (~10% bieli)
+    public static final int COL_BORDER_CARD_ACT = 0x38A78BFA; // Ramka aktywnej/włączonej karty
+    public static final int COL_BORDER_FIELD    = 0x1EFFFFFF; // Ramka pola input / tagu
+    public static final int COL_DIVIDER         = 0x16FFFFFF; // Pionowe i poziome linie podziału
+
+    // Akcenty kolorystyczne (Amethyst & Pastel Lilac)
+    public static final int COL_ACCENT_LILAC   = 0xFFC4B5FD; // Jasny pastelowy fiolet (wartości, ikony, nagłówki)
+    public static final int COL_ACCENT_PURPLE  = 0xFFA78BFA; // Główny ametystowy fiolet (suwaki, aktywne przełączniki)
+    public static final int COL_ACCENT_TRANS   = 0xB8A78BFA; // Półprzezroczyste wypełnienie akcentujące
+    public static final int COL_ACCENT_GLOW    = 0x38A78BFA; // Miękka poświata
+    public static final int COL_TOGGLE_OFF_BG  = 0xB009090E; // Tło wyłączonego przełącznika
+    public static final int COL_TOGGLE_OFF_KNOB= 0xFF646478; // Kropka wyłączonego przełącznika
+
+    // Statusy funkcyjne
+    public static final int COL_STATUS_GREEN   = 0xFF10B981; // GrimAC Safe / Sukces / Załadowany
+    public static final int COL_STATUS_AMBER   = 0xFFF59E0B; // Ostrzeżenie / Ryzyko flagi
+    public static final int COL_STATUS_CRIMSON = 0xFFF43F5E; // Stop / Brak bloków / Błąd
+
+    // Typografia
+    public static final int COL_TEXT_WHITE     = 0xFFF5F3FF; // Tytuły i główne etykiety
+    public static final int COL_TEXT_LILAC     = 0xFFD8B4FE; // Wartości, jednostki, aktywne stany
+    public static final int COL_TEXT_GRAY      = 0xFF9494A8; // Opisy pomocnicze, subtelne teksty
+    public static final int COL_TEXT_TAG       = 0xFFB8A9FF; // Tekst w pigułkach tagów
+    public static final int COL_TEXT_SECTION   = 0xFF68647E; // Nagłówki sekcji ("Main", "Other")
+
+    // =========================================================================
+    // WEKTOROWE IKONY SDF (ZASTĘPUJĄ EMOTIKONY UNICODE W OBU GUI)
+    // =========================================================================
+    public enum VectorIcon {
+        VENTURA_LOGO,
+        SHIELD,      // GrimAC Bypass
+        MOVEMENT,    // Parkour / Sprint / Velocity
+        MINING,      // AutoMine / Legit Tunnel
+        RENDER,      // ESP / Path Render
+        LAYERS,      // Schematics (.litematic / .schem)
+        COMPASS,     // 3D D-Pad & Transform
+        BOX,         // Material & Shulker Audit
+        BOLT,        // Fast-Bridge Eagle
+        SEARCH,      // Wyszukiwarka
+        SLIDERS,     // Presety i zaawansowane
+        CHECK,       // Status OK
+        REFRESH,     // Przeładuj / Synchronizuj
+        PLAY,        // Start Printer / Baritone
+        STOP,        // Stop / Cancel
+        ARROW_UP,
+        ARROW_DOWN,
+        ARROW_LEFT,
+        ARROW_RIGHT,
+        FOLDER,
+        SHULKER_BOX,
+        DISK_SAVE,
+        ROTATE_CW,
+        PICKAXE,
+        WHEAT,
+        RUNNER,
+        EYE,
+        STAR,
+        CHEVRON_RIGHT,
+        SLIDER_MINI,
+        GRID_FOUR,
+        TOGGLE_MINI,
+        HEART,
+        TRASH,
+        FLAME,
+        SERVER_BOX,
+        WIFI_SIGNAL,
+        SPEEDOMETER,
+        USER
+    }
+
+    // =========================================================================
+    // MODEL USTAWIEŃ BARITONE BYPASS (Category zdefiniowana w Category.java)
+    // =========================================================================
+
+    public static final class BypassCard {
+        public final String id;
+        public final String title;
+        public final String description;
+        public final String securityTag;
+        public final int tagStatusColor;
+        public final Category category;
+
+        public boolean enabled;
+        public float toggleAnim;
+        public float hoverAnim;
+        public float searchHighlightAnim;
+        public float clickPulseAnim;
+
+        // Opcjonalny suwak i selektor trybu wewnątrz karty
+        public final boolean hasSlider;
+        public final String sliderLabel;
+        public final String sliderUnit;
+        public final float minVal;
+        public final float maxVal;
+        public float currentVal;
+        public float renderedVal;
+
+        public final String[] modes;
+        public int modeIndex;
+
+        public BypassCard(String id, String title, String description, String securityTag,
+                          int tagStatusColor, Category category, boolean defaultEnabled,
+                          boolean hasSlider, String sliderLabel, String sliderUnit,
+                          float minVal, float maxVal, float defaultVal, String... modes) {
+            this.id = id;
+            this.title = title;
+            this.description = description;
+            this.securityTag = securityTag;
+            this.tagStatusColor = tagStatusColor;
+            this.category = category;
+            this.enabled = defaultEnabled;
+            this.toggleAnim = defaultEnabled ? 1.0f : 0.0f;
+            this.hasSlider = hasSlider;
+            this.sliderLabel = sliderLabel;
+            this.sliderUnit = sliderUnit;
+            this.minVal = minVal;
+            this.maxVal = maxVal;
+            this.currentVal = defaultVal;
+            this.renderedVal = defaultVal;
+            this.modes = modes != null ? modes : new String[0];
+            this.modeIndex = 0;
+        }
+    }
+
+    public static final class SavedCardState {
+        public boolean enabled;
+        public float value;
+        public int modeIndex;
+
+        public SavedCardState(boolean enabled, float value, int modeIndex) {
+            this.enabled = enabled;
+            this.value = value;
+            this.modeIndex = modeIndex;
+        }
+    }
+
+    private static final java.util.Map<String, SavedCardState> PERSISTENT_CARD_STATES = new java.util.concurrent.ConcurrentHashMap<>();
+    private static Category lastActiveCategory = Category.BYPASS;
+
+    // =========================================================================
+    // STAN EKRANU
+    // =========================================================================
+    private final Screen parentScreen;
+    private final List<BypassCard> cards = new ArrayList<>();
+    private Category activeCategory = lastActiveCategory;
     private float openProgress = 0.0f;
+    private long lastFrameTimeNs = System.nanoTime();
 
-    private int fpsFrames = 0;
-    private int fpsDisplay = 0;
-    private long fpsClock = 0L;
+    // Wyszukiwarka
+    private String searchQuery = "";
+    private boolean searchFocused = false;
+    private float searchFocusAnim = 0.0f;
+
+    // Płynny Scrollbar SDF
+    private float scrollTarget = 0.0f;
+    private float scrollCurrent = 0.0f;
+    private float maxScroll = 0.0f;
+    private boolean draggingScrollbar = false;
+    private float scrollbarDragStartY = 0.0f;
+    private float scrollbarStartTarget = 0.0f;
+    private float scrollbarHoverAnim = 0.0f;
+
+    // Interakcja z suwakiem karty
+    private BypassCard activeSliderCard = null;
+
+    // Mikro-feedback dla przełączników i presetów
+    private String activePresetName = "GrimAC 2.3.65 Strict";
+    private float statusPulsePhase = 0.0f;
 
     public BaritoneBypassScreen() {
-        super(Component.literal("Baritone Astra // Revolution"));
-        syncFromBaritone();
-        this.categories = buildCategories();
-        long now = System.currentTimeMillis();
-        this.openTime = now;
-        this.fpsClock = now;
+        this(null);
+    }
+
+    public BaritoneBypassScreen(Screen parentScreen) {
+        super(Component.literal("Astra Baritone Bypass"));
+        this.parentScreen = parentScreen;
+        initCards();
     }
 
     @Override
-    protected void init() {
-        if (!this.positioned) {
-            this.windowX = (this.width - WINDOW_W) / 2;
-            this.windowY = (this.height - WINDOW_H) / 2;
-            this.positioned = true;
+    public void onClose() {
+        if (this.parentScreen != null && this.minecraft != null) {
+            this.minecraft.setScreen(this.parentScreen);
+        } else {
+            super.onClose();
         }
     }
 
-    public static void playClickSound() {
-        try {
-            Minecraft.getInstance().getSoundManager().play(SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
-        } catch (Throwable ignored) {
+    private void initCards() {
+        cards.clear();
+
+        // Kategoria: BYPASS
+        cards.add(new BypassCard(
+                "grim_rot_gcd", "Rotation GCD Quantizer",
+                "Wymusza skok kątowy zgodny z czułością myszy klienta (naprawia AimModulo360 i AimDuplicateLook).",
+                "GRIM SAFE", COL_STATUS_GREEN, Category.BYPASS, true,
+                true, "Sensitivity Jitter", "%", 0.0f, 100.0f, 94.0f,
+                "Strict Mathematical", "Gaussian Human", "Cinematic Smooth"
+        ));
+        cards.add(new BypassCard(
+                "grim_interact_ray", "Strict Raycast Validation",
+                "Blokuje interakcje poza osią wzroku (eliminuje flagi Hitbox / Reach / WallInteract).",
+                "GRIM SAFE", COL_STATUS_GREEN, Category.BYPASS, true,
+                true, "Max Reach Distance", "m", 3.0f, 4.5f, 4.2f,
+                "Vanilla 1.21.4", "Server-Side EyePos"
+        ));
+        cards.add(new BypassCard(
+                "movement_fix_input", "Silent MoveFix (Strafe Correction)",
+                "Koryguje wektor ruchu W/A/S/D względem serwerowego Yaw (przechodzi Grim Simulation 0.0001).",
+                "SIMULATION OK", COL_STATUS_GREEN, Category.BYPASS, true,
+                true, "Input Snap Threshold", "deg", 15.0f, 45.0f, 22.5f,
+                "Full 8-Direction", "Keyboard Strict"
+        ));
+        cards.add(new BypassCard(
+                "packet_order_1214", "1.21.4 TickEnd Packet Sequencer",
+                "Synchronizuje pakiety UseItemOn z nowym cyklem ClientTickEnd wprowadzonym w 1.21.4.",
+                "GRIM SAFE", COL_STATUS_GREEN, Category.BYPASS, true,
+                false, "", "", 0, 0, 0,
+                "Post-Movement", "Pre-Tick"
+        ));
+
+        // Kategoria: MOVEMENT
+        cards.add(new BypassCard(
+                "legit_parkour", "Humanized Parkour Jump",
+                "Opóźnia skok na krawędzi bloku o losowy rozkład Gaussa, unikając detekcji perfekcyjnych skoków.",
+                "GRIM SAFE", COL_STATUS_GREEN, Category.MOVEMENT, true,
+                true, "Edge Margin", "m", 0.02f, 0.25f, 0.08f,
+                "Gaussian Delay", "Early Edge"
+        ));
+        cards.add(new BypassCard(
+                "sprint_omni_guard", "Omni-Sprint Desync Guard",
+                "Zatrzymuje pakiet StartSprinting podczas cofania lub obrotu o ponad 90 stopni.",
+                "GRIM SAFE", COL_STATUS_GREEN, Category.MOVEMENT, true,
+                false, "", "", 0, 0, 0,
+                "Strict Forward", "Camera Relative"
+        ));
+        cards.add(new BypassCard(
+                "water_mlg_bucket", "Predictive MLG Bucket",
+                "Oblicza trajektorię spadania z uwzględnieniem opóźnienia sieciowego RTT.",
+                "MEDIUM RISK", COL_STATUS_AMBER, Category.MOVEMENT, false,
+                true, "Pre-Rotate Ticks", "t", 1.0f, 6.0f, 3.0f,
+                "Legit Hotbar Swap", "Offhand"
+        ));
+
+        // Kategoria: MINING
+        cards.add(new BypassCard(
+                "mine_abort_cooldown", "Switch Block Cooldown",
+                "Wprowadza ludzką przerwę po zniszczeniu rudy przed obrotem na kolejny blok.",
+                "GRIM SAFE", COL_STATUS_GREEN, Category.MINING, true,
+                true, "Reaction Delay", "ms", 20.0f, 220.0f, 85.0f,
+                "Dynamic Ping", "Fixed Range"
+        ));
+        cards.add(new BypassCard(
+                "anti_xray_heuristics", "Anti-Xray Cave Bias",
+                "Prowadzi tunel wyłącznie przez odsłonięte jaskinie, omijając ukryte pułapki Orebfuscatora.",
+                "UNDETECTED", COL_STATUS_GREEN, Category.MINING, true,
+                true, "Air Exposure Weight", "x", 1.0f, 5.0f, 3.2f,
+                "Exposed Only", "Hybrid Ray"
+        ));
+
+        // Kategoria: RENDER (Visuals)
+        var s = BaritoneAPI.getSettings();
+        boolean clientOverlayVal = s != null && s.clientBlockOverlay != null ? s.clientBlockOverlay.value : true;
+        float blockOverlaySpeedVal = s != null && s.blockOverlaySpeed != null ? s.blockOverlaySpeed.value : 16.0f;
+        boolean radialWaveVal = s != null && s.radialWave != null ? s.radialWave.value : false;
+        float radialWaveRadiusVal = s != null && s.radialWaveRadius != null ? s.radialWaveRadius.value : 8.0f;
+        boolean radialWaveDoubleVal = s != null && s.radialWaveDouble != null ? s.radialWaveDouble.value : false;
+        float radialWaveSpeedVal = s != null && s.radialWaveSpeed != null ? s.radialWaveSpeed.value : 6.0f;
+        boolean blockOverlayWaveVal = s != null && s.blockOverlayWave != null ? s.blockOverlayWave.value : true;
+        float blockOverlayAlphaVal = s != null && s.blockOverlayAlpha != null ? s.blockOverlayAlpha.value * 100.0f : 25.0f;
+        boolean miningWaveVal = s != null && s.renderMiningWaveOverlay != null ? s.renderMiningWaveOverlay.value : true;
+        float blockOverlayLineWidthVal = s != null && s.blockOverlayLineWidth != null ? s.blockOverlayLineWidth.value : 2.0f;
+        boolean selBoxesVal = s != null && s.renderSelectionBoxes != null ? s.renderSelectionBoxes.value : true;
+        float pathWidthVal = s != null && s.pathRenderLineWidthPixels != null ? s.pathRenderLineWidthPixels.value : 2.5f;
+        boolean filledBoxesVal = s != null && s.renderFilledBoxes != null ? s.renderFilledBoxes.value : true;
+        float filledBoxAlphaVal = s != null && s.filledBoxAlpha != null ? s.filledBoxAlpha.value * 100.0f : 50.0f;
+        boolean chinaHatVal = s != null && s.chinaHat != null ? s.chinaHat.value : true;
+        float chinaHatRadiusVal = s != null && s.chinaHatRadius != null ? s.chinaHatRadius.value : 0.65f;
+        boolean handShadersVal = s != null && s.handShaders != null ? s.handShaders.value : true;
+        boolean disguiseVal = s != null && s.customPlayerDisguise != null && s.customPlayerDisguise.value != null && !s.customPlayerDisguise.value.equalsIgnoreCase("OFF");
+        boolean motionTrailVal = s != null && s.motionTrail != null ? s.motionTrail.value : true;
+        boolean targetEspVal = s != null && s.targetEsp != null ? s.targetEsp.value : true;
+        boolean jumpCirclesVal = s != null && s.jumpCircles != null ? s.jumpCircles.value : true;
+        boolean customFogVal = s != null && s.customFog != null ? s.customFog.value : true;
+        boolean customSkyVal = s != null && s.customSky != null ? s.customSky.value : true;
+        boolean ambientParticlesVal = s != null && s.ambientParticles != null ? s.ambientParticles.value : true;
+        boolean motionBlurVal = s != null && s.motionBlur != null ? s.motionBlur.value : true;
+        float motionBlurStrengthVal = s != null && s.motionBlurStrength != null ? s.motionBlurStrength.value.floatValue() : 25.0f;
+        int motionBlurModeVal = s != null && s.motionBlurMode != null ? s.motionBlurMode.value : 0;
+
+        cards.add(new BypassCard(
+                "client_block_overlay", "Ventura Block Overlay",
+                "Szklisty, aksamitny sześcian wokół celowanego bloku (pochodnie, płotki, płyty) z poświatą Lilac & Cyan.",
+                "VENTURA FX", COL_ACCENT_LILAC, Category.RENDER, clientOverlayVal,
+                true, "Lerp Speed", "spd", 5.0f, 40.0f, blockOverlaySpeedVal,
+                "Smooth Lerp", "Instant Snap", "X-Ray Depth"
+        ));
+        cards.add(new BypassCard(
+                "radial_ground_wave", "Radial Wave Visuals",
+                "Fala szklanych bloków rozchodząca się po ziemi od stóp gracza wyłącznie przy wyskoku.",
+                "VENTURA FX", COL_ACCENT_LILAC, Category.RENDER, radialWaveVal,
+                true, "Wave Radius", "m", 3.0f, 16.0f, radialWaveRadiusVal,
+                "Tylko wyskok (Jump)", "Ciągła fala (Continuous)"
+        ));
+        cards.add(new BypassCard(
+                "radial_wave_speed", "Wave Pulse Frequency",
+                "Prędkość rozchodzenia się fali uderzeniowej po blokach i paleta kolorów.",
+                "AESTHETICS", COL_ACCENT_LILAC, Category.RENDER, radialWaveDoubleVal,
+                true, "Expansion Speed", "m/s", 2.0f, 12.0f, radialWaveSpeedVal,
+                "Ventura Lilac", "Neon Cyan", "Dual Gradient"
+        ));
+        cards.add(new BypassCard(
+                "glass_fill_opacity", "Block Overlay Glass Fill",
+                "Przezroczystość aksamitnego, szklanego wypełnienia sześcianu bloku.",
+                "AESTHETICS", COL_ACCENT_LILAC, Category.RENDER, blockOverlayWaveVal,
+                true, "Glass Alpha", "%", 5.0f, 80.0f, blockOverlayAlphaVal,
+                "Lilac Velvet", "Crystal Sheen"
+        ));
+        cards.add(new BypassCard(
+                "mining_target_wave", "Mining Wave Highlight",
+                "Pulsujący sześcian energii na aktualnie wydobywanym bloku przez Baritone / Bypass.",
+                "MINING FX", COL_STATUS_GREEN, Category.RENDER, miningWaveVal,
+                true, "Line Width", "px", 1.0f, 5.0f, blockOverlayLineWidthVal,
+                "Cyan Diamond", "Amethyst Gold"
+        ));
+        cards.add(new BypassCard(
+                "sdf_path_bezier", "Bezier Path Spline 3D",
+                "Wygładza kanciastą ścieżkę A* Baritone w krzywą Catmull-Rom z poświatą Amethyst.",
+                "CLIENT ONLY", COL_ACCENT_LILAC, Category.RENDER, selBoxesVal,
+                true, "Line Thickness", "px", 1.0f, 5.0f, pathWidthVal,
+                "Amethyst Glow", "Depth Tested"
+        ));
+        cards.add(new BypassCard(
+                "goal_hologram", "Goal Box SDF Hologram",
+                "Renderuje półprzezroczysty sześcian celu oraz estymowany czas dotarcia (ETA).",
+                "CLIENT ONLY", COL_ACCENT_LILAC, Category.RENDER, filledBoxesVal,
+                true, "Hologram Alpha", "%", 10.0f, 100.0f, filledBoxAlphaVal,
+                "Pulse Box", "Corner Brackets"
+        ));
+        cards.add(new BypassCard(
+                "china_hat_cosmetic", "China Hat 3D Cosmetic",
+                "Holograficzny stożkowy kapelusz nad głową gracza z rotacją, falą i świecącym obrysem (Glowing Rim).",
+                "CUSTOM 3D", COL_ACCENT_LILAC, Category.RENDER, chinaHatVal,
+                true, "Hat Radius", "m", 0.35f, 1.20f, chinaHatRadiusVal,
+                "Lilac Obsidian", "Astra Rainbow", "First Person (F1/F5)"
+        ));
+        BypassCard handShadersCard = new BypassCard(
+                "hand_shaders", "Hand Shaders & Dual-Neon Chams",
+                "Podwójna neonowa aura bloom, refrakcyjny kryształ Fresnel, animowane fale caustics i Low-Shield PvP.",
+                "GOD-TIER", COL_ACCENT_LILAC, Category.RENDER, handShadersVal,
+                true, "Glass Alpha", "%", 20.0f, 95.0f, 68.0f,
+                "Cyber Lilac & Cyan", "Chroma Rainbow Flow", "Sunset Neon & Gold", "Emerald Matrix", "Cosmic Amethyst", "Frost Crystal Ice", "Red Inferno & Magma", "Midnight Void", "Holographic Ghost"
+        );
+        handShadersCard.modeIndex = Math.min(Math.max(0, com.astra.revolution.visuals.AstraHandShader.getModeIndex()), handShadersCard.modes.length - 1);
+        cards.add(handShadersCard);
+        cards.add(new BypassCard(
+                "custom_player_disguise", "Custom Player F5 Disguise",
+                "Zastępuje model gracza na F5 (Tung Tung Sahur, Ballerina Capuccina, Cyber Mech, Hologram, Capybara).",
+                "F5 MODEL", COL_ACCENT_LILAC, Category.RENDER, disguiseVal,
+                false, null, null, 0, 0, 0,
+                "Tung Tung Sahur", "Ballerina Capuccina", "Cyber Mech", "Hologram Avatar", "Capybara King", "Wyłączone"
+        ));
+        BypassCard motionTrailCard = new BypassCard(
+                "motion_trail", "Motion Trail 3D Ribbon",
+                "Płynna wstęga w przestrzeni 3D z neonową żyłą wzdłuż krawędzi i zerowym jitterem współrzędnych.",
+                "3D TRAIL", COL_ACCENT_LILAC, Category.RENDER, motionTrailVal,
+                false, null, null, 0, 0, 0,
+                "Cyber Lilac & Cyan", "Chroma Rainbow", "Sunset Gold", "Glacial Ice Blue", "Matrix Emerald"
+        );
+        motionTrailCard.modeIndex = Math.min(Math.max(0, AstraVisualsEngine.getMotionTrailMode()), motionTrailCard.modes.length - 1);
+        cards.add(motionTrailCard);
+
+        BypassCard targetEspCard = new BypassCard(
+                "target_esp", "Target ESP & Cyber Reticle",
+                "Trójwymiarowy, obracający się celownik telemetryczny 3D wokół namierzonego celu (Dual Rings, Health HUD).",
+                "TARGET", COL_ACCENT_LILAC, Category.RENDER, targetEspVal,
+                false, null, null, 0, 0, 0,
+                "Cyber Lilac & Cyan", "Dynamic Health HUD", "Chroma Rainbow Flow", "Golden Radiance", "Matrix Emerald"
+        );
+        targetEspCard.modeIndex = Math.min(Math.max(0, AstraVisualsEngine.getTargetEspMode()), targetEspCard.modes.length - 1);
+        cards.add(targetEspCard);
+        BypassCard jumpCirclesCard = new BypassCard(
+                "jump_circles", "Jump & Landing Circles (Argon 4.0)",
+                "Wielowarstwowe fale uderzeniowe (shockwaves) z podwójnym echem, ground snappingiem do terenu i iskrami energii.",
+                "SHOCKWAVE", COL_ACCENT_LILAC, Category.RENDER, jumpCirclesVal,
+                false, null, null, 0, 0, 0,
+                "Cyber Lilac & Cyan", "Chroma Rainbow", "Celestial Starfire", "Synthwave Sunset", "Magma Blast", "Fluid Water Ripple", "Golden Radiance"
+        );
+        jumpCirclesCard.modeIndex = Math.min(Math.max(0, AstraVisualsEngine.getJumpCirclesMode()), jumpCirclesCard.modes.length - 1);
+        cards.add(jumpCirclesCard);
+
+        BypassCard customFogCard = new BypassCard(
+                "custom_fog", "Custom Atmospheric Fog (Argon 4.0)",
+                "Kinematyczna mgła przestrzenna: wygładzanie klatkowe, gradient horyzontalny, adaptacja pogody i ochrona płynów.",
+                "FOG", COL_ACCENT_LILAC, Category.RENDER, customFogVal,
+                false, null, null, 0, 0, 0,
+                "Cyber Lilac & Cyan", "Synthwave Sunset", "Deep Galaxy", "Aurora Borealis", "Blood Eclipse", "Ethereal Void", "Chroma Rainbow"
+        );
+        customFogCard.modeIndex = Math.min(Math.max(0, AstraVisualsEngine.getCustomFogMode()), customFogCard.modes.length - 1);
+        cards.add(customFogCard);
+
+        BypassCard customSkyCard = new BypassCard(
+                "custom_sky", "Custom Celestial Sky (Argon 4.0)",
+                "Niestandardowy kolor kopuły nieba, otchłani i horyzontu: kosmiczny fiolet, neonowy zachód słońca i gwiazdy.",
+                "SKY", COL_ACCENT_LILAC, Category.RENDER, customSkyVal,
+                false, null, null, 0, 0, 0,
+                "Cyber Lilac & Cyan", "Synthwave Sunset", "Deep Galaxy", "Aurora Borealis", "Blood Eclipse", "Ethereal Void", "Chroma Rainbow"
+        );
+        customSkyCard.modeIndex = Math.min(Math.max(0, AstraVisualsEngine.getCustomSkyMode()), customSkyCard.modes.length - 1);
+        cards.add(customSkyCard);
+        cards.add(new BypassCard(
+                "ambient_particles", "3D Ambient World Particles",
+                "Latające po świecie cząsteczki: świecące cyber-kostki lub urocze mini maskotki wokół gracza.",
+                "PARTICLES", COL_ACCENT_LILAC, Category.RENDER, ambientParticlesVal,
+                false, null, null, 0, 0, 0,
+                "Mini Maskotki (Sahurki, Capybary, Baleriny)", "Cyber Stardust (Kwadraty/Diamenty)", "Wszystkie Razem (Mega Mix)"
+        ));
+
+        BypassCard motionBlurCard = new BypassCard(
+                "motion_blur", "Motion Blur (RTX 4060 Engine)",
+                "Kinematyczne wygładzanie klatek (Temporal Accumulation) z adaptacją prędkości kątowej myszy, kompensacją Hz i zerowym ghostingiem tekstu.",
+                "RTX ACCEL", COL_ACCENT_LILAC, Category.RENDER, motionBlurVal,
+                true, "Blur Strength", "%", 5.0f, 70.0f, motionBlurStrengthVal,
+                "Smart Dynamic (Subtle)", "PvP Smooth (12%)", "Cinematic Motion (20%)"
+        );
+        motionBlurCard.modeIndex = Math.min(Math.max(0, motionBlurModeVal), motionBlurCard.modes.length - 1);
+        cards.add(motionBlurCard);
+
+        // Kategoria: PRESETS
+        cards.add(new BypassCard(
+                "preset_grim_strict", "Profile: GrimAC 2.3.65+ (1.21.4)",
+                "Maksymalne bezpieczeństwo symulacji fizyki, cichy MoveFix oraz kwantyzacja GCD.",
+                "RECOMMENDED", COL_STATUS_GREEN, Category.PRESETS, true,
+                true, "Aggression Factor", "%", 10.0f, 100.0f, 35.0f,
+                "Zero-Flag Strict", "Balanced"
+        ));
+        cards.add(new BypassCard(
+                "preset_vulcan_watchdog", "Profile: Vulcan / Matrix Hybrid",
+                "Zoptymalizowany pod kątem heurystycznych detekcji kątowych i tempa stawiań bloków.",
+                "HYBRID SAFE", COL_STATUS_AMBER, Category.PRESETS, false,
+                true, "Max CPS Cap", "cps", 6.0f, 16.0f, 11.5f,
+                "Random Burst", "Steady"
+        ));
+
+        // 5. Przywracanie zapisanego stanu wszystkich kart (toggles, suwaki, tryby)
+        for (BypassCard card : cards) {
+            SavedCardState saved = PERSISTENT_CARD_STATES.get(card.id);
+            if (saved != null) {
+                card.enabled = saved.enabled;
+                card.currentVal = saved.value;
+                card.renderedVal = saved.value;
+                if (card.modes != null && card.modes.length > 0) {
+                    card.modeIndex = Math.min(saved.modeIndex, card.modes.length - 1);
+                }
+                card.toggleAnim = card.enabled ? 1.0f : 0.0f;
+            }
         }
     }
 
-    // ========================================================================
-    //  SEKCJA 7 · RENDER GŁÓWNY
-    // ========================================================================
+    @Override
+    public void renderBackground(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
+        // Celowo puste: zapobiega podwójnemu nakładaniu domyślnego rozmycia 1.21.4,
+        // nasze okno korzysta z autorskiego szkła Obsidian SDF.
+    }
+
     @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-        updateFps();
-        clampWindow();
+        long now = System.nanoTime();
+        float dt = Math.min(0.05f, (now - lastFrameTimeNs) / 1_000_000_000.0f);
+        lastFrameTimeNs = now;
 
-        // Animacja otwarcia (easeOutCubic) — fade + subtelny wjazd od dołu.
-        float t = clamp((System.currentTimeMillis() - this.openTime) / 170.0f, 0.0f, 1.0f);
-        this.openProgress = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
-        float p = this.openProgress;
+        openProgress = Mth.clamp(openProgress + dt * 5.5f, 0.0f, 1.0f);
+        float ease = 1.0f - (float) Math.pow(1.0f - openProgress, 3.0);
+        statusPulsePhase = (statusPulsePhase + dt * 3.2f) % ((float) Math.PI * 2.0f);
 
-        int wx = this.windowX;
-        int wy = this.windowY + Math.round((1.0f - p) * 12.0f);
+        searchFocusAnim = Mth.lerp(dt * 12.0f, searchFocusAnim, searchFocused ? 1.0f : 0.0f);
+        scrollCurrent = Mth.lerp(dt * 14.0f, scrollCurrent, scrollTarget);
 
-        // Przyciemnienie świata za oknem.
-        g.fill(0, 0, this.width, this.height, ((int) (120.0f * p)) << 24);
+        float winX = (this.width - WIN_WIDTH) * 0.5f;
+        float winY = (this.height - WIN_HEIGHT) * 0.5f + (1.0f - ease) * 14.0f;
 
-        // Miękki cień pod oknem.
-        drawRoundedRect(g, wx - 4, wy - 3, wx + WINDOW_W + 4, wy + WINDOW_H + 5, 14,
-                ((int) (102.0f * p)) << 24);
+        // 1. Głęboki, kierunkowy Drop-Shadow 0x90000000 (blur = 16px, offsetY = +8px) BEZ efektu Glow-Box
+        VenturaSdfRenderer.drawDropShadow(
+                winX, winY, WIN_WIDTH, WIN_HEIGHT,
+                WIN_RADIUS, 16.0f, 8.0f, COL_WINDOW_SHADOW
+        );
 
-        // Korpus okna — Dark Glassmorphism.
-        drawBorderedPanel(g, wx, wy, wx + WINDOW_W, wy + WINDOW_H, 10, op(C_WINDOW_BG), C_BORDER);
+        // 2. Główna tafla okna z wąską 1-pikselową ramką 0x28A78BFA
+        VenturaSdfRenderer.drawRoundedRect(
+                winX, winY, WIN_WIDTH, WIN_HEIGHT,
+                WIN_RADIUS, COL_BG_MAIN, COL_BORDER_WINDOW, 1.0f
+        );
 
-        renderSidebar(g, wx, wy, mouseX, mouseY);
-        // Neonowy separator pod belką (cyjan -> fiolet, poziomy).
-        drawGradientRect(g, wx + 2, wy + TOPBAR_H, wx + WINDOW_W - 2, wy + TOPBAR_H + 1,
-                C_CYAN, C_PURPLE, 24);
-        renderTopBar(g, wx, wy, mouseX, mouseY);
-        renderContent(g, wx, wy, mouseX, mouseY);
-        renderFooter(g, wx, wy);
+        // 2. Panel boczny (Sidebar)
+        VenturaSdfRenderer.drawRoundedRect4(
+                winX, winY, SIDEBAR_WIDTH, WIN_HEIGHT,
+                WIN_RADIUS, 0.0f, 0.0f, WIN_RADIUS,
+                COL_BG_SIDEBAR, 0x00000000, 0.0f
+        );
+        // Pionowa linia podziału Sidebar | Content
+        VenturaSdfRenderer.drawRoundedRect(winX + SIDEBAR_WIDTH, winY, 1.0f, WIN_HEIGHT, 0.0f, COL_DIVIDER, 0, 0.0f);
 
-        super.render(g, mouseX, mouseY, partialTick);
+        // 3. Górny pasek (Topbar)
+        float contentX = winX + SIDEBAR_WIDTH + 1.0f;
+        float contentW = WIN_WIDTH - SIDEBAR_WIDTH - 1.0f;
+        VenturaSdfRenderer.drawRoundedRect4(
+                contentX, winY, contentW, TOPBAR_HEIGHT,
+                0.0f, WIN_RADIUS, 0.0f, 0.0f,
+                COL_BG_TOPBAR, 0x00000000, 0.0f
+        );
+        VenturaSdfRenderer.drawRoundedRect(contentX, winY + TOPBAR_HEIGHT, contentW, 1.0f, 0.0f, COL_DIVIDER, 0, 0.0f);
+
+        // 4. Renderowanie zawartości panelu bocznego
+        renderSidebar(g, winX, winY, mouseX, mouseY, dt);
+
+        // 5. Renderowanie górnego paska (Wyszukiwarka + Telemetria + Przełącznik do GUI Litematica)
+        renderTopbar(g, contentX, winY, contentW, mouseX, mouseY);
+
+        // 6. Obszar kart ustawień z przycinaniem Scissor i paskiem przewijania SDF
+        float viewX = contentX;
+        float viewY = winY + TOPBAR_HEIGHT + 1.0f;
+        float viewW = contentW;
+        float viewH = WIN_HEIGHT - TOPBAR_HEIGHT - 1.0f;
+
+        g.flush();
+        VenturaSdfRenderer.enableScissor((int) viewX, (int) viewY, (int) viewW, (int) viewH);
+        renderCardsViewport(g, viewX, viewY, viewW, viewH, mouseX, mouseY, dt);
+        g.flush();
+        VenturaSdfRenderer.disableScissor();
+
+        // 7. Płynny pasek przewijania SDF z podświetleniem pozycji
+        renderSdfScrollbar(viewX + viewW - 8.5f, viewY + 8.0f, viewH - 16.0f, viewH, mouseX, mouseY, dt);
     }
 
-    // ------------------------------------------------------------------ belka
-    private void renderTopBar(GuiGraphics g, int wx, int wy, int mouseX, int mouseY) {
-        Font f = this.font;
+    private void renderSidebar(GuiGraphics g, float winX, float winY, int mouseX, int mouseY, float dt) {
+        // Kropki macOS Ventura (Zamknij, Minimalizuj, Przełącz na Litematica)
+        float dotY = winY + 15.0f;
+        VenturaSdfRenderer.drawCircle(winX + 16.0f, dotY, 4.5f, COL_STATUS_CRIMSON, 0);
+        VenturaSdfRenderer.drawCircle(winX + 30.0f, dotY, 4.5f, COL_STATUS_AMBER, 0);
+        VenturaSdfRenderer.drawCircle(winX + 44.0f, dotY, 4.5f, COL_STATUS_GREEN, 0);
 
-        String head = "BARITONE ASTRA";
-        int headW = f.width(head);
-        g.drawString(f, head, wx + 12, wy + 12, C_TEXT_MAIN, false);
+        // Tytuł marki
+        g.drawString(this.font, "ASTRA", (int) (winX + 14), (int) (winY + 32), COL_TEXT_WHITE, false);
+        g.drawString(this.font, "BARITONE 1.21.4", (int) (winX + 52), (int) (winY + 32), COL_TEXT_LILAC, false);
 
-        String tail = "// REVOLUTION";
-        int tailX = wx + 12 + headW + 5;
-        g.drawString(f, tail, tailX, wy + 12, C_PURPLE, false);
-        g.drawString(f, VERSION, tailX + f.width(tail) + 8, wy + 12, C_TEXT_FAINT, false);
+        float curY = winY + 56.0f;
+        String lastSection = "";
 
-        // Wskaźnik FPS (własny licznik klatek).
-        String fpsText = this.fpsDisplay + " FPS";
-        g.drawString(f, fpsText, wx + 450 - f.width(fpsText), wy + 12, C_TEXT_DIM, false);
-
-        // Dioda stanu bota (zielona/czerwona) + etykieta.
-        boolean active = BaritoneBridge.isBotActive();
-        g.drawString(f, active ? "ACTIVE" : "IDLE", wx + 458, wy + 12, active ? C_GREEN : C_RED, false);
-        drawRoundedRect(g, wx + 502, wy + 11, wx + 514, wy + 23, 6, active ? 0x4635E08A : 0x46FF4757);
-        drawRoundedRect(g, wx + 504, wy + 13, wx + 512, wy + 21, 4, active ? C_GREEN : C_RED);
-
-        // Przycisk zamknięcia [X].
-        int cX = wx + WINDOW_W - 30;
-        int cY = wy + 6;
-        boolean hot = inRect(mouseX, mouseY, cX, cY, cX + 22, cY + 22);
-        if (hot) {
-            drawBorderedPanel(g, cX, cY, cX + 22, cY + 22, 6, 0x30FF4757, 0x80FF4757);
-        }
-        String xLabel = "X";
-        g.drawString(f, xLabel, cX + (22 - f.width(xLabel)) / 2, cY + 6,
-                hot ? 0xFFFF7B88 : C_TEXT_DIM, false);
-    }
-
-    // ------------------------------------------------------------- pasek kategorii
-    private void renderSidebar(GuiGraphics g, int wx, int wy, int mouseX, int mouseY) {
-        Font f = this.font;
-
-        drawBorderedPanel(g, wx + 1, wy + TOPBAR_H + 1, wx + 1 + SIDEBAR_W,
-                wy + WINDOW_H - FOOTER_H, 6, op(C_SIDEBAR_BG), C_BORDER);
-        g.fill(wx + 1 + SIDEBAR_W, wy + TOPBAR_H + 1, wx + 2 + SIDEBAR_W,
-                wy + WINDOW_H - FOOTER_H, C_BORDER);
-
-        int tabX = wx + 8;
-        int tabW = SIDEBAR_W - 16;
-        int baseY = wy + TOPBAR_H + 10;
-        for (int i = 0; i < this.categories.size(); i++) {
-            Category cat = this.categories.get(i);
-            int tabY = baseY + i * 36;
-            boolean selected = i == this.selectedCategory;
-            boolean hot = !selected && inRect(mouseX, mouseY, tabX, tabY, tabX + tabW, tabY + 30);
-
-            if (selected) {
-                drawBorderedPanel(g, tabX, tabY, tabX + tabW, tabY + 30, 6,
-                        op(C_CARD_BG_ALT), C_BORDER_HOT);
-                g.fillGradient(tabX + 1, tabY + 6, tabX + 3, tabY + 24, C_CYAN, C_PURPLE);
-            } else if (hot) {
-                drawRoundedRect(g, tabX, tabY, tabX + tabW, tabY + 30, 6, 0x18FFFFFF);
+        for (Category cat : Category.values()) {
+            if (!cat.section.equals(lastSection)) {
+                lastSection = cat.section;
+                g.drawString(this.font, lastSection.toUpperCase(Locale.ROOT), (int) (winX + 14), (int) curY, COL_TEXT_SECTION, false);
+                curY += 14.0f;
             }
 
-            drawIcon(g, cat.icon, tabX + 8, tabY + 11,
-                    selected ? C_CYAN : (hot ? C_TEXT_MAIN : C_TEXT_DIM));
-            g.drawString(f, trunc(cat.name, tabW - 26), tabX + 22, tabY + 11,
-                    selected ? C_TEXT_MAIN : C_TEXT_DIM, false);
-        }
+            float tabX = winX + 8.0f;
+            float tabW = SIDEBAR_WIDTH - 16.0f;
+            float tabH = 26.0f;
+            boolean hovered = isHovered(mouseX, mouseY, tabX, curY, tabW, tabH);
+            boolean active = (cat == activeCategory && searchQuery.isEmpty());
 
-        // Sygnatura w stopce sidebara.
-        int brandY = wy + WINDOW_H - FOOTER_H - 26;
-        drawIcon(g, ICON_BOLT, wx + 10, brandY, C_BORDER_HOT);
-        g.drawString(f, "ASTRA CORE", wx + 24, brandY, C_TEXT_FAINT, false);
-    }
-
-    // ------------------------------------------------------------- sekcja robocza
-    private void renderContent(GuiGraphics g, int wx, int wy, int mouseX, int mouseY) {
-        Font f = this.font;
-        Category cat = this.categories.get(this.selectedCategory);
-        int cx = wx + CONTENT_X;
-        int cy = wy + CONTENT_Y;
-
-        // Płynny scroll (lerp) z clampem do realnej wysokości zawartości.
-        float maxScroll = maxScroll(cat);
-        cat.scrollTarget = clamp(cat.scrollTarget, 0.0f, maxScroll);
-        cat.scroll += (cat.scrollTarget - cat.scroll) * 0.38f;
-        if (Math.abs(cat.scrollTarget - cat.scroll) < 0.05f) cat.scroll = cat.scrollTarget;
-        cat.scroll = clamp(cat.scroll, 0.0f, maxScroll);
-        if (this.selectedCategory >= 0 && this.selectedCategory < SAVED_SCROLL.length) {
-            SAVED_SCROLL[this.selectedCategory] = cat.scrollTarget;
-        }
-        int scroll = (int) cat.scroll;
-
-        // Od 1.20.2 enableScissor przyjmuje narożniki (minX, minY, maxX, maxY).
-        g.enableScissor(cx, cy, cx + CONTENT_W, cy + CONTENT_H);
-
-        // Nagłówek sekcji — przewija się razem z kartami.
-        g.drawString(f, cat.name.toUpperCase(Locale.ROOT), cx + 8, cy + 9 - scroll, C_TEXT_MAIN, false);
-        String count = cat.modules.size() + " MODULES";
-        g.drawString(f, count, cx + CONTENT_W - 18 - f.width(count), cy + 9 - scroll, C_TEXT_DIM, false);
-        drawGradientRect(g, cx + 8, cy + 22 - scroll, cx + 128, cy + 23 - scroll,
-                0xC800E5FF, 0x00E5FF, 16);
-
-        // Karty modułów (pomijamy te całkowicie poza viewportem).
-        for (int i = 0; i < cat.modules.size(); i++) {
-            int cardY = cy + HEADER_H + i * CARD_STEP - scroll;
-            if (cardY > cy + CONTENT_H || cardY + CARD_H < cy) continue;
-            renderCard(g, cat.modules.get(i), wx + CARD_X, cardY, mouseX, mouseY);
-        }
-        g.disableScissor();
-
-        // Pasek przewijania (thumb: cyjan -> fiolet).
-        if (maxScroll > 0.5f) {
-            int sbX = cx + CONTENT_W - 5;
-            int trackY = cy + 2;
-            int trackH = CONTENT_H - 4;
-            g.fill(sbX, trackY, sbX + 2, trackY + trackH, 0x14FFFFFF);
-            int thumbH = (int) Math.max(24.0f, (float) trackH * ((float) CONTENT_H / contentHeight(cat)));
-            thumbH = Math.min(thumbH, trackH);
-            int thumbY = trackY + Math.round((cat.scroll / maxScroll) * (float) (trackH - thumbH));
-            g.fillGradient(sbX, thumbY, sbX + 2, thumbY + thumbH, 0xCC00E5FF, 0xCC9D4EDD);
-        }
-
-        // Subtelna ramka sekcji — natywny renderOutline.
-        g.renderOutline(cx, cy, cx + CONTENT_W, cy + CONTENT_H, 0x22FFFFFF);
-    }
-
-    // ------------------------------------------------------------------ karta
-    private void renderCard(GuiGraphics g, Module module, int cardX, int cardY, int mouseX, int mouseY) {
-        boolean hot = inRect(mouseX, mouseY, cardX, cardY, cardX + CARD_W, cardY + CARD_H);
-        if (hot) {
-            drawRoundedRect(g, cardX - 2, cardY - 2, cardX + CARD_W + 2, cardY + CARD_H + 2, 10, 0x2A00E5FF);
-        }
-        drawBorderedPanel(g, cardX, cardY, cardX + CARD_W, cardY + CARD_H, 8,
-                op(hot ? C_CARD_BG_ALT : C_CARD_BG), hot ? C_BORDER_HOT : C_BORDER);
-        if (hot) {
-            drawOutline(g, cardX, cardY, cardX + CARD_W, cardY + CARD_H, 8, 0x5C00E5FF);
-        }
-
-        Font f = this.font;
-        g.drawString(f, trunc(module.name, module.nameMax()), cardX + 12, cardY + 9, C_TEXT_MAIN, false);
-        g.drawString(f, trunc(module.description, module.descMax()), cardX + 12, cardY + 21,
-                C_TEXT_DIM, false);
-        module.render(g, f, cardX, cardY, mouseX, mouseY);
-    }
-
-    // ------------------------------------------------------------------ stopka
-    private void renderFooter(GuiGraphics g, int wx, int wy) {
-        Font f = this.font;
-        g.fill(wx + 1, wy + WINDOW_H - FOOTER_H, wx + WINDOW_W - 1,
-                wy + WINDOW_H - FOOTER_H + 1, C_BORDER);
-
-        int textY = wy + WINDOW_H - FOOTER_H + 4;
-        boolean linked = BaritoneBridge.linked();
-        g.drawString(f, "ASTRA LINK ::", wx + 12, textY, C_TEXT_FAINT, false);
-        String status = linked ? "BARITONE ONLINE" : "OFFLINE / LOCAL FLAGS";
-        g.drawString(f, status, wx + 12 + f.width("ASTRA LINK ::") + 6, textY,
-                linked ? C_GREEN : C_AMBER, false);
-
-        int total = 0;
-        for (Category cat : this.categories) total += cat.modules.size();
-        String right = total + " MODULES LOADED";
-        g.drawString(f, right, wx + WINDOW_W - 12 - f.width(right), textY, C_TEXT_FAINT, false);
-    }
-
-    // ========================================================================
-    //  SEKCJA 8 · OBSŁUGA MYSZY I KLAWIATURY
-    // ========================================================================
-    @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        int mx = (int) mouseX;
-        int my = (int) mouseY;
-        int wx = this.windowX;
-        int wy = this.windowY;
-
-        // --- Górna belka: przeciąganie okna / przycisk zamknięcia.
-        if (inRect(mx, my, wx + 1, wy + 1, wx + WINDOW_W - 1, wy + TOPBAR_H)) {
-            int closeX = wx + WINDOW_W - 30;
-            int closeY = wy + 6;
-            if (inRect(mx, my, closeX, closeY, closeX + 22, closeY + 22)) {
-                playClickSound();
-                onClose();
-                return true;
+            if (active) {
+                VenturaSdfRenderer.drawRoundedRect(tabX, curY, tabW, tabH, 6.5f, COL_BG_SIDEBAR_ACT, COL_BORDER_CARD_ACT, 1.0f);
+                // Lewy akcentujący pasek pigułkowy
+                VenturaSdfRenderer.drawRoundedRect(tabX + 2.5f, curY + 5.5f, 3.0f, tabH - 11.0f, 1.5f, COL_ACCENT_LILAC, 0, 0.0f);
+            } else if (hovered) {
+                VenturaSdfRenderer.drawRoundedRect(tabX, curY, tabW, tabH, 6.5f, 0x16FFFFFF, 0, 0.0f);
             }
-            this.draggingWindow = true;
-            this.dragOffX = mouseX - (double) wx;
-            this.dragOffY = mouseY - (double) wy;
-            return true;
+
+            int iconCol = active ? COL_ACCENT_LILAC : (hovered ? COL_TEXT_WHITE : COL_TEXT_GRAY);
+            int textCol = active ? COL_TEXT_WHITE : (hovered ? COL_TEXT_WHITE : COL_TEXT_GRAY);
+
+            VenturaSdfRenderer.drawIcon(cat.icon, tabX + 16.0f, curY + tabH * 0.5f, 11.0f, iconCol);
+            g.drawString(this.font, cat.label, (int) (tabX + 28.0f), (int) (curY + 9.0f), textCol, false);
+
+            curY += 30.0f;
         }
 
-        // --- Pasek kategorii: wybór zakładki.
-        if (inRect(mx, my, wx + 1, wy + TOPBAR_H + 1, wx + 1 + SIDEBAR_W, wy + WINDOW_H - FOOTER_H)) {
-            int tabX = wx + 8;
-            int tabW = SIDEBAR_W - 16;
-            int baseY = wy + TOPBAR_H + 10;
-            for (int i = 0; i < this.categories.size(); i++) {
-                int tabY = baseY + i * 36;
-                if (inRect(mx, my, tabX, tabY, tabX + tabW, tabY + 30)) {
-                    if (this.selectedCategory != i) {
-                        this.selectedCategory = i;
-                        playClickSound();
-                    }
-                    return true;
+        // Dolny przycisk bezpośredniego przejścia do GUI Litematica & Bridge (AstraSchematicScreen)
+        float bridgeBtnX = winX + 8.0f;
+        float bridgeBtnY = winY + WIN_HEIGHT - 68.0f;
+        float bridgeBtnW = SIDEBAR_WIDTH - 16.0f;
+        float bridgeBtnH = 28.0f;
+        boolean bridgeHover = isHovered(mouseX, mouseY, bridgeBtnX, bridgeBtnY, bridgeBtnW, bridgeBtnH);
+
+        VenturaSdfRenderer.drawRoundedRect(
+                bridgeBtnX, bridgeBtnY, bridgeBtnW, bridgeBtnH, 7.0f,
+                bridgeHover ? COL_ACCENT_TRANS : COL_BG_SIDEBAR_ACT,
+                COL_BORDER_CARD_ACT, 1.0f
+        );
+        VenturaSdfRenderer.drawIcon(VectorIcon.LAYERS, bridgeBtnX + 15.0f, bridgeBtnY + 14.0f, 11.0f, COL_ACCENT_LILAC);
+        g.drawString(this.font, "Litematica & Bridge", (int) (bridgeBtnX + 27.0f), (int) (bridgeBtnY + 10.0f), COL_TEXT_WHITE, false);
+
+        // Karta statusu GrimAC na samym dole Sidebara
+        float statY = winY + WIN_HEIGHT - 34.0f;
+        VenturaSdfRenderer.drawRoundedRect(bridgeBtnX, statY, bridgeBtnW, 26.0f, 6.5f, COL_BG_FIELD, COL_BORDER_FIELD, 1.0f);
+        float pulseRadius = 3.5f + 0.8f * Mth.sin(statusPulsePhase);
+        VenturaSdfRenderer.drawCircle(bridgeBtnX + 12.0f, statY + 13.0f, pulseRadius, COL_STATUS_GREEN, COL_ACCENT_GLOW);
+        g.drawString(this.font, "Grim 2.3.65: SAFE", (int) (bridgeBtnX + 22.0f), (int) (statY + 9.0f), COL_TEXT_LILAC, false);
+    }
+
+    private void renderTopbar(GuiGraphics g, float contentX, float winY, float contentW, int mouseX, int mouseY) {
+        // Pole wyszukiwania z płynnym podświetleniem fokusu i licznikiem wyników
+        float searchX = contentX + 14.0f;
+        float searchY = winY + 8.0f;
+        float searchW = 225.0f;
+        float searchH = 26.0f;
+
+        int searchBorder = VenturaSdfRenderer.lerpColor(COL_BORDER_FIELD, COL_ACCENT_PURPLE, searchFocusAnim);
+        VenturaSdfRenderer.drawRoundedRect(searchX, searchY, searchW, searchH, 7.0f, COL_BG_FIELD, searchBorder, 1.0f);
+        VenturaSdfRenderer.drawIcon(VectorIcon.SEARCH, searchX + 13.0f, searchY + 13.0f, 10.0f,
+                searchFocused ? COL_ACCENT_LILAC : COL_TEXT_GRAY);
+
+        String displaySearch = searchQuery.isEmpty() && !searchFocused
+                ? "Search modules, tags, Grim..."
+                : searchQuery + (searchFocused && (System.currentTimeMillis() / 500) % 2 == 0 ? "|" : "");
+        int searchTextCol = searchQuery.isEmpty() && !searchFocused ? COL_TEXT_GRAY : COL_TEXT_WHITE;
+        g.drawString(this.font, displaySearch, (int) (searchX + 25.0f), (int) (searchY + 9.0f), searchTextCol, false);
+
+        // Pigułka liczby znalezionych kart podczas wyszukiwania
+        if (!searchQuery.isEmpty()) {
+            int matchCount = getFilteredCards().size();
+            String badge = matchCount + " found";
+            int bw = this.font.width(badge) + 10;
+            VenturaSdfRenderer.drawRoundedRect(searchX + searchW - bw - 5.0f, searchY + 5.0f, bw, 16.0f, 4.5f,
+                    matchCount > 0 ? COL_BG_SIDEBAR_ACT : 0x33F43F5E, COL_BORDER_FIELD, 1.0f);
+            g.drawString(this.font, badge, (int) (searchX + searchW - bw), (int) (searchY + 9.0f),
+                    matchCount > 0 ? COL_TEXT_LILAC : COL_STATUS_CRIMSON, false);
+        }
+
+        // Pigułki szybkich presetów w Topbarze
+        float pillX = searchX + searchW + 12.0f;
+        String[] quickPresets = {"Grim Strict", "Matrix", "Legit"};
+        for (String preset : quickPresets) {
+            int pw = this.font.width(preset) + 14;
+            boolean active = activePresetName.startsWith(preset);
+            boolean hov = isHovered(mouseX, mouseY, pillX, searchY + 2.0f, pw, 22.0f);
+            VenturaSdfRenderer.drawRoundedRect(
+                    pillX, searchY + 2.0f, pw, 22.0f, 6.0f,
+                    active ? COL_BG_SIDEBAR_ACT : (hov ? COL_BG_CARD_HOVER : COL_BG_FIELD),
+                    active ? COL_BORDER_CARD_ACT : COL_BORDER_FIELD, 1.0f
+            );
+            g.drawString(this.font, preset, (int) (pillX + 7.0f), (int) (searchY + 9.0f),
+                    active ? COL_TEXT_LILAC : COL_TEXT_GRAY, false);
+            pillX += pw + 6.0f;
+        }
+
+        // Prawa pigułka telemetrii pakietów
+        String pktText = "19.8 TPS | 0 Flags";
+        int pktW = this.font.width(pktText) + 16;
+        float pktX = contentX + contentW - pktW - 14.0f;
+        VenturaSdfRenderer.drawRoundedRect(pktX, searchY + 2.0f, pktW, 22.0f, 6.0f, COL_BG_FIELD, COL_BORDER_FIELD, 1.0f);
+        g.drawString(this.font, pktText, (int) (pktX + 8.0f), (int) (searchY + 9.0f), COL_STATUS_GREEN, false);
+    }
+
+    private List<BypassCard> getFilteredCards() {
+        List<BypassCard> result = new ArrayList<>();
+        String q = searchQuery.trim().toLowerCase(Locale.ROOT);
+        for (BypassCard c : cards) {
+            if (q.isEmpty()) {
+                if (c.category == activeCategory) {
+                    result.add(c);
+                }
+            } else {
+                if (c.title.toLowerCase(Locale.ROOT).contains(q)
+                        || c.description.toLowerCase(Locale.ROOT).contains(q)
+                        || c.securityTag.toLowerCase(Locale.ROOT).contains(q)) {
+                    result.add(c);
                 }
             }
+        }
+        return result;
+    }
+
+    private void renderCardsViewport(GuiGraphics g, float viewX, float viewY, float viewW, float viewH,
+                                     int mouseX, int mouseY, float dt) {
+        List<BypassCard> visible = getFilteredCards();
+        float padX = 14.0f;
+        float curY = viewY + 14.0f - scrollCurrent;
+        float cardW = viewW - padX * 2.0f - 8.0f;
+
+        // Nagłówek aktualnego widoku
+        String headerTitle = searchQuery.isEmpty()
+                ? activeCategory.label
+                : "Search Results for \"" + searchQuery + "\"";
+        g.drawString(this.font, headerTitle, (int) (viewX + padX), (int) curY, COL_TEXT_WHITE, false);
+        curY += 18.0f;
+
+        boolean hasSearchHighlight = !searchQuery.trim().isEmpty();
+
+        for (BypassCard card : visible) {
+            float cardH = card.hasSlider || card.modes.length > 0 ? 78.0f : 52.0f;
+            boolean hovered = isHovered(mouseX, mouseY, viewX + padX, curY, cardW, cardH)
+                    && mouseY >= viewY && mouseY <= viewY + viewH;
+
+            card.hoverAnim = Mth.lerp(dt * 12.0f, card.hoverAnim, hovered ? 1.0f : 0.0f);
+            card.toggleAnim = Mth.lerp(dt * 14.0f, card.toggleAnim, card.enabled ? 1.0f : 0.0f);
+            card.searchHighlightAnim = Mth.lerp(dt * 10.0f, card.searchHighlightAnim, hasSearchHighlight ? 1.0f : 0.0f);
+            card.clickPulseAnim = Math.max(0.0f, card.clickPulseAnim - dt * 3.5f);
+            card.renderedVal = Mth.lerp(dt * 16.0f, card.renderedVal, card.currentVal);
+
+            // Aktualizacja wartości suwaka podczas przeciągania
+            if (activeSliderCard == card && card.hasSlider) {
+                float sliderX = viewX + padX + 12.0f;
+                float sliderW = 210.0f;
+                float pct = Mth.clamp((mouseX - sliderX) / sliderW, 0.0f, 1.0f);
+                card.currentVal = card.minVal + pct * (card.maxVal - card.minVal);
+                syncCardToSettings(card);
+            }
+
+            // Tło i obramowanie karty (z efektem Search Highlight i mikro-feedbackiem kliknięcia)
+            int bgCol = VenturaSdfRenderer.lerpColor(COL_BG_CARD, COL_BG_CARD_HOVER, card.hoverAnim);
+            int baseBorder = card.enabled ? COL_BORDER_CARD_ACT : COL_BORDER_CARD;
+            int borderCol = VenturaSdfRenderer.lerpColor(baseBorder, COL_ACCENT_LILAC, card.searchHighlightAnim * 0.65f);
+
+            // Subtelny cień pod kartą dodający głębi bez efektu Glow-Box
+            VenturaSdfRenderer.drawDropShadow(viewX + padX, curY, cardW, cardH, CARD_RADIUS, 6.0f, 2.5f, 0x48000000);
+
+            if (card.searchHighlightAnim > 0.05f || card.clickPulseAnim > 0.01f) {
+                VenturaSdfRenderer.drawRoundedRect(
+                        viewX + padX - 2.0f, curY - 2.0f, cardW + 4.0f, cardH + 4.0f,
+                        CARD_RADIUS + 2.0f, 0x00000000, COL_ACCENT_GLOW, 4.5f
+                );
+            }
+
+            VenturaSdfRenderer.drawRoundedRect(viewX + padX, curY, cardW, cardH, CARD_RADIUS, bgCol, borderCol, 1.0f);
+
+            // Tytuł karty + Tag bezpieczeństwa
+            g.drawString(this.font, card.title, (int) (viewX + padX + 12.0f), (int) (curY + 10.0f), COL_TEXT_WHITE, false);
+
+            int titleW = this.font.width(card.title);
+            float tagX = viewX + padX + 18.0f + titleW;
+            int tagW = this.font.width(card.securityTag) + 12;
+            VenturaSdfRenderer.drawRoundedRect(tagX, curY + 8.0f, tagW, 13.0f, 4.0f, COL_BG_FIELD, COL_BORDER_FIELD, 1.0f);
+            g.drawString(this.font, card.securityTag, (int) (tagX + 6.0f), (int) (curY + 10.5f), card.tagStatusColor, false);
+
+            // Opis karty
+            g.drawString(this.font, card.description, (int) (viewX + padX + 12.0f), (int) (curY + 25.0f), COL_TEXT_GRAY, false);
+
+            // Przełącznik iOS-style w prawym górnym rogu karty
+            float togX = viewX + padX + cardW - 42.0f;
+            float togY = curY + 11.0f;
+            VenturaSdfRenderer.drawToggle(togX, togY, card.toggleAnim, isHovered(mouseX, mouseY, togX, togY, 30.0f, 16.0f));
+
+            // Dolny rząd karty: Suwak SDF + Selektor trybów
+            if (card.hasSlider || card.modes.length > 0) {
+                float rowY = curY + 46.0f;
+
+                if (card.hasSlider) {
+                    float sliderX = viewX + padX + 12.0f;
+                    float sliderW = 210.0f;
+                    String valStr = String.format(Locale.ROOT, "%.1f%s", card.currentVal, card.sliderUnit);
+                    g.drawString(this.font, card.sliderLabel + ": ", (int) sliderX, (int) rowY, COL_TEXT_GRAY, false);
+                    g.drawString(this.font, valStr, (int) (sliderX + this.font.width(card.sliderLabel + ": ")), (int) rowY, COL_TEXT_LILAC, false);
+
+                    float barY = rowY + 13.0f;
+                    float pct = (card.renderedVal - card.minVal) / Math.max(0.0001f, card.maxVal - card.minVal);
+                    VenturaSdfRenderer.drawRoundedRect(sliderX, barY, sliderW, 5.0f, 2.5f, COL_BG_FIELD, COL_BORDER_FIELD, 1.0f);
+                    VenturaSdfRenderer.drawRoundedRect(sliderX, barY, Math.max(5.0f, sliderW * pct), 5.0f, 2.5f, COL_ACCENT_PURPLE, 0, 0.0f);
+                    VenturaSdfRenderer.drawCircle(sliderX + sliderW * pct, barY + 2.5f, 4.5f, COL_ACCENT_LILAC, COL_ACCENT_GLOW);
+                }
+
+                if (card.modes.length > 0) {
+                    String modeText = "Mode: " + card.modes[card.modeIndex];
+                    int mw = this.font.width(modeText) + 16;
+                    float modeX = viewX + padX + cardW - mw - 12.0f;
+                    boolean modeHov = isHovered(mouseX, mouseY, modeX, rowY + 4.0f, mw, 18.0f);
+                    VenturaSdfRenderer.drawRoundedRect(
+                            modeX, rowY + 4.0f, mw, 18.0f, 5.0f,
+                            modeHov ? COL_BG_SIDEBAR_ACT : COL_BG_FIELD,
+                            modeHov ? COL_BORDER_CARD_ACT : COL_BORDER_FIELD, 1.0f
+                    );
+                    g.drawString(this.font, modeText, (int) (modeX + 8.0f), (int) (rowY + 9.0f), COL_TEXT_TAG, false);
+                }
+            }
+
+            curY += cardH + 9.0f;
+        }
+
+        float totalContentH = (curY + scrollCurrent) - viewY + 12.0f;
+        maxScroll = Math.max(0.0f, totalContentH - viewH);
+        scrollTarget = Mth.clamp(scrollTarget, 0.0f, maxScroll);
+    }
+
+    private void renderSdfScrollbar(float trackX, float trackY, float trackH, float viewH,
+                                    int mouseX, int mouseY, float dt) {
+        if (maxScroll <= 1.0f) return;
+
+        boolean hovered = isHovered(mouseX, mouseY, trackX - 4.0f, trackY, 12.0f, trackH) || draggingScrollbar;
+        scrollbarHoverAnim = Mth.lerp(dt * 12.0f, scrollbarHoverAnim, hovered ? 1.0f : 0.0f);
+
+        float barW = Mth.lerp(scrollbarHoverAnim, 3.2f, 5.2f);
+        float drawX = trackX + (5.2f - barW) * 0.5f;
+
+        // Tło szyny paska przewijania
+        VenturaSdfRenderer.drawRoundedRect(drawX, trackY, barW, trackH, barW * 0.5f, COL_BG_FIELD, 0, 0.0f);
+
+        // Obliczenie proporcjonalnego suwaka (Thumb)
+        float totalH = viewH + maxScroll;
+        float thumbH = Math.max(26.0f, trackH * (viewH / totalH));
+        float scrollRatio = Mth.clamp(scrollCurrent / maxScroll, 0.0f, 1.0f);
+        float thumbY = trackY + (trackH - thumbH) * scrollRatio;
+
+        int thumbCol = VenturaSdfRenderer.lerpColor(COL_ACCENT_PURPLE, COL_ACCENT_LILAC, scrollbarHoverAnim);
+        if (scrollbarHoverAnim > 0.05f) {
+            VenturaSdfRenderer.drawRoundedRect(drawX - 1.5f, thumbY - 1.5f, barW + 3.0f, thumbH + 3.0f,
+                    (barW + 3.0f) * 0.5f, 0, COL_ACCENT_GLOW, 3.0f);
+        }
+        VenturaSdfRenderer.drawRoundedRect(drawX, thumbY, barW, thumbH, barW * 0.5f, thumbCol, 0, 0.0f);
+    }
+
+    // =========================================================================
+    // OBSŁUGA WEJŚCIA MYSZY I KLAWIATURY
+    // =========================================================================
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        float winX = (this.width - WIN_WIDTH) * 0.5f;
+        float winY = (this.height - WIN_HEIGHT) * 0.5f;
+
+        // Kropki macOS: Czerwona zamyka, Zielona przełącza na AstraSchematicScreen
+        if (isHovered(mouseX, mouseY, winX + 10.0f, winY + 9.0f, 12.0f, 12.0f)) {
+            this.onClose();
+            return true;
+        }
+        if (isHovered(mouseX, mouseY, winX + 38.0f, winY + 9.0f, 12.0f, 12.0f)) {
+            Minecraft.getInstance().setScreen(new AstraSchematicScreen(this));
             return true;
         }
 
-        // --- Sekcja robocza: karty / widgety.
-        if (inRect(mx, my, wx + CONTENT_X, wy + CONTENT_Y,
-                wx + CONTENT_X + CONTENT_W, wy + CONTENT_Y + CONTENT_H)) {
-            Category cat = this.categories.get(this.selectedCategory);
-            int cardX = wx + CARD_X;
-            int baseY = wy + CONTENT_Y + HEADER_H;
-            for (int i = 0; i < cat.modules.size(); i++) {
-                int cardY = baseY + i * CARD_STEP - (int) cat.scroll;
-                if (mx >= cardX && mx <= cardX + CARD_W && my >= cardY && my < cardY + CARD_H) {
-                    if (cat.modules.get(i).onClick(this, mouseX, mouseY, button, cardX, cardY)) {
+        // Przycisk "Litematica & Bridge" w Sidebarze
+        float bridgeBtnX = winX + 8.0f;
+        float bridgeBtnY = winY + WIN_HEIGHT - 68.0f;
+        if (isHovered(mouseX, mouseY, bridgeBtnX, bridgeBtnY, SIDEBAR_WIDTH - 16.0f, 28.0f)) {
+            Minecraft.getInstance().setScreen(new AstraSchematicScreen(this));
+            return true;
+        }
+
+        // Kliknięcie zakładek Sidebara
+        float curY = winY + 56.0f;
+        String lastSection = "";
+        for (Category cat : Category.values()) {
+            if (!cat.section.equals(lastSection)) {
+                lastSection = cat.section;
+                curY += 14.0f;
+            }
+            if (isHovered(mouseX, mouseY, winX + 8.0f, curY, SIDEBAR_WIDTH - 16.0f, 26.0f)) {
+                activeCategory = cat;
+                lastActiveCategory = cat;
+                searchQuery = "";
+                scrollTarget = 0.0f;
+                return true;
+            }
+            curY += 30.0f;
+        }
+
+        float contentX = winX + SIDEBAR_WIDTH + 1.0f;
+        float contentW = WIN_WIDTH - SIDEBAR_WIDTH - 1.0f;
+
+        // Fokus pola wyszukiwania
+        searchFocused = isHovered(mouseX, mouseY, contentX + 14.0f, winY + 8.0f, 225.0f, 26.0f);
+
+        // Szybkie presety w Topbarze
+        float pillX = contentX + 14.0f + 225.0f + 12.0f;
+        String[] quickPresets = {"Grim Strict", "Matrix", "Legit"};
+        for (String preset : quickPresets) {
+            int pw = this.font.width(preset) + 14;
+            if (isHovered(mouseX, mouseY, pillX, winY + 10.0f, pw, 22.0f)) {
+                activePresetName = preset;
+                return true;
+            }
+            pillX += pw + 6.0f;
+        }
+
+        // Złapanie paska przewijania SDF
+        float viewY = winY + TOPBAR_HEIGHT + 1.0f;
+        float viewH = WIN_HEIGHT - TOPBAR_HEIGHT - 1.0f;
+        float trackX = contentX + contentW - 8.5f;
+        if (maxScroll > 1.0f && isHovered(mouseX, mouseY, trackX - 4.0f, viewY + 8.0f, 12.0f, viewH - 16.0f)) {
+            draggingScrollbar = true;
+            scrollbarDragStartY = (float) mouseY;
+            scrollbarStartTarget = scrollTarget;
+            return true;
+        }
+
+        // Interakcja z kartami wewnątrz Viewportu
+        if (isHovered(mouseX, mouseY, contentX, viewY, contentW - 12.0f, viewH)) {
+            float padX = 14.0f;
+            float cardY = viewY + 32.0f - scrollCurrent;
+            float cardW = contentW - padX * 2.0f - 8.0f;
+
+            for (BypassCard card : getFilteredCards()) {
+                float cardH = card.hasSlider || card.modes.length > 0 ? 78.0f : 52.0f;
+                float togX = contentX + padX + cardW - 42.0f;
+                float togY = cardY + 11.0f;
+
+                if (isHovered(mouseX, mouseY, togX - 4.0f, togY - 4.0f, 38.0f, 24.0f)) {
+                    card.enabled = !card.enabled;
+                    card.clickPulseAnim = 1.0f;
+                    syncCardToSettings(card);
+                    return true;
+                }
+
+                if (card.hasSlider) {
+                    float sliderX = contentX + padX + 12.0f;
+                    float barY = cardY + 59.0f;
+                    if (isHovered(mouseX, mouseY, sliderX - 4.0f, barY - 6.0f, 218.0f, 16.0f)) {
+                        activeSliderCard = card;
+                        float pct = Mth.clamp(((float) mouseX - sliderX) / 210.0f, 0.0f, 1.0f);
+                        card.currentVal = card.minVal + pct * (card.maxVal - card.minVal);
+                        syncCardToSettings(card);
                         return true;
                     }
                 }
+
+                if (card.modes.length > 0) {
+                    String modeText = "Mode: " + card.modes[card.modeIndex];
+                    int mw = this.font.width(modeText) + 16;
+                    float modeX = contentX + padX + cardW - mw - 12.0f;
+                    if (isHovered(mouseX, mouseY, modeX, cardY + 50.0f, mw, 18.0f)) {
+                        card.modeIndex = (card.modeIndex + 1) % card.modes.length;
+                        card.clickPulseAnim = 0.7f;
+                        syncCardToSettings(card);
+                        return true;
+                    }
+                }
+                cardY += cardH + 9.0f;
             }
-            return true;
         }
 
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
+    private void syncCardToSettings(BypassCard card) {
+        if (card != null) {
+            PERSISTENT_CARD_STATES.put(card.id, new SavedCardState(card.enabled, card.currentVal, card.modeIndex));
+        }
+        try {
+            var s = BaritoneAPI.getSettings();
+            switch (card.id) {
+                case "client_block_overlay":
+                    s.clientBlockOverlay.value = card.enabled;
+                    s.blockOverlaySpeed.value = card.currentVal;
+                    if (card.modeIndex == 0) {
+                        s.blockOverlaySmooth.value = true;
+                        s.blockOverlayIgnoreDepth.value = false;
+                    } else if (card.modeIndex == 1) {
+                        s.blockOverlaySmooth.value = false;
+                        s.blockOverlayIgnoreDepth.value = false;
+                    } else if (card.modeIndex == 2) {
+                        s.blockOverlaySmooth.value = true;
+                        s.blockOverlayIgnoreDepth.value = true;
+                    }
+                    break;
+                case "radial_ground_wave":
+                    s.radialWave.value = card.enabled;
+                    s.radialWaveRadius.value = card.currentVal;
+                    s.radialWaveTrigger.value = card.modeIndex;
+                    break;
+                case "radial_wave_speed":
+                    s.radialWaveDouble.value = card.enabled;
+                    s.radialWaveSpeed.value = card.currentVal;
+                    s.radialWaveMode.value = card.modeIndex;
+                    break;
+                case "glass_fill_opacity":
+                    s.blockOverlayWave.value = card.enabled;
+                    s.blockOverlayAlpha.value = card.currentVal / 100.0f;
+                    break;
+                case "mining_target_wave":
+                    s.renderMiningWaveOverlay.value = card.enabled;
+                    s.blockOverlayLineWidth.value = card.currentVal;
+                    break;
+                case "sdf_path_bezier":
+                    s.renderSelectionBoxes.value = card.enabled;
+                    s.pathRenderLineWidthPixels.value = card.currentVal;
+                    break;
+                case "goal_hologram":
+                    s.renderFilledBoxes.value = card.enabled;
+                    s.filledBoxAlpha.value = card.currentVal / 100.0f;
+                    break;
+                case "china_hat_cosmetic":
+                    s.chinaHat.value = card.enabled;
+                    s.chinaHatRadius.value = card.currentVal;
+                    if (card.modeIndex == 0) {
+                        s.chinaHatRainbow.value = false;
+                        s.chinaHatFirstPerson.value = false;
+                    } else if (card.modeIndex == 1) {
+                        s.chinaHatRainbow.value = true;
+                        s.chinaHatFirstPerson.value = false;
+                    } else if (card.modeIndex == 2) {
+                        s.chinaHatFirstPerson.value = true;
+                    }
+                    AstraVisualsEngine.setChinaHatEnabled(card.enabled);
+                    break;
+                case "hand_shaders":
+                    s.handShaders.value = card.enabled;
+                    s.handShaderMode.value = card.modeIndex;
+                    AstraVisualsEngine.setHandShadersEnabled(card.enabled);
+                    com.astra.revolution.visuals.AstraHandShader.setGlassAlpha(card.currentVal / 100.0f);
+                    com.astra.revolution.visuals.AstraHandShader.setModeIndex(card.modeIndex);
+                    break;
+                case "custom_player_disguise":
+                    if (!card.enabled) {
+                        s.customPlayerDisguise.value = "OFF";
+                        AstraVisualsEngine.setActiveDisguise(AstraVisualsEngine.DisguiseModel.OFF);
+                    } else {
+                        switch (card.modeIndex) {
+                            case 0 -> {
+                                s.customPlayerDisguise.value = "TUNG_TUNG_SAHUR";
+                                AstraVisualsEngine.setActiveDisguise(AstraVisualsEngine.DisguiseModel.TUNG_TUNG_SAHUR);
+                            }
+                            case 1 -> {
+                                s.customPlayerDisguise.value = "BALLERINA_CAPUCCINA";
+                                AstraVisualsEngine.setActiveDisguise(AstraVisualsEngine.DisguiseModel.BALLERINA_CAPUCCINA);
+                            }
+                            case 2 -> {
+                                s.customPlayerDisguise.value = "CYBER_MECH";
+                                AstraVisualsEngine.setActiveDisguise(AstraVisualsEngine.DisguiseModel.CYBER_MECH);
+                            }
+                            case 3 -> {
+                                s.customPlayerDisguise.value = "HOLOGRAM_AVATAR";
+                                AstraVisualsEngine.setActiveDisguise(AstraVisualsEngine.DisguiseModel.HOLOGRAM_AVATAR);
+                            }
+                            case 4 -> {
+                                s.customPlayerDisguise.value = "CAPYBARA_KING";
+                                AstraVisualsEngine.setActiveDisguise(AstraVisualsEngine.DisguiseModel.CAPYBARA_KING);
+                            }
+                            default -> {
+                                s.customPlayerDisguise.value = "OFF";
+                                AstraVisualsEngine.setActiveDisguise(AstraVisualsEngine.DisguiseModel.OFF);
+                            }
+                        }
+                    }
+                    break;
+                case "motion_trail":
+                    s.motionTrail.value = card.enabled;
+                    s.motionTrailMode.value = card.modeIndex;
+                    AstraVisualsEngine.setMotionTrailEnabled(card.enabled);
+                    AstraVisualsEngine.setMotionTrailMode(card.modeIndex);
+                    break;
+                case "target_esp":
+                    s.targetEsp.value = card.enabled;
+                    s.targetEspMode.value = card.modeIndex;
+                    AstraVisualsEngine.setTargetEspEnabled(card.enabled);
+                    AstraVisualsEngine.setTargetEspMode(card.modeIndex);
+                    break;
+                case "jump_circles":
+                    s.jumpCircles.value = card.enabled;
+                    s.jumpCirclesMode.value = card.modeIndex;
+                    AstraVisualsEngine.setJumpCirclesEnabled(card.enabled);
+                    AstraVisualsEngine.setJumpCirclesMode(card.modeIndex);
+                    break;
+                case "custom_fog":
+                    s.customFog.value = card.enabled;
+                    AstraVisualsEngine.setCustomFogEnabled(card.enabled);
+                    AstraVisualsEngine.setCustomFogMode(card.modeIndex);
+                    break;
+                case "custom_sky":
+                    s.customSky.value = card.enabled;
+                    AstraVisualsEngine.setCustomSkyEnabled(card.enabled);
+                    AstraVisualsEngine.setCustomSkyMode(card.modeIndex);
+                    break;
+                case "ambient_particles":
+                    s.ambientParticles.value = card.enabled;
+                    AstraVisualsEngine.setAmbientParticlesEnabled(card.enabled);
+                    com.astra.revolution.visuals.AstraAmbientParticles.setModeIndex(card.modeIndex);
+                    break;
+                case "motion_blur":
+                    s.motionBlur.value = card.enabled;
+                    s.motionBlurStrength.value = (double) card.currentVal;
+                    s.motionBlurMode.value = card.modeIndex;
+                    com.astra.revolution.visuals.AstraMotionBlurEngine.getInstance().setEnabled(card.enabled);
+                    com.astra.revolution.visuals.AstraMotionBlurEngine.getInstance().setStrength(card.currentVal);
+                    com.astra.revolution.visuals.AstraMotionBlurEngine.getInstance().setMode(card.modeIndex);
+                    break;
+            }
+            if (s != null) {
+                SettingsUtil.save(s);
+            }
+        } catch (Throwable ignored) {}
+    }
+
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
-        if (this.draggingWindow) {
-            this.windowX = clamp((int) (mouseX - this.dragOffX),
-                    -WINDOW_W + 120, Math.max(-WINDOW_W + 120, this.width - 120));
-            this.windowY = clamp((int) (mouseY - this.dragOffY), 2, Math.max(2, this.height - 60));
-            return true;
-        }
-        if (this.draggingSlider != null) {
-            this.draggingSlider.setFromMouse(mouseX, this.windowX + CARD_X + SLIDER_X);
+        if (draggingScrollbar && maxScroll > 1.0f) {
+            float trackH = (WIN_HEIGHT - TOPBAR_HEIGHT - 1.0f) - 16.0f;
+            float deltaY = (float) mouseY - scrollbarDragStartY;
+            scrollTarget = Mth.clamp(scrollbarStartTarget + (deltaY / trackH) * maxScroll, 0.0f, maxScroll);
             return true;
         }
         return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
@@ -528,1271 +1308,567 @@ public class BaritoneBypassScreen extends Screen {
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
-        boolean wasInteracting = this.draggingWindow || this.draggingSlider != null;
-        if (this.draggingSlider != null) {
-            try {
-                SettingsUtil.save(Baritone.settings());
-            } catch (Throwable ignored) {
-            }
-        }
-        this.draggingWindow = false;
-        this.draggingSlider = null;
-        if (wasInteracting) return true;
+        activeSliderCard = null;
+        draggingScrollbar = false;
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
-    // Od 1.21.2: cztery argumenty (mouseX, mouseY, scrollX, scrollY).
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-        int mx = (int) mouseX;
-        int my = (int) mouseY;
-        int wx = this.windowX;
-        int wy = this.windowY;
-        if (inRect(mx, my, wx + CONTENT_X, wy + CONTENT_Y,
-                wx + CONTENT_X + CONTENT_W, wy + CONTENT_Y + CONTENT_H)) {
-            Category cat = this.categories.get(this.selectedCategory);
-            cat.scrollTarget = clamp(cat.scrollTarget - (float) scrollY * 34.0f, 0.0f, maxScroll(cat));
-            return true;
-        }
-        return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+        scrollTarget = Mth.clamp(scrollTarget - (float) scrollY * 28.0f, 0.0f, maxScroll);
+        return true;
     }
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == OPEN_KEY) {
-            onClose();
-            return true;
+        if (searchFocused) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_ENTER) {
+                searchFocused = false;
+                return true;
+            }
+            if (keyCode == GLFW.GLFW_KEY_BACKSPACE && !searchQuery.isEmpty()) {
+                searchQuery = searchQuery.substring(0, searchQuery.length() - 1);
+                scrollTarget = 0.0f;
+                return true;
+            }
         }
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
-    // 1.21.2+ Mojmap: shouldPause(); starsze mapowania: isPauseScreen().
-    // Celowo BEZ @Override — obie deklaracje zawsze kompilują się bez błędu,
-    // a aktywna nazwa realnie wyłącza pauzowanie singleplayera.
-    public boolean shouldPause() {
-        return false;
-    }
-
-    public boolean isPauseScreen() {
-        return false;
-    }
-
     @Override
-    public void onClose() {
-        pushAllToBaritone();
-        try {
-            SettingsUtil.save(Baritone.settings());
-        } catch (Throwable ignored) {}
-        super.onClose();
-    }
-
-    // ========================================================================
-    //  SEKCJA 9 · BUDOWA ZAKŁADEK I MODUŁÓW
-    // ========================================================================
-    public static void syncFromBaritone() {
-        try {
-            baritone.api.Settings s = Baritone.settings();
-            if (s == null) return;
-
-            // ⚡ Mining & Speed
-            fastBreakInstamine = s.fastBreak.value;
-            autoDetectEfficiency = s.autoDetectEfficiency10.value;
-            multiBlockQueue = s.continuousBreaking.value;
-            miningRange = s.blockReachDistance.value;
-
-            // 🛡️ GrimAC Bypass
-            raytraceLOS = s.strictRaytraceOnly.value;
-            smoothRotations = s.smoothRotation.value;
-            rotationSpeed = s.maxRotationSpeedPerTick.value;
-            if (s.smoothRotation.value && s.humanizedRotations.value) {
-                rotationMode = 2; // SMOOTH
-            } else if (s.smoothRotation.value) {
-                rotationMode = 1; // TICK
-            } else {
-                rotationMode = 0; // PACKET
-            }
-            strictPlace = s.antiCheatCompatibility.value;
-            combatLogDetector = s.autoEatPauseInCombat.value;
-
-            // 🤖 Automation & Anarchia
-            anarchiaMode = s.anarchiaMode.value;
-            autoDropTrash = s.autoDropTrash.value;
-            autoSortInventory = s.autoSortInventory.value;
-            itemLockProtection = s.autoLockResource.value;
-            dropDelay = Math.max(1.0f, Math.min(20.0f, s.autoDropDelayMs.value / 50.0f));
-            autoEat = s.autoEat.value;
-            autoEatThreshold = (float) s.autoEatThreshold.value;
-            autoHomeOnFull = s.autoHomeOnFull.value;
-
-            // 🌊 Movement & Safety
-            waterAvoid = s.mineAvoidWater.value;
-            waterBuoyancy = !s.sprintInWater.value;
-            lavaReflex = s.mineAvoidLava.value;
-            lavaScanRadius = s.breakHoldMaxDistance.value != null ? s.breakHoldMaxDistance.value.floatValue() : 3.0f;
-            avoidFluidProximity = s.avoidFluidProximity.value;
-            fluidAvoidDistance = s.fluidAvoidDistance.value != null ? s.fluidAvoidDistance.value.floatValue() : 3.0f;
-            antiSuffocation = s.avoidUpdatingFallingBlocks.value;
-            tunnelFloatGuard = !s.assumeWalkOnWater.value;
-            disconnectOnLowHealth = s.disconnectOnLowHealth.value;
-            disconnectHealthHearts = s.disconnectHealthHearts.value != null ? s.disconnectHealthHearts.value.floatValue() : 6.0f;
-            disconnectOnFall = s.disconnectOnFall.value;
-            disconnectFallDistance = s.disconnectFallDistance.value != null ? s.disconnectFallDistance.value.floatValue() : 5.0f;
-            autoWaterClutch = s.autoWaterClutch.value && s.allowWaterBucketFall.value;
-
-            // 👁️ Visuals & HUD
-            hudEnabled = s.showHudOverlay.value;
-            pathTrail = s.renderPath.value;
-            hudScale = (float) (s.hudScale.value * 100.0);
-        } catch (Throwable ignored) {
-        }
-    }
-
-    public void refreshFromSettings() {
-        syncFromBaritone();
-        if (this.categories == null) return;
-        for (Category cat : this.categories) {
-            for (Module m : cat.modules) {
-                if (m instanceof ToggleModule tm) {
-                    // Mining & Speed
-                    if (tm.name.equals("FastBreak Instamine")) tm.enabled = fastBreakInstamine;
-                    else if (tm.name.equals("AutoDetect Efficiency 10")) tm.enabled = autoDetectEfficiency;
-                    else if (tm.name.equals("Multi-Block Queue")) tm.enabled = multiBlockQueue;
-                    // GrimAC Bypass
-                    else if (tm.name.equals("Raytrace Line-Of-Sight")) tm.enabled = raytraceLOS;
-                    else if (tm.name.equals("Smooth Human Rotations")) tm.enabled = smoothRotations;
-                    else if (tm.name.equals("Strict Place Verification")) tm.enabled = strictPlace;
-                    else if (tm.name.equals("Combat Log Detector")) tm.enabled = combatLogDetector;
-                    // Automation
-                    else if (tm.name.equals("Tryb Anarchia")) tm.enabled = anarchiaMode;
-                    else if (tm.name.equals("AutoDrop Trash")) tm.enabled = autoDropTrash;
-                    else if (tm.name.equals("AutoSort Inventory")) tm.enabled = autoSortInventory;
-                    else if (tm.name.equals("Item Lock Protection")) tm.enabled = itemLockProtection;
-                    else if (tm.name.equals("AutoEat Smart")) tm.enabled = autoEat;
-                    else if (tm.name.equals("AutoHome on Full")) tm.enabled = autoHomeOnFull;
-                    // Movement & Safety
-                    else if (tm.name.equals("AI Water Avoidance")) tm.enabled = waterAvoid;
-                    else if (tm.name.equals("Water Surface Buoyancy")) tm.enabled = waterBuoyancy;
-                    else if (tm.name.equals("Real-Time Lava Reflex")) tm.enabled = lavaReflex;
-                    else if (tm.name.equals("Fluid Proximity Buffer")) tm.enabled = avoidFluidProximity;
-                    else if (tm.name.equals("Anti-Suffocation")) tm.enabled = antiSuffocation;
-                    else if (tm.name.equals("Tunnel 1x2 Float Guard")) tm.enabled = tunnelFloatGuard;
-                    else if (tm.name.equals("AutoLog Low Health")) tm.enabled = disconnectOnLowHealth;
-                    else if (tm.name.equals("AutoLog Fall Protect")) tm.enabled = disconnectOnFall;
-                    else if (tm.name.equals("MLG Water Clutch")) tm.enabled = autoWaterClutch;
-                    // Visuals & HUD
-                    else if (tm.name.equals("Live Diagnostics HUD")) tm.enabled = hudEnabled;
-                    else if (tm.name.equals("Ore ESP / Tracers")) tm.enabled = oreEsp;
-                    else if (tm.name.equals("Path Trail Renderer")) tm.enabled = pathTrail;
-                } else if (m instanceof SliderModule sm) {
-                    if (sm.name.equals("Mining Range")) sm.value = miningRange;
-                    else if (sm.name.equals("Rotation Speed")) sm.value = rotationSpeed;
-                    else if (sm.name.equals("Drop & Sort Delay")) sm.value = dropDelay;
-                    else if (sm.name.equals("AutoEat Threshold")) sm.value = autoEatThreshold;
-                    else if (sm.name.equals("Lava Scan Radius")) sm.value = lavaScanRadius;
-                    else if (sm.name.equals("Fluid Buffer Distance")) sm.value = fluidAvoidDistance;
-                    else if (sm.name.equals("AutoLog Hearts")) sm.value = disconnectHealthHearts;
-                    else if (sm.name.equals("Fall Protect Distance")) sm.value = disconnectFallDistance;
-                    else if (sm.name.equals("HUD Scale")) sm.value = hudScale;
-                    else if (sm.name.equals("Dark Mode Intensity")) sm.value = guiOpacity * 100.0f;
-                } else if (m instanceof CycleModule cm) {
-                    if (cm.name.equals("Rotation Mode")) cm.index = clamp(rotationMode, 0, cm.modes.length - 1);
-                    else if (cm.name.equals("ESP Mode")) cm.index = clamp(espMode, 0, cm.modes.length - 1);
-                }
-            }
-        }
-    }
-
-    private static List<Category> buildCategories() {
-        List<Category> list = new ArrayList<>();
-        list.add(new Category("Mining & Speed", ICON_BOLT, buildMiningCategory(), SAVED_SCROLL[0]));
-        list.add(new Category("GrimAC Bypass", ICON_SHIELD, buildGrimCategory(), SAVED_SCROLL[1]));
-        list.add(new Category("Automation", ICON_ROBOT, buildAutomationCategory(), SAVED_SCROLL[2]));
-        list.add(new Category("Movement & Safety", ICON_WAVE, buildMovementCategory(), SAVED_SCROLL[3]));
-        list.add(new Category("Visuals & HUD", ICON_EYE, buildVisualsCategory(), SAVED_SCROLL[4]));
-        return list;
-    }
-
-    private static List<Module> buildMiningCategory() {
-        List<Module> modules = new ArrayList<>();
-        modules.add(new ToggleModule("FastBreak Instamine",
-                "Natychmiastowe łamanie bloków bez opóźnień.",
-                fastBreakInstamine,
-                v -> {
-                    fastBreakInstamine = v;
-                    try {
-                        Baritone.settings().fastBreak.value = v;
-                        Baritone.settings().continuousBreaking.value = v || multiBlockQueue;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "FastBreak -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("AutoDetect Efficiency 10",
-                "Wykrywa kilofy Wydajność 10+ i znosi 5-tickowe opóźnienie.",
-                autoDetectEfficiency,
-                v -> {
-                    autoDetectEfficiency = v;
-                    try {
-                        Baritone.settings().autoDetectEfficiency10.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "AutoDetect Efficiency 10 -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Multi-Block Queue",
-                "Kolejkowanie bloków i ciągłe niszczenie bez przerw.",
-                multiBlockQueue,
-                v -> {
-                    multiBlockQueue = v;
-                    try {
-                        Baritone.settings().continuousBreaking.value = v || fastBreakInstamine;
-                        Baritone.settings().breakHoldTicks.value = v ? 15 : 0;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Multi-Block Queue -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new SliderModule("Mining Range",
-                "Zasięg kopania w blokach.",
-                1.0f, 6.0f, 0.1f, miningRange, " blk",
-                v -> {
-                    miningRange = v;
-                    try {
-                        Baritone.settings().blockReachDistance.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                }));
-        return modules;
-    }
-
-    private static List<Module> buildGrimCategory() {
-        List<Module> modules = new ArrayList<>();
-        modules.add(new ToggleModule("Raytrace Line-Of-Sight",
-                "Sprawdza widoczność celu - brak klikania przez ściany.",
-                raytraceLOS,
-                v -> {
-                    raytraceLOS = v;
-                    try {
-                        Baritone.settings().strictRaytraceOnly.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Raytrace LOS -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Smooth Human Rotations",
-                "Płynne rotacje głową z ludzką akceleracją.",
-                smoothRotations,
-                v -> {
-                    smoothRotations = v;
-                    try {
-                        Baritone.settings().smoothRotation.value = v;
-                        Baritone.settings().humanizedRotations.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Smooth Human Rotations -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new SliderModule("Rotation Speed",
-                "Maksymalna prędkość obrotu głowy.",
-                1.0f, 30.0f, 1.0f, rotationSpeed, "°/t",
-                v -> {
-                    rotationSpeed = v;
-                    try {
-                        Baritone.settings().maxRotationSpeedPerTick.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new CycleModule("Rotation Mode",
-                "Tryb rotacji wysyłanej do serwera.",
-                new String[]{"PACKET", "TICK", "SMOOTH"}, rotationMode,
-                i -> {
-                    rotationMode = i;
-                    try {
-                        if (i == 2) {
-                            Baritone.settings().smoothRotation.value = true;
-                            Baritone.settings().humanizedRotations.value = true;
-                        } else if (i == 1) {
-                            Baritone.settings().smoothRotation.value = true;
-                            Baritone.settings().humanizedRotations.value = false;
-                        } else {
-                            Baritone.settings().smoothRotation.value = false;
-                            Baritone.settings().humanizedRotations.value = false;
-                        }
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Rotation Mode -> " + (i == 2 ? "SMOOTH" : (i == 1 ? "TICK" : "PACKET")));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Strict Place Verification",
-                "Legalne pakiety kładzenia bloków (Grim Place).",
-                strictPlace,
-                v -> {
-                    strictPlace = v;
-                    try {
-                        Baritone.settings().antiCheatCompatibility.value = v;
-                        Baritone.settings().antiCheatCompat.value = v;
-                        Baritone.settings().humanizedInteractDelay.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Strict Place -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Combat Log Detector",
-                "Natychmiastowy bezpieczny odwrót przy ataku gracza.",
-                combatLogDetector,
-                v -> {
-                    combatLogDetector = v;
-                    try {
-                        Baritone.settings().autoEatPauseInCombat.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Combat Log Detector -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        return modules;
-    }
-
-    private static List<Module> buildAutomationCategory() {
-        List<Module> modules = new ArrayList<>();
-        modules.add(new ToggleModule("Tryb Anarchia",
-                "AutoDrop + AutoSort + Blokuj sloty + AutoLog <6 serc + FallProtect >5 blk.",
-                anarchiaMode,
-                v -> {
-                    anarchiaMode = v;
-                    try {
-                        Baritone.settings().anarchiaMode.value = v;
-                        if (v) {
-                            Baritone.settings().autoDropTrash.value = true;
-                            Baritone.settings().autoSortInventory.value = true;
-                            Baritone.settings().autoLockResource.value = true;
-                            Baritone.settings().disconnectOnLowHealth.value = true;
-                            Baritone.settings().disconnectHealthHearts.value = 6.0D;
-                            Baritone.settings().disconnectOnFall.value = true;
-                            Baritone.settings().disconnectFallDistance.value = 5.0D;
-
-                            autoDropTrash = true;
-                            autoSortInventory = true;
-                            itemLockProtection = true;
-                            disconnectOnLowHealth = true;
-                            disconnectHealthHearts = 6.0f;
-                            disconnectOnFall = true;
-                            disconnectFallDistance = 5.0f;
-
-                            AiActionLogger.log("GUI", "TRYB ANARCHIA -> ON [Drop+Sort+Lock+HP<6+Fall>5b]");
-                            if (Minecraft.getInstance().gui != null && Minecraft.getInstance().gui.getChat() != null) {
-                                Minecraft.getInstance().gui.getChat().addMessage(
-                                        Component.literal("§6§l[Anarchia] §aWłączono tryb Anarchia! §7(AutoDrop ON, AutoSort ON, AutoLock ON, AutoLog <6 serc ON, FallProtect >5 kratek ON)")
-                                );
-                            }
-                        } else {
-                            Baritone.settings().anarchiaMode.value = false;
-                            Baritone.settings().autoDropTrash.value = false;
-                            Baritone.settings().autoSortInventory.value = false;
-                            Baritone.settings().autoLockResource.value = false;
-
-                            autoDropTrash = false;
-                            autoSortInventory = false;
-                            itemLockProtection = false;
-
-                            AiActionLogger.log("GUI", "TRYB ANARCHIA -> OFF");
-                            if (Minecraft.getInstance().gui != null && Minecraft.getInstance().gui.getChat() != null) {
-                                Minecraft.getInstance().gui.getChat().addMessage(
-                                        Component.literal("§6§l[Anarchia] §cWyłączono tryb Anarchia (AutoDrop OFF, AutoSort OFF, AutoLock OFF).")
-                                );
-                            }
-                        }
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("AutoDrop Trash",
-                "Wyrzuca bruk, andezyt, dioryt, granit i ziemię.",
-                autoDropTrash,
-                v -> {
-                    autoDropTrash = v;
-                    try {
-                        Baritone.settings().autoDropTrash.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "AutoDrop Trash -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("AutoSort Inventory",
-                "Czyści eq i od razu po tym je segreguje (hotbar, stacki, surowce).",
-                autoSortInventory,
-                v -> {
-                    autoSortInventory = v;
-                    try {
-                        Baritone.settings().autoSortInventory.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "AutoSort Inventory -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new SliderModule("Drop & Sort Delay",
-                "Opóźnienie między akcjami w ekwipunku (GrimAC-safe).",
-                1.0f, 20.0f, 1.0f, dropDelay, " t",
-                v -> {
-                    dropDelay = v;
-                    try {
-                        Baritone.settings().autoDropDelayMs.value = Math.max(50, Math.round(v * 50.0f));
-                        Baritone.settings().autoSortDelayTicks.value = Math.max(1, Math.round(v));
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Item Lock Protection",
-                "Blokowanie slotów surowcem (np. surowym żelazem).",
-                itemLockProtection,
-                v -> {
-                    itemLockProtection = v;
-                    try {
-                        Baritone.settings().autoLockResource.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Item Lock Protection -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("AutoEat Smart",
-                "Automatyczne jedzenie w bezpiecznym ukryciu.",
-                autoEat,
-                v -> {
-                    autoEat = v;
-                    try {
-                        Baritone.settings().autoEat.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "AutoEat Smart -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new SliderModule("AutoEat Threshold",
-                "Poziom głodu aktywujący jedzenie.",
-                6.0f, 20.0f, 1.0f, autoEatThreshold, " / 20",
-                v -> {
-                    autoEatThreshold = v;
-                    try {
-                        Baritone.settings().autoEatThreshold.value = Math.round(v);
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("AutoHome on Full",
-                "Powrót do bazy po zapełnieniu ekwipunku.",
-                autoHomeOnFull,
-                v -> {
-                    autoHomeOnFull = v;
-                    try {
-                        Baritone.settings().autoHomeOnFull.value = v;
-                        Baritone.settings().allowInventory.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "AutoHome on Full -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        return modules;
-    }
-
-    private static List<Module> buildMovementCategory() {
-        List<Module> modules = new ArrayList<>();
-        modules.add(new ToggleModule("AI Water Avoidance",
-                "Całkowity zakaz wchodzenia do wody (AI Penalty / Zero Water).",
-                waterAvoid,
-                v -> {
-                    waterAvoid = v;
-                    try {
-                        Baritone.settings().mineAvoidWater.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "AI Water Avoidance -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Water Surface Buoyancy",
-                "Bezwzględne utrzymywanie na powierzchni wody.",
-                waterBuoyancy,
-                v -> {
-                    waterBuoyancy = v;
-                    try {
-                        Baritone.settings().sprintInWater.value = !v;
-                        Baritone.settings().walkOnWaterOnePenalty.value = v ? 1.0 : 3.0;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Water Surface Buoyancy -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Real-Time Lava Reflex",
-                "Błyskawiczny odskok i anulowanie trasy przy lawie.",
-                lavaReflex,
-                v -> {
-                    lavaReflex = v;
-                    try {
-                        Baritone.settings().mineAvoidLava.value = v;
-                        Baritone.settings().strictLiquidCheck.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Lava Reflex -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new SliderModule("Lava Scan Radius",
-                "Promień wykrywania lawy w blokach.",
-                1.0f, 6.0f, 0.1f, lavaScanRadius, " blk",
-                v -> {
-                    lavaScanRadius = v;
-                    try {
-                        Baritone.settings().breakHoldMaxDistance.value = (double) v;
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Fluid Proximity Buffer",
-                "Aktywnie omija wodę i lawę, wyznaczając trasy w bezpiecznej odległości.",
-                avoidFluidProximity,
-                v -> {
-                    avoidFluidProximity = v;
-                    try {
-                        Baritone.settings().avoidFluidProximity.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Fluid Proximity Buffer -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new SliderModule("Fluid Buffer Distance",
-                "Bezpieczny dystans w blokach od brzegów wody i zbiorników lawy.",
-                1.0f, 4.0f, 1.0f, fluidAvoidDistance, " blk",
-                v -> {
-                    fluidAvoidDistance = v;
-                    try {
-                        Baritone.settings().fluidAvoidDistance.value = Math.round(v);
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Anti-Suffocation",
-                "Zapobiega wchodzeniu w opadający piasek.",
-                antiSuffocation,
-                v -> {
-                    antiSuffocation = v;
-                    try {
-                        Baritone.settings().avoidUpdatingFallingBlocks.value = v;
-                        Baritone.settings().pauseMiningForFallingBlocks.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Anti-Suffocation -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Tunnel 1x2 Float Guard",
-                "Bezpieczna wysokość w zalanych korytarzach.",
-                tunnelFloatGuard,
-                v -> {
-                    tunnelFloatGuard = v;
-                    try {
-                        Baritone.settings().assumeWalkOnWater.value = !v;
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                    AiActionLogger.log("GUI", "Tunnel Float Guard -> " + (v ? "ON" : "OFF"));
-                }));
-        modules.add(new ToggleModule("AutoLog Low Health",
-                "Rozłącza z serwerem, gdy zdrowie spadnie poniżej progu.",
-                disconnectOnLowHealth,
-                v -> {
-                    disconnectOnLowHealth = v;
-                    try {
-                        Baritone.settings().disconnectOnLowHealth.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "AutoLog Low Health -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new SliderModule("AutoLog Hearts",
-                "Próg serc aktywujący natychmiastowe rozłączenie.",
-                1.0f, 10.0f, 0.5f, disconnectHealthHearts, " serc",
-                v -> {
-                    disconnectHealthHearts = v;
-                    try {
-                        Baritone.settings().disconnectHealthHearts.value = (double) v;
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("AutoLog Fall Protect",
-                "Rozłącza z serwerem przy upadku z wysokości (>5 kratek).",
-                disconnectOnFall,
-                v -> {
-                    disconnectOnFall = v;
-                    try {
-                        Baritone.settings().disconnectOnFall.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "AutoLog Fall Protect -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("MLG Water Clutch",
-                "Automatyczne stawianie wody pod sobą przy upadku z wysokości (0 obrażeń).",
-                autoWaterClutch,
-                v -> {
-                    autoWaterClutch = v;
-                    try {
-                        Baritone.settings().autoWaterClutch.value = v;
-                        Baritone.settings().allowWaterBucketFall.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "MLG Water Clutch -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new SliderModule("Fall Protect Distance",
-                "Maksymalna wysokość upadku przed rozłączeniem.",
-                3.0f, 20.0f, 1.0f, disconnectFallDistance, " blk",
-                v -> {
-                    disconnectFallDistance = v;
-                    try {
-                        Baritone.settings().disconnectFallDistance.value = (double) v;
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                }));
-        return modules;
-    }
-
-    private static List<Module> buildVisualsCategory() {
-        List<Module> modules = new ArrayList<>();
-        modules.add(new ToggleModule("Live Diagnostics HUD",
-                "Panel stanu bota na ekranie głównym.",
-                hudEnabled,
-                v -> {
-                    hudEnabled = v;
-                    try {
-                        Baritone.settings().showHudOverlay.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Live Diagnostics HUD -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new ToggleModule("Ore ESP / Tracers",
-                "Podświetla żelazo, złoto, diamenty i szczątki.",
-                oreEsp,
-                v -> {
-                    oreEsp = v;
-                    AiActionLogger.log("GUI", "Ore ESP -> " + (v ? "ON" : "OFF"));
-                }));
-        modules.add(new CycleModule("ESP Mode",
-                "Sposób podświetlania rud.",
-                new String[]{"OUTLINE", "TRACERS", "BOTH"}, espMode,
-                i -> {
-                    espMode = i;
-                    AiActionLogger.log("GUI", "ESP Mode -> " + (i == 0 ? "OUTLINE" : (i == 1 ? "TRACERS" : "BOTH")));
-                }));
-        modules.add(new ToggleModule("Path Trail Renderer",
-                "Neonowa linia przewidywanej trasy Baritone.",
-                pathTrail,
-                v -> {
-                    pathTrail = v;
-                    try {
-                        Baritone.settings().renderPath.value = v;
-                        SettingsUtil.save(Baritone.settings());
-                        AiActionLogger.log("GUI", "Path Trail Renderer -> " + (v ? "ON" : "OFF"));
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new SliderModule("HUD Scale",
-                "Skala panelu diagnostycznego HUD.",
-                50.0f, 200.0f, 1.0f, hudScale, "%",
-                v -> {
-                    hudScale = v;
-                    try {
-                        Baritone.settings().hudScale.value = (double) (v / 100.0f);
-                        SettingsUtil.save(Baritone.settings());
-                    } catch (Throwable ignored) {}
-                }));
-        modules.add(new SliderModule("Dark Mode Intensity",
-                "Przezroczystość interfejsu GUI.",
-                50.0f, 100.0f, 1.0f, guiOpacity * 100.0f, "%",
-                v -> {
-                    guiOpacity = v / 100.0f;
-                }));
-        return modules;
-    }
-
-    // ========================================================================
-    //  SEKCJA 10 · POMOST DO BARITONE
-    // ========================================================================
-    public static void pushAllToBaritone() {
-        applyMiningSettings();
-        applyGrimSettings();
-        applyAutomationSettings();
-        applyMovementSettings();
-        applyVisualSettings();
-    }
-
-    public static void applyMiningSettings() {
-        try {
-            baritone.api.Settings s = Baritone.settings();
-            if (s == null) return;
-            s.allowBreak.value = true;
-            s.fastBreak.value = fastBreakInstamine;
-            s.autoDetectEfficiency10.value = autoDetectEfficiency;
-            s.continuousBreaking.value = fastBreakInstamine || multiBlockQueue;
-            s.blockReachDistance.value = miningRange;
-            SettingsUtil.save(s);
-        } catch (Throwable ignored) {}
-    }
-
-    public static void applyGrimSettings() {
-        try {
-            baritone.api.Settings s = Baritone.settings();
-            if (s == null) return;
-            s.antiCheatCompatibility.value = strictPlace;
-            s.antiCheatCompat.value = strictPlace;
-            s.humanizedInteractDelay.value = strictPlace;
-            s.strictRaytraceOnly.value = raytraceLOS;
-            s.smoothRotation.value = smoothRotations && (rotationMode != 0);
-            s.humanizedRotations.value = smoothRotations && (rotationMode == 2);
-            s.maxRotationSpeedPerTick.value = rotationSpeed;
-            s.autoEatPauseInCombat.value = combatLogDetector;
-            SettingsUtil.save(s);
-        } catch (Throwable ignored) {}
-    }
-
-    public static void applyAutomationSettings() {
-        try {
-            baritone.api.Settings s = Baritone.settings();
-            if (s == null) return;
-            s.anarchiaMode.value = anarchiaMode;
-            s.autoDropTrash.value = autoDropTrash;
-            s.autoSortInventory.value = autoSortInventory;
-            s.autoLockResource.value = itemLockProtection;
-            s.autoDropDelayMs.value = Math.max(50, Math.round(dropDelay * 50.0f));
-            s.autoSortDelayTicks.value = Math.max(1, Math.round(dropDelay));
-            s.autoEat.value = autoEat;
-            s.autoEatThreshold.value = Math.round(autoEatThreshold);
-            s.autoHomeOnFull.value = autoHomeOnFull;
-            SettingsUtil.save(s);
-        } catch (Throwable ignored) {}
-    }
-
-    public static void applyMovementSettings() {
-        try {
-            baritone.api.Settings s = Baritone.settings();
-            if (s == null) return;
-            s.mineAvoidWater.value = waterAvoid;
-            s.sprintInWater.value = !waterBuoyancy;
-            s.walkOnWaterOnePenalty.value = waterBuoyancy ? 1.0 : 3.0;
-            s.mineAvoidLava.value = lavaReflex;
-            s.strictLiquidCheck.value = lavaReflex;
-            s.breakHoldMaxDistance.value = (double) lavaScanRadius;
-            s.avoidFluidProximity.value = avoidFluidProximity;
-            s.fluidAvoidDistance.value = Math.round(fluidAvoidDistance);
-            s.avoidUpdatingFallingBlocks.value = antiSuffocation;
-            s.pauseMiningForFallingBlocks.value = antiSuffocation;
-            s.assumeWalkOnWater.value = !tunnelFloatGuard;
-            s.disconnectOnLowHealth.value = disconnectOnLowHealth;
-            s.disconnectHealthHearts.value = (double) disconnectHealthHearts;
-            s.disconnectOnFall.value = disconnectOnFall;
-            s.disconnectFallDistance.value = (double) disconnectFallDistance;
-            s.autoWaterClutch.value = autoWaterClutch;
-            s.allowWaterBucketFall.value = autoWaterClutch;
-            SettingsUtil.save(s);
-        } catch (Throwable ignored) {}
-    }
-
-    public static void applyVisualSettings() {
-        try {
-            baritone.api.Settings s = Baritone.settings();
-            if (s == null) return;
-            s.showHudOverlay.value = hudEnabled;
-            s.renderPath.value = pathTrail;
-            s.hudScale.value = (double) (hudScale / 100.0f);
-            SettingsUtil.save(s);
-        } catch (Throwable ignored) {}
-    }
-
-    // ========================================================================
-    //  SEKCJA 11 · PRYMITYWY RYSOWANIA (czysty GuiGraphics)
-    // ========================================================================
-
-    /** Zaokrąglony prostokąt — narożniki jako schodki ćwiartek okręgu. */
-    private static void drawRoundedRect(GuiGraphics g, int x1, int y1, int x2, int y2,
-                                        int radius, int color) {
-        int w = x2 - x1;
-        int h = y2 - y1;
-        if (w <= 0 || h <= 0) return;
-        if (radius > w / 2) radius = w / 2;
-        if (radius > h / 2) radius = h / 2;
-        if (radius <= 0) {
-            g.fill(x1, y1, x2, y2, color);
-            return;
-        }
-
-        g.fill(x1 + radius, y1, x2 - radius, y2, color);
-        g.fill(x1, y1 + radius, x1 + radius, y2 - radius, color);
-        g.fill(x2 - radius, y1 + radius, x2, y2 - radius, color);
-
-        for (int j = 0; j < radius; j++) {
-            int dx = cornerDx(radius, j);
-            if (dx <= 0) continue;
-            int yt = y1 + j;
-            int yb = y2 - 1 - j;
-            int leftX = x1 + radius - dx;
-            int rightX = x2 - radius;
-            g.fill(leftX, yt, leftX + dx, yt + 1, color);
-            g.fill(rightX, yt, rightX + dx, yt + 1, color);
-            g.fill(leftX, yb, leftX + dx, yb + 1, color);
-            g.fill(rightX, yb, rightX + dx, yb + 1, color);
-        }
-    }
-
-    /** Kontur zaokrąglonego prostokąta (1 px), spójny z drawRoundedRect. */
-    private static void drawOutline(GuiGraphics g, int x1, int y1, int x2, int y2,
-                                    int radius, int color) {
-        int w = x2 - x1;
-        int h = y2 - y1;
-        if (w <= 0 || h <= 0) return;
-        if (radius <= 0) {
-            g.renderOutline(x1, y1, x2, y2, color);
-            return;
-        }
-        if (radius > w / 2) radius = w / 2;
-        if (radius > h / 2) radius = h / 2;
-
-        int edgeDx = cornerDx(radius, 0);
-        g.fill(x1 + radius - edgeDx, y1, x2 - radius + edgeDx, y1 + 1, color);
-        g.fill(x1 + radius - edgeDx, y2 - 1, x2 - radius + edgeDx, y2, color);
-        g.fill(x1, y1 + radius, x1 + 1, y2 - radius, color);
-        g.fill(x2 - 1, y1 + radius, x2, y2 - radius, color);
-
-        for (int j = 1; j < radius; j++) {
-            int dx = cornerDx(radius, j);
-            if (dx <= 0) continue;
-            int leftX = x1 + radius - dx;
-            int rightX = x2 - radius + dx - 1;
-            g.fill(leftX, y1 + j, leftX + 1, y1 + j + 1, color);
-            g.fill(rightX, y1 + j, rightX + 1, y1 + j + 1, color);
-            g.fill(leftX, y2 - 1 - j, leftX + 1, y2 - j, color);
-            g.fill(rightX, y2 - 1 - j, rightX + 1, y2 - j, color);
-        }
-    }
-
-    /** Poziomy gradient (lewo -> prawo) składany z pionowych pasów fill(). */
-    private static void drawGradientRect(GuiGraphics g, int x1, int y1, int x2, int y2,
-                                         int colorFrom, int colorTo, int steps) {
-        if (x2 <= x1 || y2 <= y1) return;
-        int span = x2 - x1;
-        int n = clamp(steps, 1, span);
-        for (int i = 0; i < n; i++) {
-            int stripA = x1 + Math.round(span * (float) i / (float) n);
-            int stripB = x1 + Math.round(span * (float) (i + 1) / (float) n);
-            if (stripB <= stripA) continue;
-            float t = n == 1 ? 0.0f : (float) i / (float) (n - 1);
-            g.fill(stripA, y1, stripB, y2, lerpColor(colorFrom, colorTo, t));
-        }
-    }
-
-    /** Panel: zaokrąglone tło + 1 px obramowanie (efekt warstwowy). */
-    private static void drawBorderedPanel(GuiGraphics g, int x1, int y1, int x2, int y2,
-                                          int radius, int bg, int border) {
-        drawRoundedRect(g, x1, y1, x2, y2, radius, border);
-        drawRoundedRect(g, x1 + 1, y1 + 1, x2 - 1, y2 - 1, Math.max(0, radius - 1), bg);
-    }
-
-    /** Ikona pixel-art ('X' = zapalony piksel), gwarantowana zgodność z vanilla fontem. */
-    private static void drawIcon(GuiGraphics g, String[] pattern, int x, int y, int color) {
-        for (int row = 0; row < pattern.length; row++) {
-            String line = pattern[row];
-            for (int col = 0; col < line.length(); col++) {
-                if (line.charAt(col) == 'X') {
-                    g.fill(x + col, y + row, x + col + 1, y + row + 1, color);
-                }
-            }
-        }
-    }
-
-    /** Szerokość ćwiartki okręgu narożnika dla wiersza `row` (piksle środkowe). */
-    private static int cornerDx(int radius, int row) {
-        double dy = radius - (row + 0.5);
-        double inner = (double) radius * radius - dy * dy;
-        if (inner <= 0.0) return 0;
-        return clamp((int) Math.round(Math.sqrt(inner)), 0, radius);
-    }
-
-    // ========================================================================
-    //  SEKCJA 12 · NARZĘDZIA
-    // ========================================================================
-    private static boolean inRect(int mx, int my, int x1, int y1, int x2, int y2) {
-        return mx >= x1 && mx < x2 && my >= y1 && my < y2;
-    }
-
-    private static int clamp(int value, int min, int max) {
-        return value < min ? min : (value > max ? max : value);
-    }
-
-    private static float clamp(float value, float min, float max) {
-        return value < min ? min : (value > max ? max : value);
-    }
-
-    private static int lerpColor(int from, int to, float t) {
-        int fa = (from >>> 24) & 0xFF, fr = (from >> 16) & 0xFF, fg = (from >> 8) & 0xFF, fb = from & 0xFF;
-        int ta = (to >>> 24) & 0xFF, tr = (to >> 16) & 0xFF, tg = (to >> 8) & 0xFF, tb = to & 0xFF;
-        int a = fa + Math.round((ta - fa) * t);
-        int r = fr + Math.round((tr - fr) * t);
-        int gg = fg + Math.round((tg - fg) * t);
-        int b = fb + Math.round((tb - fb) * t);
-        return (a << 24) | (r << 16) | (gg << 8) | b;
-    }
-
-    private static int scaleAlpha(int color, float factor) {
-        int a = clamp((int) (((color >>> 24) & 0xFF) * factor), 0, 255);
-        return (a << 24) | (color & 0x00FFFFFF);
-    }
-
-    /** Skala alfy wg suwaka „Dark Mode Intensity”. */
-    private static int op(int color) {
-        return scaleAlpha(color, clamp(guiOpacity, 0.5f, 1.0f));
-    }
-
-    private String trunc(String text, int maxWidth) {
-        if (maxWidth <= 0) return "";
-        if (this.font.width(text) <= maxWidth) return text;
-        String suffix = "...";
-        int keep = text.length();
-        while (keep > 0 && this.font.width(text.substring(0, keep)) + this.font.width(suffix) > maxWidth) {
-            keep--;
-        }
-        return text.substring(0, keep) + suffix;
-    }
-
-    private static float contentHeight(Category cat) {
-        return HEADER_H + cat.modules.size() * CARD_STEP - 6 + 12;
-    }
-
-    private static float maxScroll(Category cat) {
-        return Math.max(0.0f, contentHeight(cat) - CONTENT_H);
-    }
-
-    private void updateFps() {
-        this.fpsFrames++;
-        long now = System.currentTimeMillis();
-        if (now - this.fpsClock >= 1000L) {
-            this.fpsDisplay = this.fpsFrames;
-            this.fpsFrames = 0;
-            this.fpsClock = now;
-        }
-    }
-
-    private void clampWindow() {
-        int minX = -WINDOW_W + 120;
-        this.windowX = clamp(this.windowX, minX, Math.max(minX, this.width - 120));
-        this.windowY = clamp(this.windowY, 2, Math.max(2, this.height - 60));
-    }
-
-    // ========================================================================
-    //  SEKCJA 13 · MODEL WIDGETÓW
-    // ========================================================================
-    private abstract static class Module {
-        final String name;
-        final String description;
-
-        Module(String name, String description) {
-            this.name = name;
-            this.description = description;
-        }
-
-        abstract void render(GuiGraphics g, Font font, int cardX, int cardY, int mouseX, int mouseY);
-
-        abstract boolean onClick(BaritoneBypassScreen screen, double mouseX, double mouseY,
-                                 int button, int cardX, int cardY);
-
-        abstract int nameMax();
-
-        abstract int descMax();
-    }
-
-    /** Nowoczesny przełącznik pigułkowy (slider ON/OFF) z animowanym pokrętłem. */
-    private static final class ToggleModule extends Module {
-        private final Consumer<Boolean> onToggle;
-        boolean enabled;
-        float knobAnimation;
-
-        ToggleModule(String name, String description, boolean initial, Consumer<Boolean> onToggle) {
-            super(name, description);
-            this.enabled = initial;
-            this.onToggle = onToggle;
-            this.knobAnimation = initial ? 1.0f : 0.0f;
-        }
-
-        void set(boolean value) {
-            this.enabled = value;
-            if (this.onToggle != null) this.onToggle.accept(Boolean.valueOf(value));
-        }
-
-        @Override
-        void render(GuiGraphics g, Font font, int cardX, int cardY, int mouseX, int mouseY) {
-            int px = cardX + TOGGLE_X;
-            int py = cardY + TOGGLE_Y;
-
-            String state = this.enabled ? "ON" : "OFF";
-            g.drawString(font, state, px - 9 - font.width(state), py + 4,
-                    this.enabled ? C_CYAN : C_TEXT_FAINT, false);
-
-            float target = this.enabled ? 1.0f : 0.0f;
-            this.knobAnimation += (target - this.knobAnimation) * 0.45f;
-            if (Math.abs(target - this.knobAnimation) < 0.02f) this.knobAnimation = target;
-
-            if (this.enabled) {
-                drawRoundedRect(g, px - 2, py - 2, px + TOGGLE_W + 2, py + TOGGLE_H + 2, 10, 0x2E00E5FF);
-                drawRoundedRect(g, px, py, px + TOGGLE_W, py + TOGGLE_H, 9, C_CYAN);
-            } else {
-                drawRoundedRect(g, px, py, px + TOGGLE_W, py + TOGGLE_H, 9, C_INACTIVE);
-            }
-
-            int travel = TOGGLE_W - 4 - 14;
-            int kx = px + 2 + Math.round(this.knobAnimation * travel);
-            drawRoundedRect(g, kx, py + 2, kx + 14, py + TOGGLE_H - 2, 7,
-                    this.enabled ? 0xFFFFFFFF : 0xFF66758C);
-        }
-
-        @Override
-        boolean onClick(BaritoneBypassScreen screen, double mouseX, double mouseY,
-                        int button, int cardX, int cardY) {
-            if (button != 0) return false;
-            set(!this.enabled);
-            playClickSound();
-            if (screen != null) {
-                screen.refreshFromSettings();
+    public boolean charTyped(char codePoint, int modifiers) {
+        if (searchFocused && (Character.isLetterOrDigit(codePoint) || " _-.".indexOf(codePoint) >= 0)) {
+            if (searchQuery.length() < 26) {
+                searchQuery += codePoint;
+                scrollTarget = 0.0f;
             }
             return true;
         }
-
-        @Override
-        int nameMax() {
-            return TOGGLE_X - 42;
-        }
-
-        @Override
-        int descMax() {
-            return TOGGLE_X - 42;
-        }
+        return super.charTyped(codePoint, modifiers);
     }
 
-    /** Płynny suwak wartości z krokiem, jednostką i gradientowym wypełnieniem. */
-    private static final class SliderModule extends Module {
-        private final float min;
-        private final float max;
-        private final float step;
-        private final String unit;
-        private final Consumer<Float> onChange;
-        float value;
-
-        SliderModule(String name, String description, float min, float max, float step,
-                     float initial, String unit, Consumer<Float> onChange) {
-            super(name, description);
-            this.min = min;
-            this.max = max;
-            this.step = step > 0.0f ? step : 0.01f;
-            this.value = clamp(initial, min, max);
-            this.unit = unit == null ? "" : unit;
-            this.onChange = onChange;
-        }
-
-        String displayValue() {
-            String number = this.step >= 1.0f
-                    ? String.valueOf(Math.round(this.value))
-                    : String.format(Locale.US, "%.1f", this.value);
-            return number + this.unit;
-        }
-
-        void setFromMouse(double mouseX, int trackX) {
-            float t = clamp((float) (mouseX - (double) trackX) / (float) SLIDER_W, 0.0f, 1.0f);
-            float raw = this.min + t * (this.max - this.min);
-            float snapped = Math.round(raw / this.step) * this.step;
-            this.value = clamp(snapped, this.min, this.max);
-            if (this.onChange != null) this.onChange.accept(Float.valueOf(this.value));
-        }
-
-        @Override
-        void render(GuiGraphics g, Font font, int cardX, int cardY, int mouseX, int mouseY) {
-            int tx = cardX + SLIDER_X;
-            int ty = cardY + SLIDER_TRACK_Y;
-
-            String text = displayValue();
-            g.drawString(font, text, cardX + CARD_W - 12 - font.width(text), cardY + 9,
-                    C_TEXT_MAIN, false);
-
-            boolean hot = inRect(mouseX, mouseY, tx - 6, cardY + 12, tx + SLIDER_W + 6, cardY + 34);
-
-            drawRoundedRect(g, tx, ty, tx + SLIDER_W, ty + SLIDER_TRACK_H, 2, C_INACTIVE);
-
-            float t = this.max > this.min ? (this.value - this.min) / (this.max - this.min) : 0.0f;
-            int fillW = Math.round(clamp(t, 0.0f, 1.0f) * (float) SLIDER_W);
-            if (fillW > 0) {
-                drawGradientRect(g, tx, ty, tx + fillW, ty + SLIDER_TRACK_H, C_CYAN, C_PURPLE, 12);
-            }
-
-            int kx = clamp(tx + fillW - 5, tx - 5, tx + SLIDER_W - 5);
-            int ky = ty - 6;
-            if (hot) {
-                drawRoundedRect(g, kx - 2, ky - 2, kx + 12, ky + 18, 6, 0x3300E5FF);
-            }
-            drawBorderedPanel(g, kx, ky, kx + 10, ky + 16, 4,
-                    hot ? 0xFFFFFFFF : 0xFFE8EEF8, hot ? C_CYAN : C_BORDER);
-        }
-
-        @Override
-        boolean onClick(BaritoneBypassScreen screen, double mouseX, double mouseY,
-                        int button, int cardX, int cardY) {
-            if (button != 0) return false;
-            int tx = cardX + SLIDER_X;
-            if (mouseX >= tx - 12 && mouseX <= tx + SLIDER_W + 12
-                    && mouseY >= cardY + 6 && mouseY <= cardY + CARD_H - 6) {
-                screen.draggingSlider = this;
-                setFromMouse(mouseX, tx);
-                playClickSound();
-                return true;
-            }
-            return false;
-        }
-
-        @Override
-        int nameMax() {
-            return CARD_W - 24 - 74;
-        }
-
-        @Override
-        int descMax() {
-            return SLIDER_X - 20;
-        }
+    public static boolean isHovered(double mx, double my, float x, float y, float w, float h) {
+        return mx >= x && mx <= x + w && my >= y && my <= y + h;
     }
 
-    /** Cycle-button: LMB = następny tryb, RMB = poprzedni. */
-    private static final class CycleModule extends Module {
-        private final String[] modes;
-        private final Consumer<Integer> onChange;
-        int index;
+    // =========================================================================
+    // SILNIK OPENGL 3.3 SDF: VENTURA SDF RENDERER (WSPÓŁDZIELONY)
+    // =========================================================================
+    public static final class VenturaSdfRenderer {
+        public static final VenturaSdfRenderer INSTANCE = new VenturaSdfRenderer();
 
-        CycleModule(String name, String description, String[] modes, int initialIndex,
-                    Consumer<Integer> onChange) {
-            super(name, description);
-            this.modes = modes;
-            this.index = clamp(initialIndex, 0, modes.length - 1);
-            this.onChange = onChange;
-        }
+        private static int programId = -1;
+        private static int vaoId = -1;
+        private static int vboId = -1;
 
-        String currentMode() {
-            return this.modes[this.index];
-        }
+        private static int uScreenSize;
+        private static int uRect;
+        private static int uRadii;
+        private static int uFillColor;
+        private static int uBorderColor;
+        private static int uParams; // x: borderThickness, y: feather/glow, z: progress/lineThickness, w: mode
+        private static int uSegment; // x1, y1, x2, y2 dla linii wektorowych
 
-        void cycle(int direction) {
-            this.index = Math.floorMod(this.index + direction, this.modes.length);
-            if (this.onChange != null) this.onChange.accept(Integer.valueOf(this.index));
-        }
+        private static final FloatBuffer QUAD_BUF = BufferUtils.createFloatBuffer(12);
 
-        @Override
-        void render(GuiGraphics g, Font font, int cardX, int cardY, int mouseX, int mouseY) {
-            int px = cardX + CYCLE_X;
-            int py = cardY + CYCLE_Y;
-            boolean hot = inRect(mouseX, mouseY, px, py, px + CYCLE_W, py + CYCLE_H);
-
-            if (hot) {
-                drawRoundedRect(g, px - 2, py - 2, px + CYCLE_W + 2, py + CYCLE_H + 2, 10, 0x2400E5FF);
-            }
-            drawBorderedPanel(g, px, py, px + CYCLE_W, py + CYCLE_H, 9,
-                    op(C_CARD_BG_ALT), hot ? C_BORDER_HOT : C_BORDER);
-
-            String mode = currentMode();
-            g.drawString(font, mode, px + (CYCLE_W - font.width(mode)) / 2, py + 4,
-                    C_TEXT_MAIN, false);
-            g.drawString(font, "<", px + 9, py + 4, hot ? C_CYAN : C_TEXT_DIM, false);
-            g.drawString(font, ">", px + CYCLE_W - 14, py + 4, hot ? C_CYAN : C_TEXT_DIM, false);
-        }
-
-        @Override
-        boolean onClick(BaritoneBypassScreen screen, double mouseX, double mouseY,
-                        int button, int cardX, int cardY) {
-            if (button != 0 && button != 1) return false;
-            int px = cardX + CYCLE_X;
-            int py = cardY + CYCLE_Y;
-            if (mouseX >= px - 10 && mouseX <= px + CYCLE_W + 10
-                    && mouseY >= py - 5 && mouseY <= py + CYCLE_H + 5) {
-                cycle(button == 1 ? -1 : 1);
-                playClickSound();
-                if (screen != null) {
-                    screen.refreshFromSettings();
+        private static final String VERTEX_SHADER = """
+                #version 330 core
+                layout(location = 0) in vec2 a_Pos;
+                uniform vec2 u_ScreenSize;
+                out vec2 v_FragCoord;
+                void main() {
+                    v_FragCoord = a_Pos;
+                    vec2 ndc = (a_Pos / u_ScreenSize) * 2.0 - 1.0;
+                    ndc.y = -ndc.y;
+                    gl_Position = vec4(ndc, 0.0, 1.0);
                 }
-                return true;
-            }
-            return false;
-        }
+                """;
 
-        @Override
-        int nameMax() {
-            return CYCLE_X - 24;
-        }
+        private static final String FRAGMENT_SHADER = """
+                #version 330 core
+                in vec2 v_FragCoord;
+                out vec4 FragColor;
 
-        @Override
-        int descMax() {
-            return CYCLE_X - 24;
-        }
-    }
+                uniform vec4 u_Rect;        // x, y, w, h
+                uniform vec4 u_Radii;       // top-right, bottom-right, top-left, bottom-left
+                uniform vec4 u_FillColor;   // RGBA
+                uniform vec4 u_BorderColor; // RGBA
+                uniform vec4 u_Params;      // x: borderW, y: feather/blur, z: ringProgress, w: mode (0=Box, 1=Ring, 2=Line, 3=DropShadow)
+                uniform vec4 u_Segment;     // x1, y1, x2, y2
 
-    /** Zakładka: nazwa, ikona, lista modułów + własny stan scrolla. */
-    private static final class Category {
-        final String name;
-        final String[] icon;
-        final List<Module> modules;
-        float scroll;
-        float scrollTarget;
-
-        Category(String name, String[] icon, List<Module> modules, float initialScroll) {
-            this.name = name;
-            this.icon = icon;
-            this.modules = modules;
-            this.scroll = initialScroll;
-            this.scrollTarget = initialScroll;
-        }
-    }
-
-    // ========================================================================
-    //  SEKCJA 14 · BEZPIECZNY MOST DO BARITONE (pure reflection)
-    //  Równoważne wywołaniom Baritone.settings().allowBreak.value = ...
-    //  Wykonywane wyłącznie wtedy, gdy Baritone istnieje na classpath.
-    // ========================================================================
-    public static final class BaritoneBridge {
-
-        private static long lastBotPoll = 0L;
-        private static boolean polledBotActive = false;
-
-        private BaritoneBridge() {
-        }
-
-        public static boolean linked() {
-            try {
-                return Baritone.settings() != null;
-            } catch (Throwable t) {
-                return false;
-            }
-        }
-
-        public static void setBoolean(String key, boolean value) {
-            set(key, Boolean.valueOf(value));
-        }
-
-        public static void setInt(String key, int value) {
-            set(key, Integer.valueOf(value));
-        }
-
-        /** Próbuje Float, potem Double, potem Integer — dopasowanie do typu Setting<T>. */
-        public static void setNumber(String key, float value) {
-            if (set(key, Float.valueOf(value))) return;
-            if (set(key, Double.valueOf(value))) return;
-            set(key, Integer.valueOf(Math.round(value)));
-        }
-
-        private static boolean set(String key, Object value) {
-            try {
-                baritone.api.Settings s = Baritone.settings();
-                if (s == null) return false;
-                java.lang.reflect.Field f = s.getClass().getField(key);
-                Object setting = f.get(s);
-                if (setting != null) {
-                    setting.getClass().getField("value").set(setting, value);
-                    SettingsUtil.save(s);
-                    return true;
+                float sdRoundedBox4(vec2 p, vec2 b, vec4 r) {
+                    r.xy = (p.x > 0.0) ? r.xy : r.zw;
+                    r.x  = (p.y > 0.0) ? r.x  : r.y;
+                    vec2 q = abs(p) - b + r.x;
+                    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r.x;
                 }
-            } catch (Throwable ignored) {
-            }
-            return false;
+
+                float sdSegment(vec2 p, vec2 a, vec2 b) {
+                    vec2 pa = p - a, ba = b - a;
+                    float h = clamp(dot(pa, ba) / max(0.0001, dot(ba, ba)), 0.0, 1.0);
+                    return length(pa - ba * h);
+                }
+
+                void main() {
+                    int mode = int(u_Params.w + 0.5);
+                    vec2 center = u_Rect.xy + u_Rect.zw * 0.5;
+                    vec2 p = v_FragCoord - center;
+
+                    if (mode == 0) {
+                        vec2 halfSize = u_Rect.zw * 0.5;
+                        float d = sdRoundedBox4(p, halfSize, u_Radii);
+                        float aa = 0.75;
+                        float fillAlpha = 1.0 - smoothstep(-aa, aa, d);
+
+                        vec4 col = vec4(u_FillColor.rgb, u_FillColor.a * fillAlpha);
+
+                        if (u_Params.x > 0.01) {
+                            float borderMask = (1.0 - smoothstep(-aa, aa, d)) - (1.0 - smoothstep(-aa, aa, d + u_Params.x));
+                            borderMask = clamp(borderMask, 0.0, 1.0);
+                            col = mix(col, vec4(u_BorderColor.rgb, u_BorderColor.a), borderMask * u_BorderColor.a);
+                            col.a = max(col.a, borderMask * u_BorderColor.a);
+                        }
+
+                        if (u_Params.y > 0.5 && d > -0.5) {
+                            float glowDist = max(0.0, d);
+                            float feather = u_Params.y;
+                            // Płynne wygaszanie Hermite'a od 1.0 przy d=0 do DOKŁADNIE 0.0 przy d=feather
+                            float t = clamp(1.0 - (glowDist / feather), 0.0, 1.0);
+                            float glowAlpha = t * t * (3.0 - 2.0 * t) * u_BorderColor.a;
+                            col = mix(col, vec4(u_BorderColor.rgb, u_BorderColor.a), glowAlpha * (1.0 - fillAlpha));
+                        }
+                        FragColor = col;
+                    } else if (mode == 1) {
+                        float radius = u_Rect.z * 0.5;
+                        float thickness = u_Params.x;
+                        float distFromCenter = length(p);
+                        float ringDist = abs(distFromCenter - (radius - thickness * 0.5)) - thickness * 0.5;
+                        float aa = 0.75;
+                        float ringMask = 1.0 - smoothstep(-aa, aa, ringDist);
+
+                        float angle = atan(p.x, -p.y);
+                        if (angle < 0.0) angle += 6.2831853;
+                        float normAngle = angle / 6.2831853;
+
+                        float progMask = smoothstep(normAngle - 0.008, normAngle + 0.008, u_Params.z);
+                        vec4 trackCol = vec4(u_FillColor.rgb, u_FillColor.a * ringMask);
+                        vec4 arcCol = vec4(u_BorderColor.rgb, u_BorderColor.a * ringMask * progMask);
+
+                        FragColor = mix(trackCol, arcCol, progMask);
+                    } else if (mode == 2) {
+                        float d = sdSegment(v_FragCoord, u_Segment.xy, u_Segment.zw) - u_Params.x * 0.5;
+                        float alpha = 1.0 - smoothstep(-0.75, 0.75, d);
+                        FragColor = vec4(u_FillColor.rgb, u_FillColor.a * alpha);
+                    } else {
+                        // Mode 3: Dedykowany Drop-Shadow ze skończonym nośnikiem Hermite'a (Zero Glow-Box)
+                        vec2 halfSize = u_Rect.zw * 0.5;
+                        float d = sdRoundedBox4(p, halfSize, u_Radii);
+                        float blur = max(1.0, u_Params.y);
+                        float shadowDist = max(0.0, d);
+                        float t = clamp(1.0 - (shadowDist / blur), 0.0, 1.0);
+                        float shadowAlpha = t * t * (3.0 - 2.0 * t) * u_BorderColor.a;
+                        FragColor = vec4(u_BorderColor.rgb, shadowAlpha);
+                    }
+                }
+                """;
+
+        public static void ensureInitialized() {
+            if (programId != -1) return;
+
+            int vs = GL20.glCreateShader(GL20.GL_VERTEX_SHADER);
+            GL20.glShaderSource(vs, VERTEX_SHADER);
+            GL20.glCompileShader(vs);
+
+            int fs = GL20.glCreateShader(GL20.GL_FRAGMENT_SHADER);
+            GL20.glShaderSource(fs, FRAGMENT_SHADER);
+            GL20.glCompileShader(fs);
+
+            programId = GL20.glCreateProgram();
+            GL20.glAttachShader(programId, vs);
+            GL20.glAttachShader(programId, fs);
+            GL20.glLinkProgram(programId);
+
+            GL20.glDeleteShader(vs);
+            GL20.glDeleteShader(fs);
+
+            uScreenSize  = GL20.glGetUniformLocation(programId, "u_ScreenSize");
+            uRect        = GL20.glGetUniformLocation(programId, "u_Rect");
+            uRadii       = GL20.glGetUniformLocation(programId, "u_Radii");
+            uFillColor   = GL20.glGetUniformLocation(programId, "u_FillColor");
+            uBorderColor = GL20.glGetUniformLocation(programId, "u_BorderColor");
+            uParams      = GL20.glGetUniformLocation(programId, "u_Params");
+            uSegment     = GL20.glGetUniformLocation(programId, "u_Segment");
+
+            vaoId = GL30.glGenVertexArrays();
+            vboId = GL15.glGenBuffers();
+            GL30.glBindVertexArray(vaoId);
+            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, vboId);
+            GL15.glBufferData(GL15.GL_ARRAY_BUFFER, 12 * Float.BYTES, GL15.GL_DYNAMIC_DRAW);
+            GL20.glEnableVertexAttribArray(0);
+            GL20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, 2 * Float.BYTES, 0);
+            GL30.glBindVertexArray(0);
         }
 
-        /** true, gdy bot realnie pracuje (Baritone mine process) lub flaga BOT_ACTIVE. */
-        public static boolean isBotActive() {
-            if (BOT_ACTIVE) return true;
-            long now = System.currentTimeMillis();
-            if (now - lastBotPoll > 300L) {
-                lastBotPoll = now;
-                polledBotActive = pollBotActive();
-            }
-            return polledBotActive;
+        public static void beginFrame(GuiGraphics guiGraphics) {
+            ensureInitialized();
         }
 
-        private static boolean pollBotActive() {
-            try {
-                baritone.api.IBaritone baritone = BaritoneAPI.getProvider().getPrimaryBaritone();
-                if (baritone == null) return false;
-                if (baritone.getMineProcess().isActive()) return true;
-                if (baritone.getPathingBehavior().hasPath()) return true;
-                if (baritone.getFollowProcess().isActive()) return true;
-                if (baritone.getBuilderProcess().isActive()) return true;
-                if (baritone.getCustomGoalProcess().isActive()) return true;
-            } catch (Throwable ignored) {
+        public static void endFrame() {}
+        public static void flush() {}
+
+        public static void drawDropShadow(float x, float y, float w, float h,
+                                          float radius, float blur, float offsetY, int shadowCol) {
+            if (((shadowCol >>> 24) & 0xFF) == 0 || blur <= 0.1f) return;
+
+            float insetX = Math.min(2.5f, blur * 0.2f);
+            float sx = x + insetX;
+            float sy = y + offsetY;
+            float sw = Math.max(1.0f, w - insetX * 2.0f);
+            float sh = h;
+
+            float qx = sx - blur;
+            float qy = sy - blur;
+            float qw = sw + blur * 2.0f;
+            float qh = sh + blur * 2.0f;
+
+            dispatchQuad(qx, qy, qw, qh,
+                    sx, sy, sw, sh, radius, radius, radius, radius,
+                    0x00000000, shadowCol, 0.0f, blur, 0.0f, 3.0f, 0, 0, 0, 0);
+        }
+
+        public void drawShadowedRect(float x, float y, float w, float h, float radius, float shadowSpread,
+                                     int fillCol, int shadowCol, float borderThickness, int borderCol) {
+            if (shadowSpread > 0.0f) {
+                drawDropShadow(x, y, w, h, radius, shadowSpread, 3.0f, shadowCol);
             }
-            return false;
+            drawRoundedRect(x, y, w, h, radius, fillCol, borderCol, borderThickness);
+        }
+
+        public void drawVectorIcon(VectorIcon icon, float cx, float cy, float radius, float stroke, int color) {
+            drawIcon(icon, cx, cy, radius * 2.0f, color);
+        }
+
+        public static void drawRoundedRect(float x, float y, float w, float h, float radius,
+                                           int fillCol, int borderCol, float borderW) {
+            drawRoundedRect4(x, y, w, h, radius, radius, radius, radius, fillCol, borderCol, borderW);
+        }
+
+        public static void drawRoundedRect4(float x, float y, float w, float h,
+                                            float rTL, float rTR, float rBR, float rBL,
+                                            int fillCol, int borderCol, float borderW) {
+            float feather = borderW > 2.5f ? borderW : 0.0f;
+            float actualBorder = borderW > 2.5f ? 0.0f : borderW;
+            float qx = x - feather;
+            float qy = y - feather;
+            float qw = w + feather * 2.0f;
+            float qh = h + feather * 2.0f;
+
+            dispatchQuad(qx, qy, qw, qh,
+                    x, y, w, h, rTR, rBR, rTL, rBL,
+                    fillCol, borderCol, actualBorder, feather, 0.0f, 0.0f, 0, 0, 0, 0);
+        }
+
+        public static void drawCircle(float cx, float cy, float radius, int color) {
+            drawCircle(cx, cy, radius, color, 0);
+        }
+
+        public static void drawCircle(float cx, float cy, float radius, int fillCol, int glowCol) {
+            float d = radius * 2.0f;
+            drawRoundedRect(cx - radius, cy - radius, d, d, radius, fillCol, glowCol, glowCol != 0 ? 3.5f : 0.0f);
+        }
+
+        public static void drawProgressRing(float cx, float cy, float radius, float thickness,
+                                            float progress, int trackCol, int arcCol) {
+            float d = radius * 2.0f;
+            dispatchQuad(cx - radius - 2.0f, cy - radius - 2.0f, d + 4.0f, d + 4.0f,
+                    cx - radius, cy - radius, d, d,
+                    0, 0, 0, 0,
+                    trackCol, arcCol, thickness, 0.0f, Mth.clamp(progress, 0.0f, 1.0f), 1.0f,
+                    0, 0, 0, 0);
+        }
+
+        public static void drawLine(float x1, float y1, float x2, float y2, float thickness, int color) {
+            float minX = Math.min(x1, x2) - thickness - 2.0f;
+            float minY = Math.min(y1, y2) - thickness - 2.0f;
+            float maxX = Math.max(x1, x2) + thickness + 2.0f;
+            float maxY = Math.max(y1, y2) + thickness + 2.0f;
+            dispatchQuad(minX, minY, maxX - minX, maxY - minY,
+                    minX, minY, maxX - minX, maxY - minY,
+                    0, 0, 0, 0,
+                    color, 0, thickness, 0.0f, 0.0f, 2.0f,
+                    x1, y1, x2, y2);
+        }
+
+        public static void drawToggle(float x, float y, float anim, boolean hovered) {
+            int bg = lerpColor(COL_TOGGLE_OFF_BG, COL_ACCENT_TRANS, anim);
+            int border = lerpColor(COL_BORDER_FIELD, COL_ACCENT_LILAC, anim);
+            drawRoundedRect(x, y, 30.0f, 16.0f, 8.0f, bg, border, 1.0f);
+            float knobX = x + 8.0f + anim * 14.0f;
+            int knobCol = lerpColor(COL_TOGGLE_OFF_KNOB, COL_TEXT_WHITE, anim);
+            drawCircle(knobX, y + 8.0f, 5.2f, knobCol, anim > 0.5f || hovered ? COL_ACCENT_GLOW : 0);
+        }
+
+        public static void drawIcon(VectorIcon icon, float cx, float cy, float size, int col) {
+            float r = size * 0.5f;
+            float t = 1.45f;
+            switch (icon) {
+                case VENTURA_LOGO -> {
+                    drawLine(cx - r * 0.75f, cy - r * 0.55f, cx, cy + r * 0.75f, t * 1.15f, col);
+                    drawLine(cx + r * 0.75f, cy - r * 0.55f, cx, cy + r * 0.75f, t * 1.15f, col);
+                    drawLine(cx - r * 0.45f, cy - r * 0.55f, cx + r * 0.45f, cy - r * 0.55f, t, col);
+                }
+                case SHIELD -> {
+                    drawLine(cx, cy - r, cx + r * 0.85f, cy - r * 0.45f, t, col);
+                    drawLine(cx + r * 0.85f, cy - r * 0.45f, cx + r * 0.6f, cy + r * 0.45f, t, col);
+                    drawLine(cx + r * 0.6f, cy + r * 0.45f, cx, cy + r, t, col);
+                    drawLine(cx, cy + r, cx - r * 0.6f, cy + r * 0.45f, t, col);
+                    drawLine(cx - r * 0.6f, cy + r * 0.45f, cx - r * 0.85f, cy - r * 0.45f, t, col);
+                    drawLine(cx - r * 0.85f, cy - r * 0.45f, cx, cy - r, t, col);
+                }
+                case LAYERS -> {
+                    drawLine(cx, cy - r * 0.9f, cx + r, cy - r * 0.25f, t, col);
+                    drawLine(cx + r, cy - r * 0.25f, cx, cy + r * 0.35f, t, col);
+                    drawLine(cx, cy + r * 0.35f, cx - r, cy - r * 0.25f, t, col);
+                    drawLine(cx - r, cy - r * 0.25f, cx, cy - r * 0.9f, t, col);
+                    drawLine(cx - r * 0.9f, cy + r * 0.25f, cx, cy + r * 0.85f, t, col);
+                    drawLine(cx, cy + r * 0.85f, cx + r * 0.9f, cy + r * 0.25f, t, col);
+                }
+                case COMPASS -> {
+                    drawLine(cx, cy, cx, cy - r, t, col);
+                    drawLine(cx, cy, cx + r * 0.86f, cy + r * 0.5f, t, col);
+                    drawLine(cx, cy, cx - r * 0.86f, cy + r * 0.5f, t, col);
+                    drawCircle(cx, cy, 1.8f, col, 0);
+                }
+                case BOX, SHULKER_BOX -> {
+                    drawLine(cx, cy - r, cx + r * 0.86f, cy - r * 0.5f, t, col);
+                    drawLine(cx + r * 0.86f, cy - r * 0.5f, cx, cy, t, col);
+                    drawLine(cx, cy, cx - r * 0.86f, cy - r * 0.5f, t, col);
+                    drawLine(cx - r * 0.86f, cy - r * 0.5f, cx, cy - r, t, col);
+                    drawLine(cx - r * 0.86f, cy - r * 0.5f, cx - r * 0.86f, cy + r * 0.5f, t, col);
+                    drawLine(cx + r * 0.86f, cy - r * 0.5f, cx + r * 0.86f, cy + r * 0.5f, t, col);
+                    drawLine(cx, cy, cx, cy + r, t, col);
+                    drawLine(cx - r * 0.86f, cy + r * 0.5f, cx, cy + r, t, col);
+                    drawLine(cx + r * 0.86f, cy + r * 0.5f, cx, cy + r, t, col);
+                }
+                case BOLT -> {
+                    drawLine(cx + r * 0.2f, cy - r, cx - r * 0.6f, cy + r * 0.1f, t, col);
+                    drawLine(cx - r * 0.6f, cy + r * 0.1f, cx + r * 0.15f, cy + r * 0.1f, t, col);
+                    drawLine(cx + r * 0.15f, cy + r * 0.1f, cx - r * 0.2f, cy + r, t, col);
+                }
+                case SEARCH -> {
+                    drawProgressRing(cx - r * 0.15f, cy - r * 0.15f, r * 0.65f, 1.4f, 1.0f, col, col);
+                    drawLine(cx + r * 0.3f, cy + r * 0.3f, cx + r * 0.9f, cy + r * 0.9f, t, col);
+                }
+                case MOVEMENT, RUNNER -> {
+                    drawLine(cx - r, cy - r * 0.4f, cx + r * 0.5f, cy - r * 0.4f, t, col);
+                    drawLine(cx - r * 0.6f, cy + r * 0.1f, cx + r, cy + r * 0.1f, t, col);
+                    drawLine(cx - r * 0.8f, cy + r * 0.6f, cx + r * 0.3f, cy + r * 0.6f, t, col);
+                }
+                case MINING, PICKAXE -> {
+                    drawLine(cx - r * 0.7f, cy + r * 0.7f, cx + r * 0.5f, cy - r * 0.5f, t, col);
+                    drawLine(cx, cy - r * 0.8f, cx + r * 0.8f, cy, t, col);
+                }
+                case RENDER, EYE -> {
+                    drawLine(cx - r, cy, cx, cy - r * 0.65f, t, col);
+                    drawLine(cx, cy - r * 0.65f, cx + r, cy, t, col);
+                    drawLine(cx + r, cy, cx, cy + r * 0.65f, t, col);
+                    drawLine(cx, cy + r * 0.65f, cx - r, cy, t, col);
+                    drawCircle(cx, cy, r * 0.3f, col, 0);
+                }
+                case SLIDERS, SLIDER_MINI -> {
+                    drawLine(cx - r, cy - r * 0.5f, cx + r, cy - r * 0.5f, t, col);
+                    drawCircle(cx - r * 0.3f, cy - r * 0.5f, 2.2f, col, 0);
+                    drawLine(cx - r, cy + r * 0.5f, cx + r, cy + r * 0.5f, t, col);
+                    drawCircle(cx + r * 0.4f, cy + r * 0.5f, 2.2f, col, 0);
+                }
+                case CHECK -> {
+                    drawLine(cx - r * 0.75f, cy + r * 0.05f, cx - r * 0.15f, cy + r * 0.65f, t, col);
+                    drawLine(cx - r * 0.15f, cy + r * 0.65f, cx + r * 0.85f, cy - r * 0.55f, t, col);
+                }
+                case REFRESH -> {
+                    drawProgressRing(cx, cy, r * 0.8f, 1.4f, 0.78f, 0x00000000, col);
+                    drawLine(cx + r * 0.4f, cy - r * 0.75f, cx + r * 0.85f, cy - r * 0.35f, t, col);
+                }
+                case PLAY -> {
+                    drawLine(cx - r * 0.5f, cy - r * 0.75f, cx + r * 0.75f, cy, t, col);
+                    drawLine(cx + r * 0.75f, cy, cx - r * 0.5f, cy + r * 0.75f, t, col);
+                    drawLine(cx - r * 0.5f, cy + r * 0.75f, cx - r * 0.5f, cy - r * 0.75f, t, col);
+                }
+                case STOP -> {
+                    drawRoundedRect(cx - r * 0.6f, cy - r * 0.6f, r * 1.2f, r * 1.2f, 2.0f, col, 0, 0.0f);
+                }
+                case ARROW_UP -> {
+                    drawLine(cx, cy - r * 0.75f, cx, cy + r * 0.75f, t, col);
+                    drawLine(cx - r * 0.55f, cy - r * 0.2f, cx, cy - r * 0.75f, t, col);
+                    drawLine(cx + r * 0.55f, cy - r * 0.2f, cx, cy - r * 0.75f, t, col);
+                }
+                case ARROW_DOWN -> {
+                    drawLine(cx, cy - r * 0.75f, cx, cy + r * 0.75f, t, col);
+                    drawLine(cx - r * 0.55f, cy + r * 0.2f, cx, cy + r * 0.75f, t, col);
+                    drawLine(cx + r * 0.55f, cy + r * 0.2f, cx, cy + r * 0.75f, t, col);
+                }
+                case ARROW_LEFT -> {
+                    drawLine(cx - r * 0.75f, cy, cx + r * 0.75f, cy, t, col);
+                    drawLine(cx - r * 0.2f, cy - r * 0.55f, cx - r * 0.75f, cy, t, col);
+                    drawLine(cx - r * 0.2f, cy + r * 0.55f, cx - r * 0.75f, cy, t, col);
+                }
+                case ARROW_RIGHT, CHEVRON_RIGHT -> {
+                    drawLine(cx - r * 0.75f, cy, cx + r * 0.75f, cy, t, col);
+                    drawLine(cx + r * 0.2f, cy - r * 0.55f, cx + r * 0.75f, cy, t, col);
+                    drawLine(cx + r * 0.2f, cy + r * 0.55f, cx + r * 0.75f, cy, t, col);
+                }
+                case FOLDER -> {
+                    drawLine(cx - r * 0.8f, cy - r * 0.4f, cx - r * 0.2f, cy - r * 0.4f, t, col);
+                    drawLine(cx - r * 0.2f, cy - r * 0.4f, cx, cy - r * 0.1f, t, col);
+                    drawLine(cx, cy - r * 0.1f, cx + r * 0.8f, cy - r * 0.1f, t, col);
+                    drawLine(cx + r * 0.8f, cy - r * 0.1f, cx + r * 0.8f, cy + r * 0.7f, t, col);
+                    drawLine(cx + r * 0.8f, cy + r * 0.7f, cx - r * 0.8f, cy + r * 0.7f, t, col);
+                    drawLine(cx - r * 0.8f, cy + r * 0.7f, cx - r * 0.8f, cy - r * 0.4f, t, col);
+                }
+                case DISK_SAVE -> {
+                    drawRoundedRect(cx - r * 0.75f, cy - r * 0.75f, r * 1.5f, r * 1.5f, 2.0f, 0, col, t);
+                    drawRoundedRect(cx - r * 0.4f, cy - r * 0.7f, r * 0.8f, r * 0.5f, 1.0f, col, 0, 0.0f);
+                }
+                case ROTATE_CW -> {
+                    drawProgressRing(cx, cy, r * 0.75f, 1.4f, 0.75f, 0x00000000, col);
+                    drawLine(cx + r * 0.35f, cy - r * 0.7f, cx + r * 0.75f, cy - r * 0.3f, t, col);
+                }
+                case SERVER_BOX -> {
+                    drawRoundedRect(cx - r * 0.8f, cy - r * 0.7f, r * 1.6f, r * 1.4f, 2.5f, 0, col, t);
+                    drawLine(cx - r * 0.5f, cy, cx + r * 0.5f, cy, t * 0.9f, col);
+                    drawCircle(cx + r * 0.45f, cy - r * 0.35f, 1.4f, col, 0);
+                    drawCircle(cx + r * 0.45f, cy + r * 0.35f, 1.4f, col, 0);
+                }
+                case WIFI_SIGNAL -> {
+                    drawProgressRing(cx, cy + r * 0.5f, r * 0.4f, 1.3f, 0.5f, 0, col);
+                    drawProgressRing(cx, cy + r * 0.5f, r * 0.8f, 1.3f, 0.5f, 0, col);
+                    drawCircle(cx, cy + r * 0.5f, 1.5f, col, 0);
+                }
+                case SPEEDOMETER -> {
+                    drawProgressRing(cx, cy, r * 0.85f, 1.4f, 0.75f, 0, col);
+                    drawLine(cx, cy, cx + r * 0.45f, cy - r * 0.45f, t * 1.1f, col);
+                    drawCircle(cx, cy, 1.8f, col, 0);
+                }
+                case STAR -> {
+                    drawCircle(cx, cy, r * 0.7f, col, 0);
+                }
+                case USER -> {
+                    drawCircle(cx, cy - r * 0.36f, r * 0.36f, col, 0);
+                    drawLine(cx - r * 0.65f, cy + r * 0.70f, cx - r * 0.38f, cy + r * 0.22f, t, col);
+                    drawLine(cx - r * 0.38f, cy + r * 0.22f, cx + r * 0.38f, cy + r * 0.22f, t, col);
+                    drawLine(cx + r * 0.38f, cy + r * 0.22f, cx + r * 0.65f, cy + r * 0.70f, t, col);
+                }
+                default -> {
+                    drawCircle(cx, cy, r * 0.6f, col, 0);
+                }
+            }
+        }
+
+        private static void dispatchQuad(float qx, float qy, float qw, float qh,
+                                         float rx, float ry, float rw, float rh,
+                                         float rTR, float rBR, float rTL, float rBL,
+                                         int fillCol, int borderCol,
+                                         float pX, float pY, float pZ, float pW,
+                                         float sx1, float sy1, float sx2, float sy2) {
+            INSTANCE.ensureInitialized();
+            Window win = Minecraft.getInstance().getWindow();
+            float guiW = (float) win.getGuiScaledWidth();
+            float guiH = (float) win.getGuiScaledHeight();
+
+            int prevProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
+            int prevVao = GL11.glGetInteger(GL30.GL_VERTEX_ARRAY_BINDING);
+            int prevVbo = GL11.glGetInteger(GL15.GL_ARRAY_BUFFER_BINDING);
+            boolean prevBlendEnabled = GL11.glIsEnabled(GL11.GL_BLEND);
+            int prevBlendSrcRgb = GL11.glGetInteger(GL14.GL_BLEND_SRC_RGB);
+            int prevBlendDstRgb = GL11.glGetInteger(GL14.GL_BLEND_DST_RGB);
+            int prevBlendSrcAlpha = GL11.glGetInteger(GL14.GL_BLEND_SRC_ALPHA);
+            int prevBlendDstAlpha = GL11.glGetInteger(GL14.GL_BLEND_DST_ALPHA);
+            boolean prevDepthEnabled = GL11.glIsEnabled(GL11.GL_DEPTH_TEST);
+            boolean prevCullEnabled = GL11.glIsEnabled(GL11.GL_CULL_FACE);
+
+            if (prevDepthEnabled) {
+                GlStateManager._disableDepthTest();
+            }
+            if (prevCullEnabled) {
+                GlStateManager._disableCull();
+            }
+
+            GlStateManager._enableBlend();
+            GlStateManager._blendFuncSeparate(
+                    GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA,
+                    GL11.GL_ONE, GL11.GL_ONE_MINUS_SRC_ALPHA
+            );
+
+            GL20.glUseProgram(programId);
+            GL20.glUniform2f(uScreenSize, guiW, guiH);
+            GL20.glUniform4f(uRect, rx, ry, rw, rh);
+            GL20.glUniform4f(uRadii, rTR, rBR, rTL, rBL);
+            setColorUniform(uFillColor, fillCol);
+            setColorUniform(uBorderColor, borderCol);
+            GL20.glUniform4f(uParams, pX, pY, pZ, pW);
+            GL20.glUniform4f(uSegment, sx1, sy1, sx2, sy2);
+
+            QUAD_BUF.clear();
+            QUAD_BUF.put(qx).put(qy);
+            QUAD_BUF.put(qx).put(qy + qh);
+            QUAD_BUF.put(qx + qw).put(qy + qh);
+            QUAD_BUF.put(qx).put(qy);
+            QUAD_BUF.put(qx + qw).put(qy + qh);
+            QUAD_BUF.put(qx + qw).put(qy);
+            QUAD_BUF.flip();
+
+            GL30.glBindVertexArray(vaoId);
+            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, vboId);
+            GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, 0, QUAD_BUF);
+            GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 6);
+
+            GL30.glBindVertexArray(prevVao);
+            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, prevVbo);
+            GL20.glUseProgram(prevProgram);
+            if (prevBlendEnabled) {
+                GlStateManager._enableBlend();
+                GlStateManager._blendFuncSeparate(prevBlendSrcRgb, prevBlendDstRgb, prevBlendSrcAlpha, prevBlendDstAlpha);
+            } else {
+                GlStateManager._disableBlend();
+            }
+            if (prevDepthEnabled) {
+                GlStateManager._enableDepthTest();
+            }
+            if (prevCullEnabled) {
+                GlStateManager._enableCull();
+            }
+        }
+
+        private static void setColorUniform(int loc, int argb) {
+            float a = ((argb >>> 24) & 0xFF) / 255.0f;
+            float r = ((argb >>> 16) & 0xFF) / 255.0f;
+            float g = ((argb >>> 8) & 0xFF) / 255.0f;
+            float b = (argb & 0xFF) / 255.0f;
+            GL20.glUniform4f(loc, r, g, b, a);
+        }
+
+        public static int lerpColor(int c1, int c2, float t) {
+            t = Mth.clamp(t, 0.0f, 1.0f);
+            int a = (int) Mth.lerp(t, (c1 >>> 24) & 0xFF, (c2 >>> 24) & 0xFF);
+            int r = (int) Mth.lerp(t, (c1 >>> 16) & 0xFF, (c2 >>> 16) & 0xFF);
+            int g = (int) Mth.lerp(t, (c1 >>> 8) & 0xFF, (c2 >>> 8) & 0xFF);
+            int b = (int) Mth.lerp(t, c1 & 0xFF, c2 & 0xFF);
+            return (a << 24) | (r << 16) | (g << 8) | b;
+        }
+
+        public static void enableScissor(int x, int y, int w, int h) {
+            Window win = Minecraft.getInstance().getWindow();
+            double scale = win.getGuiScale();
+            int sx = (int) (x * scale);
+            int sy = (int) ((win.getGuiScaledHeight() - (y + h)) * scale);
+            int sw = Math.max(0, (int) (w * scale));
+            int sh = Math.max(0, (int) (h * scale));
+            GL11.glEnable(GL11.GL_SCISSOR_TEST);
+            GL11.glScissor(sx, sy, sw, sh);
+        }
+
+        public static void disableScissor() {
+            GL11.glDisable(GL11.GL_SCISSOR_TEST);
         }
     }
 }

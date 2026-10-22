@@ -132,8 +132,10 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     public void onPlayerSprintState(SprintStateEvent event) {
         if (isPathing() && current != null) {
             boolean sprint = current.isSprinting();
-            if (baritone.getFarmProcess().isActive()) {
-                sprint = false;
+            if (baritone.getFarmProcess().isActive() || (baritone instanceof Baritone b && b.getTillProcess() != null && b.getTillProcess().isActive())) {
+                if (!Baritone.settings().farmFastMode.value) {
+                    sprint = false;
+                }
             }
             event.setSprinting(sprint);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, sprint);

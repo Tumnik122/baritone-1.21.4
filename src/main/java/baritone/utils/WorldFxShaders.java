@@ -20,6 +20,7 @@ package baritone.utils;
 import baritone.api.BaritoneAPI;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.renderer.CoreShaders;
 import net.minecraft.world.phys.AABB;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
@@ -41,6 +42,8 @@ public final class WorldFxShaders {
     public static final int MODE_HOLO = 1;
     public static final int MODE_ORB = 2;
     public static final int MODE_NODE = 3;
+    public static final int MODE_VENTURA_WAVE = 4;
+    public static final int MODE_BLOCK_OVERLAY = 5;
 
     private static final long START = System.nanoTime();
     private static final int MAX_VERTS = 4096;
@@ -102,42 +105,127 @@ public final class WorldFxShaders {
                 float a = vColor.a;
 
                 if (uMode == 0) {
+                    // Mode 0: Cyber Ribbon Energy Rail (Flowing laser beam)
                     float core = 1.0 - abs(vUV.y * 2.0 - 1.0);
-                    float edge = smoothstep(0.0, 0.22, core) * smoothstep(0.0, 0.55, core);
-                    float dash = 0.55 + 0.45 * sin(vAlong * 18.0 - uTime * 14.0);
-                    float flow = exp(-abs(fract(vAlong * 2.4 - uTime * 0.85) - 0.5) * 14.0);
-                    col += vec3(0.55, 0.92, 1.0) * flow * 0.85;
-                    col *= 0.75 + 0.45 * dash;
-                    a *= edge * (0.45 + 0.55 * dash);
-                    fragColor = vec4(col, a);
+                    float edge = smoothstep(0.0, 0.25, core);
+                    float beam = pow(core, 2.8);
+                    float glow = exp(-abs(vUV.y * 2.0 - 1.0) * 3.2);
+
+                    float dash = 0.65 + 0.35 * sin(vAlong * 20.0 - uTime * 14.0);
+                    float pulse = exp(-pow(fract(vAlong * 2.6 - uTime * 1.5) - 0.5, 2.0) * 75.0);
+
+                    vec3 beamCol = mix(col, vec3(1.0), beam * 0.85 + pulse * 0.9);
+                    beamCol += vec3(0.55, 0.88, 1.0) * pulse * 0.8;
+
+                    float beamAlpha = a * edge * (beam * 0.85 + glow * 0.45 + pulse * 0.6) * dash;
+                    fragColor = vec4(beamCol, clamp(beamAlpha, 0.0, 1.0));
                 } else if (uMode == 1) {
+                    // Mode 1: Futuristic Sci-Fi Hologram Box (Tactical Lock-On)
                     float fx = min(vUV.x, 1.0 - vUV.x);
                     float fy = min(vUV.y, 1.0 - vUV.y);
-                    float edge = 1.0 - smoothstep(0.0, 0.08, min(fx, fy));
-                    float pulse = 0.80 + 0.20 * sin(uTime * 2.5);
-                    col += vec3(0.20, 0.45, 0.65) * edge * pulse;
-                    a = vColor.a * (0.16 + 0.40 * edge) * pulse;
-                    fragColor = vec4(col, clamp(a, 0.0, 0.60));
+                    float edgeDist = min(fx, fy);
+                    float border = 1.0 - smoothstep(0.0, 0.05, edgeDist);
+                    float corner = (fx < 0.24 && fy < 0.24) ? (1.0 - smoothstep(0.0, 0.065, edgeDist)) : 0.0;
+
+                    // Moving cyber scanlines
+                    float scanline = 0.82 + 0.18 * sin(vUV.y * 70.0 - uTime * 10.0);
+                    // Traveling vertical laser sweep
+                    float sweep = exp(-pow(fract(vUV.y * 0.4 - uTime * 0.75) - 0.5, 2.0) * 110.0);
+
+                    // Micro-lattice grid
+                    vec2 gridUv = fract(vUV * 12.0);
+                    float grid = (gridUv.x < 0.10 && gridUv.y < 0.10) ? 0.30 : 0.0;
+
+                    vec3 holoCol = col + vec3(0.5, 0.85, 1.0) * (sweep * 0.85 + corner * 0.55);
+                    float holoAlpha = a * (0.12 * scanline + 0.55 * border + 0.45 * corner + 0.65 * sweep + grid * 0.22);
+                    fragColor = vec4(holoCol, clamp(holoAlpha, 0.0, 0.88));
                 } else if (uMode == 2) {
+                    // Mode 2: Celestial Radiant Star Orb (Eliminates square borders completely)
                     vec2 p = vUV * 2.0 - 1.0;
                     float d = length(p);
-                    float ring = 1.0 - smoothstep(0.55, 1.0, d);
-                    float core = exp(-d * 4.8);
-                    float halo = exp(-d * 1.6) * 0.55;
-                    float spark = 0.5 + 0.5 * sin(uTime * 9.0 + vAlong * 6.0);
-                    col += vec3(1.0) * core * 0.9;
-                    a *= (ring * 0.85 + halo) * (0.65 + 0.35 * spark);
-                    if (a < 0.02) discard;
-                    fragColor = vec4(col * (0.7 + core), a);
+                    if (d >= 0.98) discard;
+
+                    // Smooth circular boundary feathering
+                    float circleFeather = smoothstep(0.98, 0.62, d);
+
+                    // Brilliant white-hot center
+                    float core = exp(-d * 6.2);
+                    // Volumetric soft plasma halo
+                    float halo = exp(-d * 2.2) * 0.80;
+
+                    // 4-point rotating celestial diffraction spikes (anamorphic lens flare / star spark)
+                    float angle = atan(p.y, p.x) + uTime * 3.2 + vAlong * 1.25;
+                    float starSpike = pow(abs(cos(angle * 2.0)), 16.0) * exp(-d * 3.2) * 1.5;
+                    float starCross = pow(abs(cos(angle * 2.0 + 0.785398)), 24.0) * exp(-d * 4.2) * 0.75;
+
+                    // Pulsing twinkle
+                    float twinkle = 0.82 + 0.18 * sin(uTime * 8.5 + vAlong * 4.5);
+
+                    // Radiant color blending: pure white core -> vibrant chromatic aura
+                    vec3 orbCol = mix(col, vec3(1.0, 1.0, 1.0), core * 0.95 + (starSpike + starCross) * 0.72);
+                    orbCol += vec3(0.75, 0.92, 1.0) * (starSpike + starCross) * 0.5;
+
+                    float orbAlpha = a * circleFeather * (core * 1.0 + halo * 0.75 + (starSpike + starCross) * 0.85) * twinkle;
+                    if (orbAlpha < 0.015) discard;
+
+                    fragColor = vec4(orbCol, clamp(orbAlpha, 0.0, 1.0));
+                } else if (uMode == 3) {
+                    // Mode 3: Search Node Spark
+                    vec2 p = vUV * 2.0 - 1.0;
+                    float d = length(p);
+                    if (d >= 0.98) discard;
+                    float circleFeather = smoothstep(0.98, 0.60, d);
+                    float core = exp(-d * 4.5);
+                    float pulse = 0.5 + 0.5 * sin(uTime * 14.0 + vAlong * 18.0);
+                    vec3 nodeCol = mix(col, vec3(1.0, 0.85, 0.45), 0.45 * pulse + core * 0.65);
+                    float nodeAlpha = a * circleFeather * core * (0.65 + 0.35 * pulse);
+                    if (nodeAlpha < 0.02) discard;
+                    fragColor = vec4(nodeCol, nodeAlpha);
+                } else if (uMode == 4) {
+                    // Mode 4: Ventura Client Wave
+                    float w1 = sin((vUV.x + vUV.y) * 6.28318 - uTime * 3.8);
+                    float w2 = sin((vUV.x - vUV.y) * 4.5 + uTime * 2.2);
+                    float wave = 0.5 + 0.5 * (w1 * 0.7 + w2 * 0.3);
+
+                    float fx = min(vUV.x, 1.0 - vUV.x);
+                    float fy = min(vUV.y, 1.0 - vUV.y);
+                    float edgeDist = min(fx, fy);
+                    float border = 1.0 - smoothstep(0.0, 0.045, edgeDist);
+
+                    vec3 lilac = vec3(0.659, 0.333, 0.969);
+                    vec3 cyan = vec3(0.024, 0.714, 0.831);
+
+                    vec3 waveGrad = mix(lilac, cyan, wave);
+                    vec3 colBase = mix(col, waveGrad, 0.65);
+
+                    float crest = exp(-abs(w1) * 4.2);
+                    colBase += vec3(0.85, 0.92, 1.0) * crest * 0.55;
+                    colBase += mix(cyan, lilac, 0.5 + 0.5 * sin(uTime * 3.0)) * border * 0.95;
+
+                    float faceAlpha = 0.12 + 0.18 * wave;
+                    float borderAlpha = 0.70 + 0.20 * sin(uTime * 4.0);
+                    float finalAlpha = a * mix(faceAlpha, borderAlpha, border);
+
+                    fragColor = vec4(colBase, clamp(finalAlpha, 0.0, 0.95));
                 } else {
-                    vec2 p = vUV * 2.0 - 1.0;
-                    float d = length(p);
-                    float core = 1.0 - smoothstep(0.0, 0.85, d);
-                    float pulse = 0.5 + 0.5 * sin(uTime * 16.0 + vAlong * 20.0);
-                    col = mix(col, vec3(1.0, 0.55, 0.2), 0.35 * pulse);
-                    a *= core * (0.4 + 0.6 * pulse);
-                    if (a < 0.02) discard;
-                    fragColor = vec4(col, a);
+                    // Mode 5: Luxury Crystal Glass Block Overlay (Ventura & Linear Elegance)
+                    float fx = min(vUV.x, 1.0 - vUV.x);
+                    float fy = min(vUV.y, 1.0 - vUV.y);
+                    float edgeDist = min(fx, fy);
+                    float border = 1.0 - smoothstep(0.0, 0.045, edgeDist);
+                    float cornerGlow = 1.0 - smoothstep(0.0, 0.12, edgeDist);
+
+                    // Organic chromatic shimmer
+                    float shimmer = 0.5 + 0.5 * sin((vUV.x + vUV.y) * 3.14159 - uTime * 2.2);
+                    vec3 glassCol = mix(col, vec3(0.88, 0.82, 1.0), 0.20 + 0.10 * shimmer);
+                    glassCol += vec3(0.25, 0.35, 0.55) * border;
+                    glassCol += vec3(0.15, 0.10, 0.30) * cornerGlow;
+
+                    float faceAlpha = a * (0.45 + 0.12 * shimmer);
+                    float borderAlpha = clamp(a * 1.95, 0.0, 0.90);
+                    float finalAlpha = mix(faceAlpha, borderAlpha, border);
+
+                    fragColor = vec4(glassCol, clamp(finalAlpha, 0.0, 0.95));
                 }
             }
             """;
@@ -148,10 +236,9 @@ public final class WorldFxShaders {
         if (broken) {
             return false;
         }
-        if (!BaritoneAPI.getSettings().renderShaderEffects.value) {
-            return false;
-        }
-        if (!BaritoneAPI.getSettings().renderWorldFx.value) {
+        var s = BaritoneAPI.getSettings();
+        boolean allow = s.renderShaderEffects.value || s.clientBlockOverlay.value || s.radialWave.value;
+        if (!allow) {
             return false;
         }
         if (!initialized) {
@@ -243,7 +330,8 @@ public final class WorldFxShaders {
             GL11.glDisable(GL11.GL_DEPTH_TEST);
         }
         GL11.glDepthFunc(prevDepthFunc);
-        GL11.glDepthMask(depthMaskWas); // FIX: restore instead of always forcing true
+        GL11.glDepthMask(true);
+        RenderSystem.depthMask(true);
         if (!blendWas) {
             GL11.glDisable(GL11.GL_BLEND);
         }
@@ -251,6 +339,7 @@ public final class WorldFxShaders {
         if (ignoreDepthRestore && depthWas) {
             GL11.glEnable(GL11.GL_DEPTH_TEST);
         }
+        RenderSystem.setShader(CoreShaders.POSITION_COLOR);
     }
 
     public static void ribbon(float x1, float y1, float z1, float x2, float y2, float z2,
@@ -284,6 +373,23 @@ public final class WorldFxShaders {
 
     public static void holoBox(AABB box, Color color, float alpha) {
         if (!drawing || currentMode != MODE_HOLO) {
+            return;
+        }
+        float r = color.getRed() / 255.0F;
+        float g = color.getGreen() / 255.0F;
+        float b = color.getBlue() / 255.0F;
+        float x0 = (float) box.minX, y0 = (float) box.minY, z0 = (float) box.minZ;
+        float x1 = (float) box.maxX, y1 = (float) box.maxY, z1 = (float) box.maxZ;
+        face(x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, r, g, b, alpha); // -Y
+        face(x0, y1, z1, x1, y1, z1, x1, y1, z0, x0, y1, z0, r, g, b, alpha); // +Y
+        face(x0, y1, z0, x1, y1, z0, x1, y0, z0, x0, y0, z0, r, g, b, alpha); // -Z
+        face(x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, r, g, b, alpha); // +Z
+        face(x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, r, g, b, alpha); // -X
+        face(x1, y1, z0, x1, y1, z1, x1, y0, z1, x1, y0, z0, r, g, b, alpha); // +X
+    }
+
+    public static void waveBox(AABB box, Color color, float alpha) {
+        if (!drawing || (currentMode != MODE_VENTURA_WAVE && currentMode != MODE_BLOCK_OVERLAY && currentMode != MODE_HOLO)) {
             return;
         }
         float r = color.getRed() / 255.0F;

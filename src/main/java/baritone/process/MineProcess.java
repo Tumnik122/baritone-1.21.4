@@ -265,7 +265,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                     BlockState hitState = ctx.world().getBlockState(hitBlock);
                     if (!hitState.isAir() && hitState.getDestroySpeed(ctx.world(), hitBlock) >= 0) {
                         if (!MovementHelper.avoidBreaking(baritone.bsi, hitBlock.getX(), hitBlock.getY(), hitBlock.getZ(), hitState)) {
-                            if (!(baritone.getFarmProcess().isActive() && MovementHelper.isFarmSoilOrStructure(hitState.getBlock()))) {
+                            boolean farmOrTill = (baritone.getFarmProcess() != null && baritone.getFarmProcess().isActive())
+                                    || (baritone instanceof Baritone b && b.getTillProcess() != null && b.getTillProcess().isActive());
+                            if (!farmOrTill) {
                                 return Optional.of(new MiningAction(pos, hitBlock, rot));
                             }
                         }

@@ -31,7 +31,17 @@
     "MixinCoreShaders",
     "MixinBlockEntityRenderDispatcher",
     "MixinParticle",
-    "MixinBlockItem"
+    "MixinBlockItem",
+    "MixinItemInHandRenderer",
+    "MixinFogRenderer",
+    "MixinSkyRenderer",
+    "MixinClientLevel",
+    "perf.MixinMinecraftPerf",
+    "perf.MixinGameRendererPerf",
+    "perf.MixinLevelRendererPerf",
+    "perf.MixinSectionCompilerPerf",
+    "perf.MixinParticleEnginePerf",
+    "perf.MixinSoundEnginePerf"
   ],
   "mixins": [
   ]

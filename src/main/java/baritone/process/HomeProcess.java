@@ -143,6 +143,9 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
         if (!Baritone.settings().autoHomeOnFull.value) {
             return;
         }
+        if (Minecraft.getInstance().isSingleplayer()) {
+            return;
+        }
         if (ctx.player() == null || ctx.world() == null) {
             return;
         }
@@ -225,8 +228,10 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
 
         if (reached70Percent || fullOf64 || cannotPickUpDrop) {
             cannotPickupTicks = 0;
-            if (savedMiningCommand == null) {
-                if (baritone.getBypassProcess().isActive()) {
+            if (savedMiningCommand == null || FarmProcess.isPracaModeActive()) {
+                if (FarmProcess.isPracaModeActive()) {
+                    savedMiningCommand = "praca";
+                } else if (baritone.getBypassProcess().isActive()) {
                     savedMiningCommand = "bypass";
                 } else if (baritone.getFarmProcess().isActive()) {
                     savedMiningCommand = "farm";
@@ -385,6 +390,26 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
     }
 
     /**
+     * Teleportuje do Home 2 (Zielone łóżko - slot 20) przez menu /home
+     * i po zakończeniu teleportacji automatycznie wykonuje komendę (domyślnie "#praca").
+     *
+     * @param resumeCommand komenda do wykonania po powrocie (np. "praca")
+     */
+    public void teleportToHome2AndResume(String resumeCommand) {
+        savedMiningCommand = (resumeCommand != null && !resumeCommand.trim().isEmpty()) ? resumeCommand.trim() : "praca";
+        this.targetHome = 2;
+        this.autoDepositCycle = false;
+        this.state = State.STOPPING;
+        this.stateTicks = 0;
+        this.active = true;
+        this.depositedStacksCount = 0;
+        this.lastTestedDepositSlot = -1;
+        this.lastTestedDepositCount = -1;
+        this.stuckDepositAttempts = 0;
+        logDirect("§a[Home] Rozpoczynam powrót do Home 2 (Zielone łóżko) i wznowienie: #" + savedMiningCommand);
+    }
+
+    /**
      * Uruchamia procedurę testową na życzenie użytkownika (#test):
      * 1. Zatrzymuje aktywne zadanie (#stop)
      * 2. Zapisuje lub ustawia komendę do wznowienia (np. #mine iron)
@@ -435,6 +460,8 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
                 if (!movingHorizontally || stateTicks >= 15) {
                     if (autoDepositCycle) {
                         state = State.SENDING_HOME_1;
+                    } else if (targetHome == 2 && savedMiningCommand != null) {
+                        state = State.SENDING_HOME_2;
                     } else {
                         state = State.SENDING_COMMAND;
                     }
@@ -466,7 +493,14 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
                 }
                 if (stateTicks >= 60) {
                     logDirect("§c[Home] Przekroczono czas oczekiwania na otwarcie menu \"Twoje domki\".");
+                    String cmdToRun = savedMiningCommand;
+                    savedMiningCommand = null;
                     onLostControl();
+                    if (cmdToRun != null && !cmdToRun.trim().isEmpty()) {
+                        logDirect(String.format("§a[Home] Samoczynne wznowienie zadania: #%s", cmdToRun));
+                        baritone.getCommandManager().execute(cmdToRun);
+                    }
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
@@ -501,7 +535,11 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
                     logDirect(String.format("§b[Home] Czekam %.1f s na zakończenie teleportu serwerowego...", delayTicks / 20.0F));
                 }
                 if (stateTicks >= delayTicks) {
-                    state = State.COOLDOWN;
+                    if (targetHome == 2 && savedMiningCommand != null) {
+                        state = State.RESUMING_MINING;
+                    } else {
+                        state = State.COOLDOWN;
+                    }
                     stateTicks = 0;
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -534,9 +572,14 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
                     ctx.player().connection.sendCommand("home 1");
                 }
                 if (stateTicks >= 60) {
-                    logDirect("§c[Home] Przekroczono czas oczekiwania na menu \"Twoje domki\" / teleport.");
-                    state = State.TELEPORTING_TO_HOME_1;
-                    stateTicks = 0;
+                    logDirect("§c[Home] Przekroczono czas oczekiwania na menu \"Twoje domki\" / teleport. Anuluję powrót do bazy.");
+                    String cmdToRun = savedMiningCommand;
+                    savedMiningCommand = null;
+                    onLostControl();
+                    if (cmdToRun != null && !cmdToRun.trim().isEmpty()) {
+                        logDirect(String.format("§a[Home] Samoczynne wznowienie zadania: #%s", cmdToRun));
+                        baritone.getCommandManager().execute(cmdToRun);
+                    }
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -902,6 +945,14 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
                 enforceDeadStop();
                 stateTicks++;
                 if (stateTicks >= 5) {
+                    if (ctx.player().containerMenu != ctx.player().inventoryMenu) {
+                        ctx.player().closeContainer();
+                    }
+                    try {
+                        if (Minecraft.getInstance().screen != null) {
+                            Minecraft.getInstance().setScreen(null);
+                        }
+                    } catch (Throwable ignored) {}
                     String cmdToRun = savedMiningCommand;
                     savedMiningCommand = null;
                     onLostControl();

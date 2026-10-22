@@ -142,14 +142,14 @@ public final class Settings {
      * <p>
      * Decrease to make Baritone more often consider paths that would require placing blocks
      */
-    public final Setting<Double> blockPlacementPenalty = new Setting<>(20D);
+    public final Setting<Double> blockPlacementPenalty = new Setting<>(65D);
 
     /**
      * This is just a tiebreaker to make it less likely to break blocks if it can avoid it.
      * For example, fire has a break cost of 0, this makes it nonzero, so all else being equal
      * it will take an otherwise equivalent route that doesn't require it to put out fire.
      */
-    public final Setting<Double> blockBreakAdditionalPenalty = new Setting<>(2D);
+    public final Setting<Double> blockBreakAdditionalPenalty = new Setting<>(15D);
 
     /**
      * Additional penalty for hitting the space bar (ascend, pillar, or parkour) because it uses hunger
@@ -419,14 +419,14 @@ public final class Settings {
     public final Setting<Integer> builderSelfUnstuckRadius = new Setting<>(2);
 
     // ---- GrimAC-safe pacing ----
-    /** Ticks between placements. */
-    public final Setting<Integer> builderPlacementCooldownTicks = new Setting<>(6);
+    /** Ticks between placements. Default 2 ticks (100ms) for high-speed, GrimAC-compliant placement. */
+    public final Setting<Integer> builderPlacementCooldownTicks = new Setting<>(2);
     /** Block-reach distance clamp (vanilla = 4.5, GrimAC safe = 4.0). */
     public final Setting<Double>  builderPlacementReach = new Setting<>(4.0D);
     /** Max rotation degrees per tick while building. */
     public final Setting<Double>  builderMaxRotationStepDeg = new Setting<>(60.0D);
     /** Ticks the crosshair must be settled on target before a click fires. */
-    public final Setting<Integer> builderRotationSettleTicks = new Setting<>(2);
+    public final Setting<Integer> builderRotationSettleTicks = new Setting<>(1);
 
     // ---- FIX 2: Scaffolding ----
     /** Allow building temporary support blocks when no adjacent solid face exists. */
@@ -490,7 +490,7 @@ public final class Settings {
      * <p>
      * Doesn't make it any more dangerous compared to just normal allowParkour th
      */
-    public final Setting<Boolean> allowParkourPlace = new Setting<>(true);
+    public final Setting<Boolean> allowParkourPlace = new Setting<>(false);
 
     /**
      * For example, if you have Mining Fatigue or Haste, adjust the costs of breaking blocks accordingly.
@@ -905,6 +905,126 @@ public final class Settings {
     public final Setting<Boolean> chatControlAnyway = new Setting<>(false);
 
     /**
+     * Render custom hand shaders (Obsidian-Lilac Chams + Cyber-Cyan Wireframe Chroma) in first person
+     */
+    public final Setting<Boolean> handShaders = new Setting<>(true);
+
+    /**
+     * Hand Shader Theme Mode (0=Lilac & Cyan, 1=Chroma Rainbow, 2=Sunset Neon, 3=Emerald Matrix, 4=Cosmic Amethyst, 5=Frost Crystal, 6=Red Inferno, 7=Midnight Void, 8=Holographic Ghost)
+     */
+    public final Setting<Integer> handShaderMode = new Setting<>(0);
+
+    /**
+     * Hand Shader Shading Style (0=Frosted Glass, 1=Refractive Crystal Prism, 2=Neon Wireframe Chams)
+     */
+    public final Setting<Integer> handShaderStyle = new Setting<>(0);
+
+    /**
+     * Hand Shader Outline Glow Intensity (50% to 200%, default 115%)
+     */
+    public final Setting<Double> handShaderGlow = new Setting<>(115.0D);
+
+    /**
+     * Custom Player F5 Disguise (OFF, TUNG_TUNG_SAHUR, BALLERINA_CAPUCCINA, CYBER_MECH, HOLOGRAM_AVATAR, CAPYBARA_KING)
+     */
+    public final Setting<String> customPlayerDisguise = new Setting<>("TUNG_TUNG_SAHUR");
+
+
+    /**
+     * Render 3D fading dual-tone motion trail ribbons behind the player
+     */
+    public final Setting<Boolean> motionTrail = new Setting<>(true);
+
+    /**
+     * Tryb motywu Motion Trail (0=Lilac & Cyan, 1=Chroma Rainbow, 2=Sunset Gold, 3=Glacial Blue, 4=Matrix Emerald)
+     */
+    public final Setting<Integer> motionTrailMode = new Setting<>(0);
+
+    /**
+     * Dynamic 3D Cyber Target ESP ring around tracked/focused entity
+     */
+    public final Setting<Boolean> targetEsp = new Setting<>(true);
+
+    /**
+     * Tryb motywu Target ESP (0=Cyber Lilac & Cyan, 1=Dynamic Health HUD, 2=Chroma Rainbow Flow, 3=Golden Radiance, 4=Matrix Emerald)
+     */
+    public final Setting<Integer> targetEspMode = new Setting<>(0);
+
+    /**
+     * Render dynamic jump and landing shockwave ripple circles on ground
+     */
+    public final Setting<Boolean> jumpCircles = new Setting<>(true);
+
+    /**
+     * Tryb motywu Jump Circles (0=Cyber Lilac, 1=Chroma Rainbow, 2=Celestial Starfire, 3=Synthwave Sunset, 4=Magma Blast, 5=Fluid Water, 6=Golden Radiance)
+     */
+    public final Setting<Integer> jumpCirclesMode = new Setting<>(0);
+
+    /**
+     * Bazowy promień rozchodzenia się fali uderzeniowej Jump Circles w blokach
+     */
+    public final Setting<Double> jumpCirclesRadius = new Setting<>(2.5D);
+
+    /**
+     * Iskry i drobiny energii (Sparks & Embers) wyrzucane wzdłuż fali Jump Circles
+     */
+    public final Setting<Boolean> jumpCirclesSparks = new Setting<>(true);
+
+    /**
+     * Renderuj Jump Circles również dla pobliskich graczy i botów
+     */
+    public final Setting<Boolean> jumpCirclesOthers = new Setting<>(true);
+
+    /**
+     * Atmospheric Custom Fog (Cyber Lilac, Synthwave Sunset, Deep Galaxy, Aurora, Blood Eclipse, Chroma)
+     */
+    public final Setting<Boolean> customFog = new Setting<>(true);
+
+    /**
+     * Mnożnik dystansu mgły atmosferycznej (Custom Fog Distance Multiplier).
+     * 1.0 = domyślny, 1.3-1.8 = Clean Distant Fog (krystaliczna widoczność z przodu, mgła daleko na horyzoncie),
+     * 0.6-0.8 = gęsta, nastrojowa mgła.
+     */
+    public final Setting<Double> customFogDistanceMultiplier = new Setting<>(1.35D);
+
+    /**
+     * Atmospheric Custom Sky (Cyber Lilac, Synthwave Sunset, Deep Galaxy, Aurora, Blood Eclipse, Chroma)
+     */
+    public final Setting<Boolean> customSky = new Setting<>(true);
+
+    /**
+     * Wygładzanie i synchronizacja horyzontu (Horizon Smooth Blend).
+     * Idealne stapianie krawędzi nieba i mgły bez ostrych odcięć i czarnych pasów na horyzoncie.
+     */
+    public final Setting<Boolean> customSkyHorizonBlend = new Setting<>(true);
+
+    /**
+     * Kosmiczne gwiazdy (Celestial Twinkling Stars):
+     * Dodatkowe migotanie i tonowanie barwne gwiazd dopasowane do wybranego motywu kosmicznego.
+     */
+    public final Setting<Boolean> customCelestialStars = new Setting<>(true);
+
+    /**
+     * 3D World Ambient Flying Particles (Geometric Cubes / Mascot Companions)
+     */
+    public final Setting<Boolean> ambientParticles = new Setting<>(true);
+
+    /**
+     * Temporal Accumulation Motion Blur (RTX 4060 Hardware Accelerated)
+     */
+    public final Setting<Boolean> motionBlur = new Setting<>(true);
+
+    /**
+     * Motion Blur Intensity/Strength (5.0% to 70.0%, default 25.0%)
+     */
+    public final Setting<Double> motionBlurStrength = new Setting<>(25.0D);
+
+    /**
+     * Motion Blur Mode (0=Smart Dynamic, 1=PvP Smooth, 2=Cinematic Heavy)
+     */
+    public final Setting<Integer> motionBlurMode = new Setting<>(0);
+
+    /**
      * Render the path
      */
     public final Setting<Boolean> renderPath = new Setting<>(true);
@@ -1062,9 +1182,9 @@ public final class Settings {
 
     /**
      * Bezpieczny zasięg interakcji (kratki).
-     * Waniliowy to 4.5, ale Grim sprawdza więcej niż 4.0.
+     * Waniliowy to 4.5, ale Grim sprawdza powyżej 3.0 - 3.1 kratki od oczu.
      */
-    public final Setting<Double> grimSafeReach = new Setting<>(4.0);
+    public final Setting<Double> grimSafeReach = new Setting<>(3.0);
 
     /**
      * Czy wymuszać sprint tylko zgodnie z logiką waniliową.
@@ -1081,6 +1201,11 @@ public final class Settings {
      * Display a modern on-screen HUD overlay showing Baritone's current status and live gathered block counters.
      */
     public final Setting<Boolean> showHudOverlay = new Setting<>(true);
+
+    /**
+     * Display a modern SDF-based capsule Status Pill HUD in the top-right corner (farming/tilling/building/inventory/ETA).
+     */
+    public final Setting<Boolean> showStatusPillHud = new Setting<>(true);
 
     /**
      * Mini XZ radar of the active path on the HUD (shader). Requires {@link #showHudOverlay}.
@@ -1367,6 +1492,22 @@ public final class Settings {
      * Gdy wyłączone: tryb Legit ze stopniowym C2 smootherstep.
      */
     public final Setting<Boolean> farmFastMode = new Setting<>(true);
+
+    /**
+     * Priorytet scinania plonow (Harvest-Priority):
+     * Gdy w zasiegu reki gracza sa dojrzale plony, bot scina je z pelna predkoscia (20 blokow/s)
+     * bezposrednio jeden po drugim bez utraty ticka na schylanie glowy i sadzenie nasion.
+     * Grzadki sa obsadzane plynnie w wolnych tickach gdy brak plonow w bezposrednim zasiegu.
+     */
+    public final Setting<Boolean> farmHarvestPriority = new Setting<>(true);
+
+    /**
+     * Tryb dwuprzebiegowy farmy (Two-Pass Farming):
+     * Krok 1 (Kosiarka): Kosi rzedy zboza z pelna predkoscia 20 blokow/s w locie bez pauz i bez
+     * schylania kamery na dol do sadzenia.
+     * Krok 2 (Obsadzanie): Po skoszeniu rzedu bot w drodze powrotnej biegnie i plynnie obsadza grzadki.
+     */
+    public final Setting<Boolean> farmTwoPassMode = new Setting<>(true);
 
     /**
      * Eksperymentalny tryb #praca / farm: zbieranie przedmiotów leżących na ziemi,
@@ -1951,6 +2092,136 @@ public final class Settings {
      * Render selection corners
      */
     public final Setting<Boolean> renderSelectionCorners = new Setting<>(true);
+
+    /**
+     * Włącza shaderowy block overlay w stylu Ventura Client (gładkie fale, animowany gradient Lilac-Cyan)
+     */
+    public final Setting<Boolean> clientBlockOverlay = new Setting<>(true);
+
+    /**
+     * Włącza efekt fali (Wave Visuals) na powierzchniach zaznaczonego bloku
+     */
+    public final Setting<Boolean> blockOverlayWave = new Setting<>(true);
+
+    /**
+     * Płynna animacja/interpolacja pozycji ramki bloku (Smooth Box Interpolation)
+     */
+    public final Setting<Boolean> blockOverlaySmooth = new Setting<>(true);
+
+    /**
+     * Prędkość interpolacji ramki bloku
+     */
+    public final Setting<Float> blockOverlaySpeed = new Setting<>(20.0F);
+
+    /**
+     * Główny kolor szklanego sześcianu bloku (Pure Amethyst / Crystal Glass)
+     */
+    public final Setting<Color> blockOverlayColor = new Setting<>(new Color(190, 150, 255));
+
+    /**
+     * Kolor krawędzi obramowania (Soft Pearl Lavender)
+     */
+    public final Setting<Color> blockOverlaySecondaryColor = new Setting<>(new Color(225, 205, 255));
+
+    /**
+     * Grubość obramowania bloku (delikatna, cienka linia 1.3px)
+     */
+    public final Setting<Float> blockOverlayLineWidth = new Setting<>(1.3F);
+
+    /**
+     * Czy overlay bloku ma ignorować głębokość (widoczny przez ściany)
+     */
+    public final Setting<Boolean> blockOverlayIgnoreDepth = new Setting<>(false);
+
+    /**
+     * Alpha wypełnienia szklanego (Crystal Glass Fill) sześcianu bloku (delikatne 0.14)
+     */
+    public final Setting<Float> blockOverlayAlpha = new Setting<>(0.14F);
+
+    /**
+     * Radial Ground Wave - rozchodząca się fala świetlnych szklanych bloków od gracza na zewnątrz
+     */
+    public final Setting<Boolean> radialWave = new Setting<>(true);
+
+    /**
+     * Warunek wyzwalania fali (0 = Przy skoku i lądowaniu, 1 = Tylko przy skoku, 2 = Ciągła / Zawsze)
+     */
+    public final Setting<Integer> radialWaveTrigger = new Setting<>(0);
+
+    /**
+     * Maksymalny promień fali rozchodzącej się od gracza (w metrach/blokach)
+     */
+    public final Setting<Float> radialWaveRadius = new Setting<>(8.0F);
+
+    /**
+     * Prędkość rozchodzenia się fali od gracza na zewnątrz (bloki na sekundę)
+     */
+    public final Setting<Float> radialWaveSpeed = new Setting<>(6.5F);
+
+    /**
+     * Podwójna fala (ciągły przepływ ripple)
+     */
+    public final Setting<Boolean> radialWaveDouble = new Setting<>(true);
+
+    /**
+     * Tryb kolorystyczny fali (0 = Ventura Lilac, 1 = Neon Cyan, 2 = Dual Gradient)
+     */
+    public final Setting<Integer> radialWaveMode = new Setting<>(0);
+
+    /**
+     * Wyświetlanie shaderowej fali na aktualnie kopanym bloku (Baritone Mining Target)
+     */
+    public final Setting<Boolean> renderMiningWaveOverlay = new Setting<>(true);
+
+    /**
+     * Włącza renderowanie kapelusza 3D China Hat nad głową gracza
+     */
+    public final Setting<Boolean> chinaHat = new Setting<>(true);
+
+    /**
+     * Renderowanie China Hat w widoku pierwszej osoby (domyślnie false, tylko F5)
+     */
+    public final Setting<Boolean> chinaHatFirstPerson = new Setting<>(false);
+
+    /**
+     * Promień podstawy kapelusza China Hat (w metrach/blokach)
+     */
+    public final Setting<Float> chinaHatRadius = new Setting<>(0.65F);
+
+    /**
+     * Wysokość stożka kapelusza China Hat
+     */
+    public final Setting<Float> chinaHatHeight = new Setting<>(0.32F);
+
+    /**
+     * Liczba segmentów okręgu China Hat (jakość gładkości)
+     */
+    public final Setting<Integer> chinaHatSegments = new Setting<>(64);
+
+    /**
+     * Prędkość obrotu kapelusza wokół osi Y
+     */
+    public final Setting<Float> chinaHatRotationSpeed = new Setting<>(1.5F);
+
+    /**
+     * Współczynnik nachylenia stożka przy ruchach głowy (0.0 = płasko, 0.35 = delikatne śledzenie)
+     */
+    public final Setting<Float> chinaHatTiltFollow = new Setting<>(0.35F);
+
+    /**
+     * Dynamiczny tryb tęczy (Astra Rainbow) dla kapelusza
+     */
+    public final Setting<Boolean> chinaHatRainbow = new Setting<>(false);
+
+    /**
+     * Podstawowy kolor kapelusza China Hat (Amethyst / Violet)
+     */
+    public final Setting<Color> chinaHatColor = new Setting<>(new Color(175, 130, 255));
+
+    /**
+     * Kolor krawędzi i rantu kapelusza China Hat (Pastel Lilac / Glow)
+     */
+    public final Setting<Color> chinaHatSecondaryColor = new Setting<>(new Color(225, 205, 255));
 
     /**
      * Use sword to mine.
