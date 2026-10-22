@@ -67,6 +67,10 @@ public final class AstraMotionBlurEngine {
     private long lastFrameNano = 0L;
     private float smoothedAngularVelocity = 0.0F;
 
+    // Zero-allocation matrix buffers
+    private final Matrix4f prevProj = new Matrix4f();
+    private final Matrix4f orthoMatrix = new Matrix4f();
+
     private AstraMotionBlurEngine() {
         syncFromSettings();
     }
@@ -212,11 +216,11 @@ public final class AstraMotionBlurEngine {
             }
 
             // --- 1. SAVE COMPLETE STATE TO PREVENT BUGGING OTHER VISUALS ---
-            Matrix4f prevProj = new Matrix4f(RenderSystem.getProjectionMatrix());
+            prevProj.set(RenderSystem.getProjectionMatrix());
             ProjectionType prevProjType = RenderSystem.getProjectionType();
 
-            Matrix4f ortho = new Matrix4f().setOrtho(0.0F, (float) width, (float) height, 0.0F, -1000.0F, 3000.0F);
-            RenderSystem.setProjectionMatrix(ortho, ProjectionType.ORTHOGRAPHIC);
+            orthoMatrix.setOrtho(0.0F, (float) width, (float) height, 0.0F, -1000.0F, 3000.0F);
+            RenderSystem.setProjectionMatrix(orthoMatrix, ProjectionType.ORTHOGRAPHIC);
 
             Matrix4fStack modelView = RenderSystem.getModelViewStack();
             modelView.pushMatrix();

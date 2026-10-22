@@ -32,6 +32,7 @@ import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.movements.*;
 import baritone.utils.BlockStateInterface;
+import com.astra.revolution.pathing.AstraMovementFluidityEngine;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Vec3i;
 import net.minecraft.util.Tuple;
@@ -291,6 +292,13 @@ public class PathExecutor implements IPathExecutor, Helper {
         } else {
             sprintNextTick = shouldSprintNextTick();
             behavior.baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, sprintNextTick);
+
+            // GrimAC Movement Fluidity & Predictive Anti-Stall Engine
+            boolean isMiningOrPlacing = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT)
+                    || behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_RIGHT)
+                    || (behavior.baritone.getBuilderProcess() != null && behavior.baritone.getBuilderProcess().isActive())
+                    || (behavior.baritone.getMineProcess() != null && behavior.baritone.getMineProcess().isActive());
+            AstraMovementFluidityEngine.INSTANCE.onTickMovement(behavior.baritone, isMiningOrPlacing);
             ticksOnCurrent++;
             if (ticksOnCurrent > currentMovementOriginalCostEstimate + Baritone.settings().movementTimeoutTicks.value) {
                 // only cancel if the total time has exceeded the initial estimate
@@ -691,6 +699,7 @@ public class PathExecutor implements IPathExecutor, Helper {
 
     private void cancel() {
         clearKeys();
+        AstraMovementFluidityEngine.INSTANCE.resetState();
         behavior.baritone.getInputOverrideHandler().getBlockBreakHelper().stopBreakingBlock();
         pathPosition = path.length() + 3;
         failed = true;

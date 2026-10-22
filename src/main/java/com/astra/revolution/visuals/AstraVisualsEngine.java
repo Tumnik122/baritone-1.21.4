@@ -255,10 +255,12 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
             // Local Player Jump detected
             if (wasOnGround && !onGround && player.getDeltaMovement().y > 0.08D) {
                 spawnJumpCircle(pos, false, 0.0F, activeMode);
+                AstraGodTierVisuals.triggerShockwave(pos.x, pos.y, pos.z, COLOR_CYAN, false);
             }
             // Local Player Hard landing detected
             else if (!wasOnGround && onGround && lastFallDistance > 0.45F) {
                 spawnJumpCircle(pos, true, lastFallDistance, activeMode);
+                AstraGodTierVisuals.triggerShockwave(pos.x, pos.y, pos.z, COLOR_LILAC, false);
             }
 
             // Other nearby players & bots jump/landing ripples
@@ -336,6 +338,21 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
             // Pass 5: 3D World Ambient Particles (Geometric Stardust or Mascot Companions)
             if (ambientParticlesEnabled) {
                 AstraAmbientParticles.renderParticles(poseStack, player, partialTick);
+            }
+
+            // Pass 6: God-Tier 3D Combat Impact Waves & Dispersion Rings (Zero-Alloc)
+            AstraGodTierVisuals.renderActiveShockwaves(poseStack, camPos);
+
+            // Pass 7: Volumetric Cyber-Beacon & Double-Helix DNA Beacon for Path Goal
+            if (baritone != null && baritone.getPathingBehavior() != null && baritone.getPathingBehavior().getGoal() != null) {
+                var goal = baritone.getPathingBehavior().getGoal();
+                if (goal instanceof baritone.api.pathing.goals.GoalBlock gb) {
+                    float timeSec = (System.currentTimeMillis() % 100000L) / 1000.0F;
+                    AstraGodTierVisuals.renderVolumetricCyberBeacon(poseStack, camPos, gb.x + 0.5, gb.y, gb.z + 0.5, COLOR_CYAN, COLOR_LILAC, timeSec);
+                } else if (goal instanceof baritone.api.pathing.goals.GoalXZ gxz) {
+                    float timeSec = (System.currentTimeMillis() % 100000L) / 1000.0F;
+                    AstraGodTierVisuals.renderVolumetricCyberBeacon(poseStack, camPos, gxz.getX() + 0.5, player.getY(), gxz.getZ() + 0.5, COLOR_CYAN, COLOR_LILAC, timeSec);
+                }
             }
         }
         poseStack.popPose();

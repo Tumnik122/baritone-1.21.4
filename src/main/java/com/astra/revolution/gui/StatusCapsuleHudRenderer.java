@@ -176,6 +176,9 @@ public final class StatusCapsuleHudRenderer {
         BaritoneBypassScreen.drawCenteredRowTextStatic(g, font, baritoneTask, taskX + 13.5f, cy, taskTextCol);
 
         drawValueAndLilacUnit(g, font, invText, invUnit, invX + 13.5f, cy);
+
+        // God-Tier Screen Space Visuals: Kinetic Speed Warp Lines & Damage Ripple
+        com.astra.revolution.visuals.AstraGodTierVisuals.renderScreenSpeedLinesAndDamageRipple(g, g.guiWidth(), g.guiHeight(), mc.player, partialTick);
     }
 
     private void drawValueAndLilacUnit(GuiGraphics g, Font font, String num, String unit, float x, float cy) {
