@@ -35,6 +35,7 @@ import baritone.utils.player.BaritonePlayerController;
 import baritone.utils.ToolSet;
 import baritone.utils.FastBreakHelper;
 import baritone.bypass.AutoToolManager;
+import baritone.bypass.GrimSnapRotationUtil;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
@@ -1256,6 +1257,98 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         return (grimProgress > 0) ? (int) Math.ceil(1.0 / grimProgress) : 1;
     }
 
+    private Rotation getSafeServerRotation() {
+        Rotation serverRot = baritone.getLookBehavior().getServerRotation();
+        if (serverRot != null) {
+            return serverRot;
+        }
+        LocalPlayer p = ctx.player();
+        if (p != null) {
+            return new Rotation(p.getYRot(), p.getXRot());
+        }
+        return new Rotation(0.0f, 0.0f);
+    }
+
+    /**
+     * Natychmiastowa synchronizacja kątów klienta i LookBehavior w tym samym ticku (0 ticków opóźnienia).
+     * Działa identycznie jak w trybie #praca (FarmProcess.java) z pełnym bypass GrimAC GCD.
+     */
+    private void applyAimRotation(Rotation rot, boolean blockInteract) {
+        baritone.getLookBehavior().updateTarget(rot, blockInteract);
+        LocalPlayer player = ctx.player();
+        if (player != null) {
+            player.setYRot(rot.getYaw());
+            player.setXRot(rot.getPitch());
+            player.yHeadRot = rot.getYaw();
+            player.yBodyRot = rot.getYaw();
+        }
+    }
+
+    /**
+     * Zwraca kolejny blok w kolejce pending (poza currentPos) o najmniejszym koszcie kątowym i dystansowym.
+     */
+    private Target peekNextBreakTarget(BlockPos currentPos) {
+        if (pending == null || pending.isEmpty()) {
+            return null;
+        }
+        LocalPlayer player = ctx.player();
+        if (player == null) return null;
+        Vec3 predictedEye = player.getEyePosition(1.0f).add(player.getDeltaMovement());
+        Rotation curRot = getSafeServerRotation();
+
+        Target bestNext = null;
+        double bestScore = Double.MAX_VALUE;
+
+        for (Target candidate : pending) {
+            if (candidate == null || candidate.pos.equals(currentPos)) {
+                continue;
+            }
+            if (scheduler.isUnreachable(candidate.pos)) {
+                continue;
+            }
+            Vec3 center = Vec3.atCenterOf(candidate.pos);
+            double distSq = predictedEye.distanceToSqr(center);
+            if (distSq > 64.0D) { // Okno pre-aimingu do 8m
+                continue;
+            }
+
+            float yawTo = (float) (Math.toDegrees(Math.atan2(center.z - predictedEye.z, center.x - predictedEye.x)) - 90.0D);
+            float pitchTo = (float) (-Math.toDegrees(Math.atan2(center.y - predictedEye.y, Math.hypot(center.x - predictedEye.x, center.z - predictedEye.z))));
+            float dYaw = Math.abs(Mth.wrapDegrees(yawTo - curRot.getYaw()));
+            float dPitch = Math.abs(pitchTo - curRot.getPitch());
+
+            double score = Math.sqrt(distSq) * 1.1D + (dYaw * 0.03D) + (dPitch * 0.02D);
+            if (score < bestScore) {
+                bestScore = score;
+                bestNext = candidate;
+            }
+        }
+        return bestNext;
+    }
+
+    /**
+     * Obraca celownik GCD z wyprzedzeniem 1 ticku na następny blok w kolejce (Lookahead Pre-Aiming).
+     */
+    private void preAimNextTarget(BlockPos excludeCurrentPos) {
+        Target nextTarget = peekNextBreakTarget(excludeCurrentPos);
+        if (nextTarget == null) {
+            return;
+        }
+        LocalPlayer player = ctx.player();
+        if (player == null) return;
+        Vec3 predictedEye = player.getEyePosition(1.0f).add(player.getDeltaMovement());
+        Rotation curRot = getSafeServerRotation();
+
+        BlockPos nextPos = nextTarget.pos;
+        Vec3 targetVec = new Vec3(
+                Mth.clamp(predictedEye.x, nextPos.getX() + 0.15D, nextPos.getX() + 0.85D),
+                Mth.clamp(predictedEye.y, nextPos.getY() + 0.15D, nextPos.getY() + 0.85D),
+                Mth.clamp(predictedEye.z, nextPos.getZ() + 0.15D, nextPos.getZ() + 0.85D)
+        );
+        float[] snapped = GrimSnapRotationUtil.snapGcd(curRot.getYaw(), curRot.getPitch(), predictedEye, targetVec);
+        applyAimRotation(new Rotation(snapped[0], snapped[1]), false);
+    }
+
     private PathingCommand controlBreak(Level world, LocalPlayer player, Target t) {
         if (interBlockCooldown > 0) {
             interBlockCooldown--;
@@ -1295,14 +1388,32 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             player.setSprinting(false);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
         }
-        Rotation look = SmoothLookHelper.lookAt(player.getEyePosition(), Vec3.atCenterOf(t.pos));
-        float dYaw = Math.abs(Mth.wrapDegrees(look.getYaw() - player.getYRot()));
-        float dPitch = Math.abs(look.getPitch() - player.getXRot());
-        if (dYaw > ROTATION_TOLERANCE || dPitch > ROTATION_TOLERANCE) {
-            baritone.getLookBehavior().updateTarget(look, true);
-            return standStill();
+
+        // ULTRA-SMOOTH GRIMAC GCD ROTATION (dokładnie jak w #praca)
+        double reach = ctx.playerController().getBlockReachDistance();
+        if (antiCheat) {
+            reach = Math.min(reach, Baritone.settings().grimSafeReach.value);
         }
-        Direction face = breakFace(player, t.pos);
+        Rotation currentRot = getSafeServerRotation();
+        GrimSnapRotationUtil.VerifiedBlockAim verifiedAim = GrimSnapRotationUtil.findVerifiedBlockSnapRotation(
+                player, currentRot.getYaw(), currentRot.getPitch(), t.pos, reach);
+
+        Direction face;
+        if (verifiedAim != null) {
+            applyAimRotation(verifiedAim.rotation(), true);
+            face = verifiedAim.hitFace();
+        } else {
+            // Fallback GCD snap do środka bryły bloku
+            Vec3 predictedEye = player.getEyePosition(1.0f).add(player.getDeltaMovement());
+            float[] preRot = GrimSnapRotationUtil.snapGcd(
+                    currentRot.getYaw(),
+                    currentRot.getPitch(),
+                    predictedEye,
+                    Vec3.atCenterOf(t.pos)
+            );
+            applyAimRotation(new Rotation(preRot[0], preRot[1]), true);
+            face = breakFace(player, t.pos);
+        }
         baritone.getPlayerContext().playerController().syncHeldItem();
 
         if (breaking == null || !breaking.equals(t.pos)) {
@@ -1356,9 +1467,19 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         currentGoal = null;
         breakTicks = 0;
         breakBudget = 0;
+        boolean antiCheat = Baritone.settings().antiCheatCompatibility.value
+                || Baritone.settings().grimCompat.value
+                || Baritone.settings().antiCheatCompat.value;
         if (wasMultiTick) {
-            interBlockCooldown = 5;
+            interBlockCooldown = antiCheat ? 1 : 0;
         }
+
+        // God-tier visual feedback (neon amber shockwave na rozbitym bloku)
+        com.astra.revolution.visuals.AstraGodTierVisuals.triggerShockwave(
+                t.pos.getX() + 0.5D, t.pos.getY() + 0.5D, t.pos.getZ() + 0.5D, 0xFF9900, true);
+
+        // Natychmiastowy Lookahead Pre-Aiming na siatce GCD na kolejny cel w kolejce!
+        preAimNextTarget(t.pos);
     }
 
     private void stopBreaking() {
@@ -1504,6 +1625,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
 
             BlockPos feet = player.blockPosition();
             if (!currentGoal.isInGoal(feet.getX(), feet.getY(), feet.getZ())) {
+                preAimNextTarget(null);
                 return new PathingCommand(currentGoal, PathingCommandType.SET_GOAL_AND_PATH);
             }
 
