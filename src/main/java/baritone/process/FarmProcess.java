@@ -2022,7 +2022,21 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     }
 
     /**
-     * Sprawdza, czy najbliższe 2.0m w kierunku celu są wolne od ścian, płotków i wody,
+     * Sprawdza, czy blok lub płyn stanowi bezpośrednie zagrożenie (lawa, ogień, kaktus, krzak słodkich jagód, magma).
+     */
+    private boolean isHazardBlock(Level world, BlockPos pos) {
+        if (world == null || pos == null) return false;
+        BlockState state = world.getBlockState(pos);
+        if (!state.getFluidState().isEmpty()) {
+            return true; // Woda oraz lawa traktowane jako przeszkoda dla bezpośredniego kroku WASD
+        }
+        Block block = state.getBlock();
+        return block == Blocks.LAVA || block == Blocks.FIRE || block == Blocks.SOUL_FIRE
+                || block == Blocks.MAGMA_BLOCK || block == Blocks.CACTUS || block == Blocks.SWEET_BERRY_BUSH;
+    }
+
+    /**
+     * Sprawdza, czy najbliższe 2.0m w kierunku celu są wolne od ścian, płotków, wody, lawy i przepaści,
      * co pozwala na natychmiastowy ruch WASD bez czekania na wątek A*.
      */
     private boolean isImmediateStepSafe(Vec3 playerPos, Vec3 targetVec, Level world) {
@@ -2030,29 +2044,36 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         double dx = targetVec.x - playerPos.x;
         double dz = targetVec.z - playerPos.z;
         double dist = Math.hypot(dx, dz);
-        if (dist < 1e-3D) return false;
+        if (dist < 1e-3D) return true;
 
         double stepCheckDist = Math.min(dist, 2.2D);
         double dirX = dx / dist;
         double dirZ = dz / dist;
         double baseY = Math.floor(playerPos.y + 0.45D); // Kompensacja wysokości Farmland (0.9375)
 
-        for (double d = 0.5D; d <= stepCheckDist; d += 0.5D) {
-            double cx = playerPos.x + dirX * d;
-            double cz = playerPos.z + dirZ * d;
-            BlockPos legPos = BlockPos.containing(cx, baseY + 0.2D, cz);
-            BlockPos headPos = legPos.above();
-            BlockPos floorPos = legPos.below();
+        double[] lateralOffsets = { -0.30D, 0.0D, 0.30D };
 
-            if (!world.getFluidState(legPos).isEmpty() || !world.getFluidState(floorPos).isEmpty()) {
-                return false;
-            }
-            if (!world.getBlockState(legPos).getCollisionShape(world, legPos).isEmpty()
-                    || !world.getBlockState(headPos).getCollisionShape(world, headPos).isEmpty()) {
-                return false;
-            }
-            if (world.getBlockState(floorPos).getCollisionShape(world, floorPos).isEmpty()) {
-                return false;
+        for (double d = 0.4D; d <= stepCheckDist; d += 0.45D) {
+            for (double lat : lateralOffsets) {
+                double cx = playerPos.x + dirX * d - dirZ * lat;
+                double cz = playerPos.z + dirZ * d + dirX * lat;
+                BlockPos legPos = BlockPos.containing(cx, baseY + 0.2D, cz);
+                BlockPos headPos = legPos.above();
+                BlockPos floorPos = legPos.below();
+                BlockPos twoBelowPos = floorPos.below();
+
+                if (isHazardBlock(world, legPos) || isHazardBlock(world, headPos) || isHazardBlock(world, floorPos)) {
+                    return false;
+                }
+                if (!world.getBlockState(legPos).getCollisionShape(world, legPos).isEmpty()
+                        || !world.getBlockState(headPos).getCollisionShape(world, headPos).isEmpty()) {
+                    return false;
+                }
+                // Ochrona przed spadkiem z krawędzi (> 1 blok w dół)
+                BlockState floorState = world.getBlockState(floorPos);
+                if (floorState.isAir() && world.getBlockState(twoBelowPos).isAir()) {
+                    return false;
+                }
             }
         }
         return true;
@@ -3722,9 +3743,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 }
 
                 if (isImmediateStepSafe(playerVecPos, activePullVec, world)) {
-                    if (baritone.getPathingBehavior().isPathing()) {
-                        baritone.getPathingBehavior().cancelEverything();
-                    }
                     float targetMoveYaw = (float) (Math.toDegrees(Math.atan2(
                             activePullVec.z - playerVecPos.z,
                             activePullVec.x - playerVecPos.x)) - 90.0D);
@@ -3745,12 +3763,20 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                             || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_BACK)) {
                         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                     }
+                } else {
+                    // Wykryto lawę / klif / wodę na kierunku bezpośredniego kroku ->
+                    // natychmiast odetnij klawisze manualnego ruchu WASD, aby bot nie wszedł w zagrożenie!
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                 }
             }
         }
 
         if (pullBlockPos != null) {
-            goalz.add(new GoalGetToBlock(pullBlockPos));
+            goalz.add(new GoalNear(pullBlockPos, 2));
         }
 
         if (goalz.isEmpty()) {
@@ -3765,11 +3791,11 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 blacklistUntil.clear();
                 attempts.clear();
                 for (BlockPos p : toBreak) {
-                    goalz.add(new GoalFarmTarget(p));
+                    goalz.add(new GoalNear(p, 2));
                     if (goalz.size() >= 3) break;
                 }
                 for (BlockPos p : openFarmland) {
-                    goalz.add(new GoalFarmTarget(p));
+                    goalz.add(new GoalNear(p, 2));
                     if (goalz.size() >= 6) break;
                 }
             }
@@ -3804,6 +3830,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         BlockPos patrolPos = playerPos.offset((int) Math.round(-Math.sin(rad) * 3.0D), 0, (int) Math.round(Math.cos(rad) * 3.0D));
                         goalz.add(new GoalNear(new BetterBlockPos(patrolPos), 1));
                     } else {
+                        baritone.getInputOverrideHandler().clearAllKeys();
                         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                     }
                 }
