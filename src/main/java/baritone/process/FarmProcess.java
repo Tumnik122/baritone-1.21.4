@@ -2428,22 +2428,27 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                                 ctx.player().getXRot(),
                                 farmlandPos, false, blockReachDistance);
                         if (rot != null) {
-                            applyAimRotation(new Rotation(rot[0], rot[1]), true);
-                            Vec3 hitVec = new Vec3(farmlandPos.getX() + 0.5D, farmlandPos.getY() + 0.9375D, farmlandPos.getZ() + 0.5D);
-                            BlockHitResult sbhr = new BlockHitResult(hitVec, Direction.UP, farmlandPos, false);
-                            InteractionResult res = ctx.playerController().processRightClickBlock(
-                                    ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, sbhr);
-                            if (res.consumesAction()) {
-                                ctx.player().swing(InteractionHand.MAIN_HAND);
-                                com.astra.revolution.visuals.AstraGodTierVisuals.triggerShockwave(farmlandPos.getX() + 0.5D, farmlandPos.getY() + 0.9375D, farmlandPos.getZ() + 0.5D, 0x00F0FF, false);
-                                openFarmland.remove(farmlandPos);
-                                farmlandSet.remove(farmlandPos.asLong());
-                                pendingReplants.remove(farmlandPos);
-                                if (locations != null) locations.remove(farmlandPos);
-                                resetWatchdogOnProgress();
+                            Rotation targetRot = new Rotation(rot[0], rot[1]);
+                            applyAimRotation(targetRot, true);
+                            BlockHitResult sbhr = getServerFarmlandHit(farmlandPos);
+                            if (sbhr != null) {
+                                InteractionResult res = ctx.playerController().processRightClickBlock(
+                                        ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, sbhr);
+                                if (res.consumesAction()) {
+                                    ctx.player().swing(InteractionHand.MAIN_HAND);
+                                    com.astra.revolution.visuals.AstraGodTierVisuals.triggerShockwave(farmlandPos.getX() + 0.5D, farmlandPos.getY() + 0.9375D, farmlandPos.getZ() + 0.5D, 0x00F0FF, false);
+                                    openFarmland.remove(farmlandPos);
+                                    farmlandSet.remove(farmlandPos.asLong());
+                                    pendingReplants.remove(farmlandPos);
+                                    if (locations != null) locations.remove(farmlandPos);
+                                    resetWatchdogOnProgress();
+                                    acted = true;
+                                    pendingInstantReplantPos = null;
+                                    pendingInstantReplantTicks = 0;
+                                }
+                            } else {
+                                // Celowanie ustawione, czekamy 1 tick na wysłanie rotacji w naturalnym sendPosition() (0 dodatkowych pakietów flying)
                                 acted = true;
-                                pendingInstantReplantPos = null;
-                                pendingInstantReplantTicks = 0;
                             }
                         } else {
                             pendingInstantReplantPos = null;
@@ -2790,7 +2795,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     updateSweepState(smoothRot);
 
                     BlockHitResult sbhr = getServerFarmlandHit(pos);
-                    if (sbhr == null && (isPracaModeActive() || canInteractGrimSafe(pos, smoothRot, plantReach, true))) {
+                    if (sbhr == null && !isGrim && (isPracaModeActive() || canInteractGrimSafe(pos, smoothRot, plantReach, true))) {
                         sbhr = new BlockHitResult(new Vec3(pos.getX() + 0.5D, pos.getY() + 0.9375D, pos.getZ() + 0.5D), Direction.UP, pos, false);
                     }
 
@@ -2824,6 +2829,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                                 lockedTargetTicks = 0;
                             }
                         }
+                    } else {
+                        // Rotacja w trakcie synchronizacji (nastąpi w następnym ticku przez naturalne sendPosition())
+                        handledNearbyAction = true;
                     }
 
                     if (lockedTargetTicks >= 12) {

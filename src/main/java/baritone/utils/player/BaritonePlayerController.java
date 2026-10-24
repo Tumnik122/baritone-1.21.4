@@ -177,19 +177,28 @@ public final class BaritonePlayerController implements IPlayerController {
 
         IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(player);
 
-        // 1. GRIMAC PRIMARY: effectiveRotation — raycast z perspektywy rotacji bieżącego ticku (zsynchronizowany obrót)
-        if (baritone != null) {
+        // 1. GRIMAC PRIMARY: serverRotation — promień z rotacji, którą SERWER faktycznie zarejestrował (pre-flying)
+        if (baritone != null && isGrim) {
+            Rotation serverRot = baritone.getLookBehavior().getServerRotation();
+            if (serverRot != null) {
+                HitResult serverHit = RayTraceUtils.rayTraceTowards(player, serverRot, reach, player.isCrouching());
+                if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(targetPos)) {
+                    // serverRotation trafia bezpośrednio w docelowy blok — bezpieczne dla GrimAC
+                    candidateHit = sbhr;
+                }
+            }
+            if (candidateHit == null) {
+                // Pod GrimAC: ZAKAZ klikania, jeśli serverRotation jeszcze nie patrzy na docelowy blok!
+                // Odkładamy kliknięcie na kolejny tick, w którym sendPosition() wyśle właściwą rotację (0 dodatkowych pakietów flying).
+                return InteractionResult.PASS;
+            }
+        } else if (baritone != null) {
             Rotation effectiveRot = baritone.getLookBehavior().getEffectiveRotation()
                     .orElseGet(() -> baritone.getLookBehavior().getServerRotation());
             if (effectiveRot != null) {
                 HitResult serverHit = RayTraceUtils.rayTraceTowards(player, effectiveRot, reach, player.isCrouching());
                 if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(targetPos)) {
-                    // ✅ effectiveRotation trafia bezpośrednio w docelowy blok — używamy prawdziwego wektora i Direction
                     candidateHit = sbhr;
-                }
-                if (candidateHit == null && isGrim) {
-                    // Pod GrimAC: ZAKAZ klikania przez ścianę/przeszkodę! Jeśli promień nie widzi bloku, blokujemy pakiet!
-                    return InteractionResult.PASS;
                 }
             }
         }
@@ -231,6 +240,7 @@ public final class BaritonePlayerController implements IPlayerController {
         }
 
         syncHeldItem();
+
         InteractionResult res = mc.gameMode.useItemOn(player, hand, candidateHit);
         if (res.consumesAction()) {
             lastRightClickTick = player.tickCount;
@@ -278,17 +288,16 @@ public final class BaritonePlayerController implements IPlayerController {
         // GrimAC Protection: RotationBreak & PositionBreakA
         IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(mc.player);
         if (baritone != null && isGrim) {
-            Rotation effectiveRot = baritone.getLookBehavior().getEffectiveRotation()
-                    .orElseGet(() -> baritone.getLookBehavior().getServerRotation());
-            if (effectiveRot == null) {
+            Rotation serverRot = baritone.getLookBehavior().getServerRotation();
+            if (serverRot == null) {
                 return false;
             }
             double reach = Math.min(3.0D, Math.min(Baritone.settings().grimSafeReach.value, getBlockReachDistance()));
-            HitResult serverHit = RayTraceUtils.rayTraceTowards(mc.player, effectiveRot, reach, mc.player.isCrouching());
+            HitResult serverHit = RayTraceUtils.rayTraceTowards(mc.player, serverRot, reach, mc.player.isCrouching());
             if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(loc)) {
                 face = sbhr.getDirection();
             } else {
-                // effectiveRotation nie przecina jeszcze bloku na serwerze! Czekamy aż rotacja zostanie zsynchronizowana.
+                // serverRotation nie przecina jeszcze bloku na serwerze! Czekamy aż rotacja zostanie zsynchronizowana przez naturalne sendPosition().
                 return false;
             }
         }
