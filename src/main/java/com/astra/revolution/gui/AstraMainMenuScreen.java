@@ -187,7 +187,10 @@ public class AstraMainMenuScreen extends Screen {
                 "Quit Game", "Bezpieczne wyjście z Astra Client",
                 VectorIcon.TRASH, true,
                 "EXIT",
-                () -> this.minecraft.stop(),
+                () -> {
+                    System.setProperty("astra.allowStop", "true");
+                    this.minecraft.stop();
+                },
                 null
         ));
     }

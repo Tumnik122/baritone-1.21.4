@@ -482,12 +482,17 @@ function Start-DirectBotProcess([int]$num) {
         "-Dio.netty.allocator.maxOrder=9",
         "-Dio.netty.allocator.cacheTrimIntervalMillis=5000",
         "-XX:ErrorFile=`"$targetDir\logs\hs_err_pid%p.log`"",
+        "-XX:+HeapDumpOnOutOfMemoryError",
+        "-XX:HeapDumpPath=`"$targetDir\logs`"",
         "-XX:+UseCompressedOops",
         "-XX:+UseCompressedClassPointers",
         "-DbotNum=$num",
         "-Dastra.botNum=$num",
         "-Dastra.httpPort=$port",
         "-Dastra.headless=$isHeadless",
+        "-Dastra.guardPrimaryStop=true",
+        "-Dastra.allowStop=false",
+        "-Dastra.redirectStdStreams=true",
         "`"-Dfabric.gameDir=$targetDir`""
     )
 

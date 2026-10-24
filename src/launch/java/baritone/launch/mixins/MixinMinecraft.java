@@ -52,6 +52,17 @@ import net.minecraft.client.gui.screens.TitleScreen;
 import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.lwjgl.glfw.GLFW;
 
+import java.io.FileOutputStream;
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.function.BiFunction;
 
 @Mixin(Minecraft.class)
@@ -174,16 +185,110 @@ public abstract class MixinMinecraft {
         }
     }
 
+    @Unique
+    private static volatile boolean astra$hooksInstalled = false;
+
+    @Unique
+    private static long astra$lastStopWarnMs = 0L;
+
+    @Unique
+    private static class AstraTeeOutputStream extends OutputStream {
+        private final OutputStream primary;
+        private final OutputStream secondary;
+
+        public AstraTeeOutputStream(OutputStream primary, OutputStream secondary) {
+            this.primary = primary;
+            this.secondary = secondary;
+        }
+
+        @Override
+        public void write(int b) throws java.io.IOException {
+            primary.write(b);
+            secondary.write(b);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws java.io.IOException {
+            primary.write(b, off, len);
+            secondary.write(b, off, len);
+        }
+
+        @Override
+        public void flush() throws java.io.IOException {
+            primary.flush();
+            secondary.flush();
+        }
+
+        @Override
+        public void close() throws java.io.IOException {
+            try { primary.close(); } finally { secondary.close(); }
+        }
+    }
+
     @Inject(method = "<init>", at = @At("RETURN"))
     private void postInit(CallbackInfo ci) {
         BaritoneAPI.getProvider().getPrimaryBaritone();
-        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
-            System.err.println("[Astra-CrashGuard] Przechwycono krytyczny wyjątek w wątku [" + thread.getName() + "]: " + throwable.getMessage());
-            throwable.printStackTrace();
-            if (throwable instanceof OutOfMemoryError) {
-                System.gc();
+
+        if (!astra$hooksInstalled) {
+            astra$hooksInstalled = true;
+            int botNum = AstraPerformanceConfig.getBotNum();
+            Path logDir = Paths.get("logs");
+
+            // 1. Przekierowanie stdout/stderr do astra-stdio-bot-X.log
+            if (Boolean.parseBoolean(System.getProperty("astra.redirectStdStreams", "true"))) {
+                try {
+                    Files.createDirectories(logDir);
+                    Path stdLog = logDir.resolve("astra-stdio-bot-" + botNum + ".log");
+                    FileOutputStream fos = new FileOutputStream(stdLog.toFile(), true);
+                    PrintStream fileStream = new PrintStream(fos, true, "UTF-8");
+                    System.setOut(new PrintStream(new AstraTeeOutputStream(System.out, fileStream), true, "UTF-8"));
+                    System.setErr(new PrintStream(new AstraTeeOutputStream(System.err, fileStream), true, "UTF-8"));
+                    System.out.println("[Astra-Diagnostics] Aktywowano podwojny strumien logowania stdio -> " + stdLog);
+                } catch (Throwable t) {
+                    System.err.println("[Astra-Diagnostics] Nie udalo sie zainicjalizowac astra-stdio: " + t.getMessage());
+                }
             }
-        });
+
+            // 2. Globalny handler nieobsluzonych wyjatkow
+            Thread.UncaughtExceptionHandler prevHandler = Thread.getDefaultUncaughtExceptionHandler();
+            Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+                System.err.println("[Astra-CrashGuard] Przechwycono krytyczny wyjatek w watku [" + thread.getName() + "]: " + throwable.getMessage());
+                throwable.printStackTrace();
+                astra$writeEmergencyLog(logDir, botNum, "UNCAUGHT_EXCEPTION na watku [" + thread.getName() + "]", throwable);
+                if (throwable instanceof OutOfMemoryError) {
+                    System.gc();
+                }
+                if (prevHandler != null) {
+                    prevHandler.uncaughtException(thread, throwable);
+                }
+            });
+
+            // 3. ShutdownHook logujacy przyczyne zamkniecia JVM i zrzut watkow
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                boolean allowStop = Boolean.getBoolean("astra.allowStop");
+                StringBuilder sb = new StringBuilder();
+                sb.append("\n=======================================================\n");
+                sb.append("=== ASTRA CLIENT JVM SHUTDOWN DIAGNOSTICS ===\n");
+                sb.append("Timestamp: ").append(LocalDateTime.now()).append("\n");
+                sb.append("BotNum: ").append(botNum)
+                  .append(" | isPrimary: ").append(AstraPerformanceConfig.isPrimaryClient())
+                  .append(" | allowStop: ").append(allowStop).append("\n");
+                sb.append("Active Threads: ").append(Thread.activeCount()).append("\n");
+
+                for (Map.Entry<Thread, StackTraceElement[]> entry : Thread.getAllStackTraces().entrySet()) {
+                    Thread t = entry.getKey();
+                    if (t.getName().contains("Render") || t.getName().contains("Server") || t.getName().contains("Shutdown") || t.getName().contains("Main") || !t.isDaemon()) {
+                        sb.append("\nWatek [").append(t.getName()).append("] stan=").append(t.getState()).append(":\n");
+                        for (StackTraceElement el : entry.getValue()) {
+                            sb.append("    at ").append(el).append("\n");
+                        }
+                    }
+                }
+                sb.append("=======================================================\n");
+                org.slf4j.LoggerFactory.getLogger("AstraShutdown").warn(sb.toString());
+                astra$writeEmergencyLog(logDir, botNum, sb.toString(), null);
+            }, "Astra-Shutdown-Diagnostics"));
+        }
     }
 
     // ══════ poniżej: oryginalne @Inject — BEZ ZMIAN ══════
@@ -358,29 +463,67 @@ public abstract class MixinMinecraft {
 
     /**
      * AstraGuard: Wykrywa i loguje każde wywołanie Minecraft.stop() ze stosem wywołań.
-     * Na botach pomocniczych (bot 2+) uniemożliwia przypadkowe zamknięcie procesu przez sygnały OS / GLFW.
+     * Na botach pomocniczych (bot 2+) oraz bocie 1 uniemożliwia przypadkowe zamknięcie procesu przez sygnały OS / GLFW,
+     * dopóki nie zezwoli na to użytkownik (np. komenda wyjścia lub parametr astra.allowStop=true).
      */
     @Inject(method = "stop", at = @At("HEAD"), cancellable = true)
     private void astra$guardBotUnexpectedStop(CallbackInfo ci) {
+        boolean allowStop = Boolean.getBoolean("astra.allowStop");
+        boolean guardPrimary = Boolean.parseBoolean(System.getProperty("astra.guardPrimaryStop", "true"));
+        boolean isPrimary = AstraPerformanceConfig.isPrimaryClient();
+        int botNum = AstraPerformanceConfig.getBotNum();
+
         org.slf4j.LoggerFactory.getLogger("AstraGuard").warn(
                 "[AstraGuard] Wykryto wywołanie Minecraft.stop()! (isPrimary="
-                        + AstraPerformanceConfig.isPrimaryClient()
-                        + ", botNum=" + AstraPerformanceConfig.getBotNum()
-                        + ", allowStop=" + Boolean.getBoolean("astra.allowStop") + ")",
+                        + isPrimary
+                        + ", botNum=" + botNum
+                        + ", allowStop=" + allowStop
+                        + ", guardPrimary=" + guardPrimary + ")",
                 new Throwable("Stacktrace wywołania Minecraft.stop()")
         );
 
-        if (!AstraPerformanceConfig.isPrimaryClient() && !Boolean.getBoolean("astra.allowStop")) {
-            org.slf4j.LoggerFactory.getLogger("AstraGuard").warn(
-                    "[AstraGuard] ZABLOKOWANO przypadkowe zamknięcie bota #{}! Resetuję windowShouldClose.",
-                    AstraPerformanceConfig.getBotNum()
-            );
+        if (!allowStop && (!isPrimary || guardPrimary) && !astra$isCrashStop()) {
+            long now = System.currentTimeMillis();
+            if (now - astra$lastStopWarnMs > 2000L) {
+                astra$lastStopWarnMs = now;
+                org.slf4j.LoggerFactory.getLogger("AstraGuard").warn(
+                        "[AstraGuard] ZABLOKOWANO przypadkowe zamknięcie bota #{}! Resetuję windowShouldClose.",
+                        botNum
+                );
+            }
             Minecraft mc = (Minecraft) (Object) this;
             if (mc.getWindow() != null && mc.getWindow().getWindow() != 0L) {
                 GLFW.glfwSetWindowShouldClose(mc.getWindow().getWindow(), false);
             }
             ci.cancel();
         }
+    }
+
+    @Unique
+    private static boolean astra$isCrashStop() {
+        for (StackTraceElement el : Thread.currentThread().getStackTrace()) {
+            String cls = el.getClassName();
+            String mth = el.getMethodName();
+            if (cls.contains("CrashReport") || mth.contains("crash") || mth.contains("emergencySave")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Unique
+    private static void astra$writeEmergencyLog(Path logDir, int botNum, String header, Throwable t) {
+        try {
+            Files.createDirectories(logDir);
+            Path crashLog = logDir.resolve("astra-shutdown-bot-" + botNum + ".log");
+            StringBuilder out = new StringBuilder("\n[" + LocalDateTime.now() + "] " + header + "\n");
+            if (t != null) {
+                StringWriter sw = new StringWriter();
+                t.printStackTrace(new PrintWriter(sw));
+                out.append(sw);
+            }
+            Files.writeString(crashLog, out.toString(), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (Throwable ignored) {}
     }
 
     /**
