@@ -1781,7 +1781,16 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             BlockPos feetPos = new BlockPos(Mth.floor(testX), Mth.floor(testY), Mth.floor(testZ));
             BlockPos belowPos = feetPos.below();
 
-            if (isWaterOrFluid(world, feetPos) || isWaterOrFluid(world, belowPos)) {
+            BlockState feetState = world.getBlockState(feetPos);
+            // Jeśli na wysokości stóp jest solidna powierzchnia (Farmland, płyta, lilia, podłoga), gracz na nią staje bez wpadania
+            if (!feetState.getCollisionShape(world, feetPos).isEmpty() && !isWaterOrFluid(world, feetPos)) {
+                continue;
+            }
+
+            if (isWaterOrFluid(world, feetPos)) {
+                return true;
+            }
+            if (isWaterOrFluid(world, belowPos) && feetState.getCollisionShape(world, feetPos).isEmpty()) {
                 return true;
             }
             if (world.getBlockState(belowPos).isAir() && isWaterOrFluid(world, belowPos.below())) {
@@ -1877,7 +1886,19 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 if (magnetPullTarget != null && stallTicks >= 22) {
                     stalledTargetCooldowns.put(magnetPullTarget, System.currentTimeMillis() + 3500L);
                     magnetPullTarget = null;
+                }
+                if (stallTicks >= 35) {
+                    // Całkowite odblokowanie zacięcia (Auto-Recovery bez #stop)
+                    blacklistUntil.clear();
+                    attempts.clear();
+                    itemBlacklist.clear();
+                    unplantableBlacklist.clear();
+                    stalledTargetCooldowns.clear();
+                    locations = null;
+                    scanCooldownTicks = 0;
                     stallTicks = 0;
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
                 }
             }
         } else {
@@ -2141,21 +2162,18 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             final int effectiveMaxSize = Math.max(maxSize, 65536);
 
             final List<Block> scan = new ArrayList<>();
-            // KRYTYCZNE: Zawsze skanujemy FARMLAND, aby puste grządki były widoczne dla bota w całym promieniu farmy!
+            // KRYTYCZNE: Zawsze skanujemy FARMLAND, SOUL_SAND i JUNGLE_LOG, aby puste grządki/podłoża były widoczne dla bota w całym promieniu farmy!
             scan.add(Blocks.FARMLAND);
+            scan.add(Blocks.SOUL_SAND);
+            scan.add(Blocks.JUNGLE_LOG);
             if (!plantOnly) {
-                if (Baritone.settings().farmWheatOnly.value || pracaMode) {
+                if (Baritone.settings().farmWheatOnly.value) {
                     scan.add(Blocks.WHEAT);
                 } else {
                     for (Harvest harvest : Harvest.values()) {
-                        scan.add(harvest.block);
-                    }
-                }
-            } else {
-                if (!Baritone.settings().farmWheatOnly.value && !pracaMode) {
-                    scan.add(Blocks.JUNGLE_LOG);
-                    if (Baritone.settings().replantNetherWart.value) {
-                        scan.add(Blocks.SOUL_SAND);
+                        if (!scan.contains(harvest.block)) {
+                            scan.add(harvest.block);
+                        }
                     }
                 }
             }
@@ -2185,7 +2203,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         final boolean haveBoneMeal = baritone.getInventoryBehavior().throwaway(false, this::isBoneMeal);
         final boolean haveWart = baritone.getInventoryBehavior().throwaway(false, this::isNetherWart);
         final boolean haveCocoa = baritone.getInventoryBehavior().throwaway(false, this::isCocoa);
-        final boolean haveSeeds = hasPlantableSeeds();
+        final boolean haveSeeds = hasPlantableSeeds() || hasAnyPlantableInInventory();
 
         List<BlockPos> toBreak = new ArrayList<>();
         List<BlockPos> openFarmland = new ArrayList<>();
@@ -2278,6 +2296,18 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         if (ctx.world().getBlockState(up).isAir() && farmlandSet.add(mut.asLong())) {
                             openFarmland.add(mut.immutable());
                         }
+                    } else if (st.is(Blocks.SOUL_SAND)) {
+                        up.set(mut.getX(), mut.getY() + 1, mut.getZ());
+                        if (ctx.world().getBlockState(up).isAir()) {
+                            openSoulsand.add(mut.immutable());
+                        }
+                    } else if (st.is(Blocks.JUNGLE_LOG)) {
+                        for (Direction direction : Direction.Plane.HORIZONTAL) {
+                            if (ctx.world().getBlockState(mut.relative(direction)).getBlock() instanceof AirBlock) {
+                                openLog.add(mut.immutable());
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -2320,8 +2350,14 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
         int timeoutSec = Baritone.settings().farmNoGainTimeoutSeconds.value;
         if (timeoutSec > 0 && (farmTicks - lastProgressTick) > (timeoutSec * 20L)) {
-            triggerFailsafeHomeReturn("Brak postępu przez " + (timeoutSec / 60) + " min");
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            // Jeśli bot ma wciąż plony/sadzonki w zasięgu, nie odpalaj gwałtownego failsafe /home 2, lecz zresetuj watchdog
+            if (hasWork) {
+                lastProgressTick = farmTicks;
+                resetWatchdogOnProgress();
+            } else {
+                triggerFailsafeHomeReturn("Brak postępu przez " + (timeoutSec / 60) + " min");
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
         }
 
         // ─────────────────────────────────────────────────────────────────
@@ -3266,7 +3302,17 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                             targetMoveYaw,
                             acted || lockedTarget != null || pendingInstantReplantPos != null
                     );
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    // PANCERNE ZABEZPIECZENIE PRZED PARALIŻEM:
+                    // Zwróć REQUEST_PAUSE tylko wtedy, gdy bot RZECZYWIŚCIE wykonuje ruch lub akcję z blokiem.
+                    // Jeśli sterowanie bezpośrednie nie naciska żadnego klawisza (np. woda z przodu),
+                    // ODDAL sterowanie do Baritone A*, aby wyznaczyło ścieżkę dookoła przeszkody zamiast zamrażać bota!
+                    if (acted || lockedTarget != null || pendingInstantReplantPos != null
+                            || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD)
+                            || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_LEFT)
+                            || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_RIGHT)
+                            || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_BACK)) {
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
                 }
 
                 // Fallback na Baritone A* (np. zakręty, omijanie przeszkód):
@@ -3567,7 +3613,13 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
                     }
                 }
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                if (hasInReachAction
+                        || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD)
+                        || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_LEFT)
+                        || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_RIGHT)
+                        || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_BACK)) {
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
             }
         }
 
@@ -3576,19 +3628,55 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         }
 
         if (goalz.isEmpty()) {
-            if (isPracaModeActive()) {
-                // Gdy w bieżącym ticku lista celów jest pusta (np. chwila między ścięciem a pojawieniem się nowego kłosa w skanie),
-                // NIE wolno zatrzymywać bota! Sprawdzamy waypoint optymalizatora lub kontynuujemy bieg wzdłuż alei (laneForwardDir).
-                if (pracaActiveSpineWaypoint != null) {
-                    goalz.add(new GoalNear(new BetterBlockPos(pracaActiveSpineWaypoint.above()), 2));
-                } else if (laneForwardDir != null && laneForwardDir.lengthSqr() > 0.01D) {
-                    BlockPos forwardPos = playerPos.offset((int) Math.round(laneForwardDir.x * 3.0D), 0, (int) Math.round(laneForwardDir.z * 3.0D));
-                    goalz.add(new GoalGetToBlock(forwardPos));
-                } else {
-                    goalz.add(new GoalGetToBlock(playerPos));
+            // 1. Zbieranie leżących dropów jeśli są w pobliżu
+            if (!nearbyDrops.isEmpty()) {
+                ItemEntity closestDrop = nearbyDrops.get(0);
+                BlockPos standPos = BlockPos.containing(closestDrop.getX(), closestDrop.getY() + 0.1D, closestDrop.getZ());
+                goalz.add(new GoalPickupItem(standPos));
+            }
+            // 2. Jeśli mamy kłosy lub grządki zablokowane na blackliście -> natychmiast wyczyść blacklistę
+            else if (!toBreak.isEmpty() || !openFarmland.isEmpty()) {
+                blacklistUntil.clear();
+                attempts.clear();
+                for (BlockPos p : (!toBreak.isEmpty() ? toBreak : openFarmland)) {
+                    goalz.add(new GoalFarmTarget(p));
+                    if (goalz.size() >= 3) break;
                 }
-            } else {
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+
+            // 3. Sprawdzenie czy mamy sadzonki w ekwipunku lub czy na polu mogą być nowe plony
+            if (goalz.isEmpty()) {
+                if (haveSeeds || hasAnyPlantableInInventory()) {
+                    // Natychmiastowe obudzenie skanera świata
+                    locations = null;
+                    scanCooldownTicks = 0;
+                }
+
+                if (isPracaModeActive()) {
+                    if (pracaActiveSpineWaypoint != null && playerPos.distSqr(pracaActiveSpineWaypoint) > 4.0D) {
+                        goalz.add(new GoalNear(new BetterBlockPos(pracaActiveSpineWaypoint.above()), 2));
+                    } else if (laneForwardDir != null && laneForwardDir.lengthSqr() > 0.01D) {
+                        BlockPos forwardPos = playerPos.offset((int) Math.round(laneForwardDir.x * 4.0D), 0, (int) Math.round(laneForwardDir.z * 4.0D));
+                        goalz.add(new GoalNear(new BetterBlockPos(forwardPos), 1));
+                    } else {
+                        // Zamiast GoalGetToBlock(playerPos) który zamraża bota w miejscu jak #stop:
+                        // wyznacz patrol 4 bloki w kierunku patrzenia gracza, by wybudzić Baritone A*
+                        float currentYaw = getSafeServerRotation().getYaw();
+                        double rad = Math.toRadians(currentYaw);
+                        BlockPos patrolPos = playerPos.offset((int) Math.round(-Math.sin(rad) * 4.0D), 0, (int) Math.round(Math.cos(rad) * 4.0D));
+                        goalz.add(new GoalNear(new BetterBlockPos(patrolPos), 1));
+                    }
+                } else {
+                    // Standardowy #farm: jeśli mamy nasiona lub dropy, nigdy nie zamrażaj bota!
+                    if (haveSeeds || hasAnyPlantableInInventory() || !nearbyDrops.isEmpty()) {
+                        float currentYaw = getSafeServerRotation().getYaw();
+                        double rad = Math.toRadians(currentYaw);
+                        BlockPos patrolPos = playerPos.offset((int) Math.round(-Math.sin(rad) * 3.0D), 0, (int) Math.round(Math.cos(rad) * 3.0D));
+                        goalz.add(new GoalNear(new BetterBlockPos(patrolPos), 1));
+                    } else {
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+                }
             }
         }
         if (Baritone.settings().farmFastMode.value
