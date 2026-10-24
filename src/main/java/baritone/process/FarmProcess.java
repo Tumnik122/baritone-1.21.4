@@ -1111,24 +1111,25 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
     private boolean selectSeedsForPlanting() {
         if (ctx.player() == null) return false;
+        ItemStack held = ctx.player().getMainHandItem();
+        if (!held.isEmpty() && (replantItem == null ? isPlantable(held) : held.is(replantItem))) {
+            return true;
+        }
+        if (!held.isEmpty() && isPlantable(held)) {
+            return true;
+        }
         boolean selected = (replantItem != null
                 && baritone.getInventoryBehavior().throwaway(true, this::isReplantItem, true))
                 || baritone.getInventoryBehavior().throwaway(true, this::isPlantable, true);
         if (selected) {
             ctx.playerController().syncHeldItem();
         }
-        ItemStack held = ctx.player().getMainHandItem();
+        held = ctx.player().getMainHandItem();
         return !held.isEmpty() && isPlantable(held);
     }
 
     private boolean hasSufficientLightForCrop(BlockPos farmlandPos) {
-        Level world = ctx.world();
-        if (world == null) {
-            return false;
-        }
-        BlockPos cropPos = farmlandPos.above();
-        return world.getRawBrightness(cropPos, 0) >= 7 || world.canSeeSky(cropPos)
-                || world.getBrightness(net.minecraft.world.level.LightLayer.BLOCK, cropPos) >= 8;
+        return true;
     }
 
     private boolean isPlantableFarmland(BlockPos farmlandPos) {
@@ -1139,7 +1140,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             }
             unplantableBlacklist.remove(key);
         }
-        return hasSufficientLightForCrop(farmlandPos);
+        BlockState st = ctx.world().getBlockState(farmlandPos);
+        return st.is(Blocks.FARMLAND) || st.is(Blocks.SOUL_SAND);
     }
 
     private void markUnplantable(BlockPos pos, List<BlockPos> openFarmland) {
@@ -1897,6 +1899,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     locations = null;
                     scanCooldownTicks = 0;
                     stallTicks = 0;
+                    lockedTarget = null;
+                    lockedPhase = ActionPhase.NONE;
+                    lockedTargetTicks = 0;
                     baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
                     baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
                 }
@@ -2444,6 +2449,11 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         boolean handledNearbyAction = false;
         boolean acted = false; // Pkt 5: Maksymalnie 1 interakcja pakietowa na tick!
 
+        // SingleItemFarmLoop: Upewnij się, że gracz trzyma nasiona w ręce (0 zmian hotbara podczas ścinania i sadzenia)
+        if (haveSeeds && ctx.player() != null && !isPlantable(ctx.player().getMainHandItem())) {
+            selectSeedsForPlanting();
+        }
+
         Rotation currentRefRot = (baritone.getLookBehavior().getServerRotation() != null)
                 ? baritone.getLookBehavior().getServerRotation()
                 : ctx.playerRotations();
@@ -2509,58 +2519,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             }
             float spineYaw = farmOptimizer.computeCurrentTangentYaw(ctx.player().position(), ctx.player().getYRot());
 
-            // 3. PRIORYTET 0: Natychmiastowy Replant z poprzedniego ticku (gdy ścięto pszenicę)
-            if (pendingInstantReplantPos != null) {
-                pendingInstantReplantTicks++;
-                if (pendingInstantReplantTicks > 3) {
-                    pendingInstantReplantPos = null;
-                    pendingInstantReplantTicks = 0;
-                } else {
-                    BlockPos farmlandPos = pendingInstantReplantPos.below();
-                    if (ctx.world().getBlockState(pendingInstantReplantPos).isAir()
-                            && ctx.world().getBlockState(farmlandPos).getBlock() == Blocks.FARMLAND
-                            && selectSeedsForPlanting()) {
-                        float[] rot = GrimSnapRotationUtil.findVerifiedSnapRotation(
-                                ctx.player(),
-                                ctx.player().getYRot(),
-                                ctx.player().getXRot(),
-                                farmlandPos, false, blockReachDistance);
-                        if (rot != null) {
-                            Rotation targetRot = new Rotation(rot[0], rot[1]);
-                            applyAimRotation(targetRot, true);
-                            BlockHitResult sbhr = getServerFarmlandHit(farmlandPos);
-                            if (sbhr != null) {
-                                InteractionResult res = ctx.playerController().processRightClickBlock(
-                                        ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, sbhr);
-                                if (res.consumesAction()) {
-                                    ctx.player().swing(InteractionHand.MAIN_HAND);
-                                    com.astra.revolution.visuals.AstraGodTierVisuals.triggerShockwave(farmlandPos.getX() + 0.5D, farmlandPos.getY() + 0.9375D, farmlandPos.getZ() + 0.5D, 0x00F0FF, false);
-                                    openFarmland.remove(farmlandPos);
-                                    farmlandSet.remove(farmlandPos.asLong());
-                                    pendingReplants.remove(farmlandPos);
-                                    if (locations != null) locations.remove(farmlandPos);
-                                    resetWatchdogOnProgress();
-                                    acted = true;
-                                    pendingInstantReplantPos = null;
-                                    pendingInstantReplantTicks = 0;
-                                }
-                            } else {
-                                // Celowanie ustawione, czekamy 1 tick na wysłanie rotacji w naturalnym sendPosition() (0 dodatkowych pakietów flying)
-                                acted = true;
-                            }
-                        } else {
-                            pendingInstantReplantPos = null;
-                            pendingInstantReplantTicks = 0;
-                        }
-                    } else {
-                        pendingInstantReplantPos = null;
-                        pendingInstantReplantTicks = 0;
-                    }
-                }
-            }
-
-            // 4. Lookahead pre-aiming na nadchodzący kłos pszenicy (3.85 - 6.50m)
-            if (pendingInstantReplantPos == null && lockedTarget == null) {
+            // 4. Lookahead pre-aiming na nadchodzący kłos pszenicy (3.85 - 6.50m) TYLKO gdy brak aktywnego zadania (lockedTarget == null)
+            if (lockedTarget == null) {
                 Vec3 predictedEye = eyePos.add(ctx.player().getDeltaMovement());
                 Optional<FarmPathOptimizer.HarvestTarget> lookahead = farmOptimizer.findTargetInZone(
                         ctx.player(), ctx.world(), predictedEye, spineYaw, Baritone.settings().replantCrops.value && haveSeeds, null, 1.5D, 6.50D, 65.0D);
@@ -2583,9 +2543,10 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         valid = true;
                     }
                 } else if (lockedPhase == ActionPhase.REPLANT) {
+                    BlockState aboveSt = ctx.world().getBlockState(lockedTarget.above());
                     if (haveSeeds && eyePos.distanceToSqr(getPlantAimVec(lockedTarget)) <= reach2
                             && isPlantableFarmland(lockedTarget)
-                            && ctx.world().getBlockState(lockedTarget.above()).isAir()) {
+                            && (aboveSt.isAir() || aboveSt.canBeReplaced() || aboveSt.getBlock() instanceof CropBlock)) {
                         valid = true;
                     }
                 }
@@ -2809,22 +2770,24 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                                 toBreakSet.remove(pos.asLong());
 
                                 Block belowBlock = ctx.world().getBlockState(pos.below()).getBlock();
-                                if (belowBlock == Blocks.FARMLAND && hasPlantableSeeds()) {
+                                if ((belowBlock == Blocks.FARMLAND || belowBlock == Blocks.SOUL_SAND) && hasPlantableSeeds()) {
                                     Item seed = seedFor(bState.getBlock());
                                     openFarmland.add(pos.below());
                                     farmlandSet.add(pos.below().asLong());
                                     immediateReplantPos = pos.below();
                                     pendingReplants.add(pos.below());
-                                    if (isPracaModeActive()) {
-                                        pendingInstantReplantPos = pos;
-                                    }
                                     replantItem = seed;
+
+                                    // Atomowe natychmiastowe przejście do REPLANT w kolejnym ticku bez straty locka:
+                                    lockedTarget = pos.below().immutable();
+                                    lockedPhase = ActionPhase.REPLANT;
+                                    lockedTargetTicks = 0;
+                                } else {
+                                    lockedTarget = null;
+                                    lockedPhase = ActionPhase.NONE;
+                                    lockedTargetTicks = 0;
                                 }
                                 RotationEngine.notifyBlockBroken(pos);
-
-                                lockedTarget = null;
-                                lockedPhase = ActionPhase.NONE;
-                                lockedTargetTicks = 0;
                             }
                         } else if (ctx.playerController().hasBrokenBlock()) {
                             ctx.playerController().clickBlock(pos, breakFace);
@@ -2842,7 +2805,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         }
                     } else {
                         // GrimAC Safe: Rotacja została ustawiona (applyAimRotation), czekamy 1 tick na wysłanie pakietu w naturalnym sendPosition()
-                        acted = true;
+                        handledNearbyAction = true;
                     }
 
                     if (lockedTargetTicks >= (isInstant ? 14 : 80)) {
@@ -2884,12 +2847,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         if (verified != null) {
                             smoothRot = new Rotation(verified[0], verified[1]);
                         } else {
-                            Vec3 plantAim = getPlantAimVec(pos);
-                            float[] snapped = GrimSnapRotationUtil.snapGcd(
-                                    ctx.player().getYRot(),
-                                    ctx.player().getXRot(),
-                                    head, plantAim);
-                            smoothRot = new Rotation(snapped[0], snapped[1]);
+                            smoothRot = visRot.get();
                         }
                     } else {
                         smoothRot = isGrim ? smoothStepRotation(currentRefRot, visRot.get(), 140.0F, 60.0F) : visRot.get();
@@ -2928,7 +2886,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         } else {
                             long key = pos.asLong();
                             int fails = failedPlantClicks.addTo(key, 1) + 1;
-                            if (!hasSufficientLightForCrop(pos) || fails >= MAX_PLANT_FAIL_CLICKS || tooManyAttempts(pos)) {
+                            if (fails >= MAX_PLANT_FAIL_CLICKS || tooManyAttempts(pos)) {
                                 markUnplantable(pos, openFarmland);
                                 lockedTarget = null;
                                 lockedPhase = ActionPhase.NONE;
@@ -3300,13 +3258,13 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     applyForwardOnlyCorridorSteering(
                             currentCamYaw,
                             targetMoveYaw,
-                            acted || lockedTarget != null || pendingInstantReplantPos != null
+                            acted || lockedTarget != null
                     );
                     // PANCERNE ZABEZPIECZENIE PRZED PARALIŻEM:
                     // Zwróć REQUEST_PAUSE tylko wtedy, gdy bot RZECZYWIŚCIE wykonuje ruch lub akcję z blokiem.
                     // Jeśli sterowanie bezpośrednie nie naciska żadnego klawisza (np. woda z przodu),
                     // ODDAL sterowanie do Baritone A*, aby wyznaczyło ścieżkę dookoła przeszkody zamiast zamrażać bota!
-                    if (acted || lockedTarget != null || pendingInstantReplantPos != null
+                    if (acted || lockedTarget != null
                             || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD)
                             || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_LEFT)
                             || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_RIGHT)
@@ -3564,10 +3522,10 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         var player = ctx.player();
         var world = ctx.world();
         Vec3 playerVecPos = player.position();
-        boolean hasInReachAction = acted || lockedTarget != null || pendingInstantReplantPos != null;
+        boolean hasInReachAction = acted || lockedTarget != null;
 
-        // 1. Aktualizuj Watchdog 0.0 bps
-        updateStallWatchdog(player, hasInReachAction);
+        // 1. Aktualizuj Watchdog 0.0 bps — TYLKO realne akcje sieciowe (acted == true) resetują stallTicks!
+        updateStallWatchdog(player, acted);
 
         // 2. Wyznacz aktywny cel przyciągania (najbliższy dojrzały kłos / grządka w promieniu 32m)
         Rotation currentRot = getSafeServerRotation();
