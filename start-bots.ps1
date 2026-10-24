@@ -421,7 +421,7 @@ function Start-DirectBotProcess([int]$num) {
             "-Xmx$xmxVal",
             "-XX:MaxMetaspaceSize=256M",
             "-XX:ReservedCodeCacheSize=160M",
-            "-XX:MaxDirectMemorySize=256M",
+            "-XX:MaxDirectMemorySize=384M",
             "-XX:+UseG1GC",
             "-XX:MaxGCPauseMillis=10",
             "-XX:+UnlockExperimentalVMOptions"
@@ -433,7 +433,7 @@ function Start-DirectBotProcess([int]$num) {
             "-Xmx1536M",
             "-XX:MaxMetaspaceSize=224M",
             "-XX:ReservedCodeCacheSize=128M",
-            "-XX:MaxDirectMemorySize=192M",
+            "-XX:MaxDirectMemorySize=256M",
             "-XX:ActiveProcessorCount=2",
             "-XX:+UseG1GC",
             "-XX:MaxGCPauseMillis=15",
@@ -446,7 +446,7 @@ function Start-DirectBotProcess([int]$num) {
             "-Xmx1024M",
             "-XX:MaxMetaspaceSize=192M",
             "-XX:ReservedCodeCacheSize=96M",
-            "-XX:MaxDirectMemorySize=128M",
+            "-XX:MaxDirectMemorySize=256M",
             "-XX:ActiveProcessorCount=2",
             "-XX:+UseG1GC",
             "-XX:G1HeapRegionSize=1M",
@@ -467,7 +467,7 @@ function Start-DirectBotProcess([int]$num) {
             "-Xmx1024M",
             "-XX:MaxMetaspaceSize=192M",
             "-XX:ReservedCodeCacheSize=112M",
-            "-XX:MaxDirectMemorySize=160M",
+            "-XX:MaxDirectMemorySize=256M",
             "-XX:ActiveProcessorCount=2",
             "-XX:+UseG1GC",
             "-XX:MaxGCPauseMillis=15"
@@ -475,7 +475,13 @@ function Start-DirectBotProcess([int]$num) {
     }
 
     $commonFlags = @(
-        "-XX:+DisableExplicitGC",
+        "-XX:+ExplicitGCInvokesConcurrent",
+        "-XX:+ParallelRefProcEnabled",
+        "-Dio.netty.allocator.numDirectArenas=1",
+        "-Dio.netty.allocator.numHeapArenas=1",
+        "-Dio.netty.allocator.maxOrder=9",
+        "-Dio.netty.allocator.cacheTrimIntervalMillis=5000",
+        "-XX:ErrorFile=`"$targetDir\logs\hs_err_pid%p.log`"",
         "-XX:+UseCompressedOops",
         "-XX:+UseCompressedClassPointers",
         "-DbotNum=$num",

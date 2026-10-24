@@ -284,17 +284,6 @@ public abstract class MixinMinecraft {
         }
     }
 
-    /**
-     * Pillar 6 Guard: Ensures that if any headless hook attempts to cancel runTick rendering,
-     * the primary client (Bot #1) still executes GameRenderer#render and swaps the GLFW buffers.
-     */
-    @Inject(method = "runTick(Z)V", at = @At("TAIL"), require = 0)
-    private void astra$enforcePrimaryClientDisplayUpdate(boolean renderLevel, CallbackInfo ci) {
-        if (AstraPerformanceConfig.isPrimaryClient()) {
-            GLFW.glfwPollEvents();
-        }
-    }
-
     @Inject(
             method = "tick",
             at = @At(
@@ -327,10 +316,7 @@ public abstract class MixinMinecraft {
     }
 
     // ═════════════════════════════════════════════════════════════════
-    // Passthrough klawiszowania przy otwartym GUI — ZACHOWANE.
-    // NOTA: to NIE jest źródło Timer — handleKeybinds() wysyła
-    // wyłącznie pakiety use/attack/hotbar (inna rodzina niż movement,
-    // których liczy Timer). Governor i tak tnie wszystko u źródła.
+    // Passthrough klawiszowania przy otwartym GUI (bezpieczne dla ESC)
     // ═════════════════════════════════════════════════════════════════
     @Redirect(
             method = "tick",
@@ -345,10 +331,56 @@ public abstract class MixinMinecraft {
             )
     )
     private Screen passEvents(Minecraft instance) {
-        if (Baritone.settings().clicksWithScreenOpen.value && Baritone.isPrimaryActive() && player != null) {
+        Screen current = instance.screen;
+        if (current == null) {
             return null;
         }
-        return instance.screen;
+
+        // Nigdy nie pomijaj PauseScreen (menu ESC), czatu, ekranu rozłączenia ani ekranów pauzy
+        if (current instanceof net.minecraft.client.gui.screens.PauseScreen
+                || current instanceof net.minecraft.client.gui.screens.ChatScreen
+                || current instanceof net.minecraft.client.gui.screens.DisconnectedScreen
+                || current.isPauseScreen()) {
+            return current;
+        }
+
+        // Przepuszczaj zdarzenia klawiszy do gry TYLKO gdy Baritone faktycznie pathuje lub ma aktywny proces
+        if (Baritone.settings().clicksWithScreenOpen.value && Baritone.isPrimaryActive() && instance.player != null) {
+            IBaritone primary = BaritoneAPI.getProvider().getPrimaryBaritone();
+            if (primary != null && (primary.getPathingBehavior().isPathing()
+                    || primary.getPathingControlManager().mostRecentInControl().isPresent())) {
+                return null;
+            }
+        }
+
+        return current;
+    }
+
+    /**
+     * AstraGuard: Wykrywa i loguje każde wywołanie Minecraft.stop() ze stosem wywołań.
+     * Na botach pomocniczych (bot 2+) uniemożliwia przypadkowe zamknięcie procesu przez sygnały OS / GLFW.
+     */
+    @Inject(method = "stop", at = @At("HEAD"), cancellable = true)
+    private void astra$guardBotUnexpectedStop(CallbackInfo ci) {
+        org.slf4j.LoggerFactory.getLogger("AstraGuard").warn(
+                "[AstraGuard] Wykryto wywołanie Minecraft.stop()! (isPrimary="
+                        + AstraPerformanceConfig.isPrimaryClient()
+                        + ", botNum=" + AstraPerformanceConfig.getBotNum()
+                        + ", allowStop=" + Boolean.getBoolean("astra.allowStop") + ")",
+                new Throwable("Stacktrace wywołania Minecraft.stop()")
+        );
+
+        if (!AstraPerformanceConfig.isPrimaryClient() && !Boolean.getBoolean("astra.allowStop")) {
+            org.slf4j.LoggerFactory.getLogger("AstraGuard").warn(
+                    "[AstraGuard] ZABLOKOWANO przypadkowe zamknięcie bota #{}! Resetuję windowShouldClose.",
+                    AstraPerformanceConfig.getBotNum()
+            );
+            Minecraft mc = (Minecraft) (Object) this;
+            if (mc.getWindow() != null && mc.getWindow().getWindow() != 0L) {
+                GLFW.glfwSetWindowShouldClose(mc.getWindow().getWindow(), false);
+            }
+            ci.cancel();
+        }
     }
 
     /**
