@@ -181,7 +181,6 @@ public class AnarchiaLoginAutomation {
     }
 
     public void triggerRetry(String reason, int delayTicks) {
-        if (state == State.COMPLETED) return;
         Minecraft mc = Minecraft.getInstance();
         boolean inGame = mc != null && mc.player != null && mc.level != null;
         if (!inGame) {
@@ -190,10 +189,12 @@ public class AnarchiaLoginAutomation {
 
         retryCount++;
         if (retryCount > MAX_RETRIES) {
-            log("§c[AutoLogin] Przekroczono limit prób (" + MAX_RETRIES + "). Zatrzymuję procedurę.");
-            stop();
-            return;
+            log("§c[AutoLogin] Osiągnięto limit krótkich prób (" + MAX_RETRIES + "). Czekam 30s przed kolejną próbą...");
+            retryCount = 1;
+            delayTicks = 600; // 30s
         }
+
+        stopBaritoneSafely();
 
         // Zwolnij ewentualnie trzymany klawisz W
         try {
@@ -205,7 +206,7 @@ public class AnarchiaLoginAutomation {
             }
         } catch (Throwable ignored) {}
 
-        log(String.format(Locale.ROOT, "§e[AutoLogin] %s! Ponawiam próbę (#%d/%d) za %.1fs...", reason, retryCount, MAX_RETRIES, delayTicks / 20.0f));
+        log(String.format(Locale.ROOT, "§e[AutoLogin] %s! Ponawiam próbę (#%d) za %.1fs...", reason, retryCount, delayTicks / 20.0f));
         this.state = State.RETRYING;
         this.timerTicks = delayTicks;
     }
@@ -231,7 +232,7 @@ public class AnarchiaLoginAutomation {
     }
 
     public boolean isActive() {
-        return state != State.IDLE && state != State.COMPLETED;
+        return state != State.IDLE;
     }
 
     public State getState() {
@@ -262,62 +263,73 @@ public class AnarchiaLoginAutomation {
     public void onTick() {
         if (!isActive()) return;
 
-        Minecraft mc = Minecraft.getInstance();
-        String screenName = mc.screen != null ? mc.screen.getClass().getSimpleName() : "";
-        boolean isDisconnectScreen = mc.screen != null && (screenName.contains("Disconnect") || screenName.contains("Alert") || screenName.contains("Error"));
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null) return;
 
-        // Automatyczne akceptowanie paczki zasobów serwera (ConfirmScreen / PackConfirmScreen) + 3s oczekiwania
-        if (mc.screen instanceof ConfirmScreen || (mc.screen != null && mc.screen.getClass().getSimpleName().contains("PackConfirmScreen"))) {
-            if (state != State.WAITING_RESOURCE_PACK) {
-                log("§a[AutoLogin] Wykryto ekran potwierdzenia paczki zasobów serwera (" + mc.screen.getClass().getSimpleName() + "). Automatycznie akceptuję...");
-                try {
-                    for (var child : mc.screen.children()) {
-                        if (child instanceof Button btn) {
-                            btn.onPress();
-                            break;
+            // Cache'owanie IP serwera, póki połączenie jest aktywne
+            if (mc.getCurrentServer() != null && mc.getCurrentServer().ip != null && !mc.getCurrentServer().ip.isBlank()) {
+                this.targetServerIp = mc.getCurrentServer().ip.trim();
+            }
+
+            String screenName = mc.screen != null ? mc.screen.getClass().getSimpleName() : "";
+            boolean isDisconnectScreen = mc.screen != null && (screenName.contains("Disconnect") || screenName.contains("Alert") || screenName.contains("Error"));
+
+            // Automatyczne akceptowanie paczki zasobów serwera (ConfirmScreen / PackConfirmScreen) + 3s oczekiwania
+            if (mc.screen instanceof ConfirmScreen || (mc.screen != null && mc.screen.getClass().getSimpleName().contains("PackConfirmScreen"))) {
+                if (state != State.WAITING_RESOURCE_PACK) {
+                    log("§a[AutoLogin] Wykryto ekran potwierdzenia paczki zasobów serwera (" + mc.screen.getClass().getSimpleName() + "). Automatycznie akceptuję...");
+                    try {
+                        for (var child : mc.screen.children()) {
+                            if (child instanceof Button btn) {
+                                btn.onPress();
+                                break;
+                            }
                         }
+                    } catch (Throwable t) {
+                        log("§c[AutoLogin] Błąd akceptacji paczki: " + t.getMessage());
                     }
-                } catch (Throwable t) {
-                    log("§c[AutoLogin] Błąd akceptacji paczki: " + t.getMessage());
-                }
-                log("§e[AutoLogin] Paczka zasobów zaakceptowana. Czekam 3 sekundy na jej załadowanie...");
-                state = State.WAITING_RESOURCE_PACK;
-                timerTicks = 60; // 3 sekundy (60 ticków) na załadowanie
-                return;
-            }
-        }
-
-        if (state != State.CONNECTING && state != State.RETRYING && state != State.WAITING_RESOURCE_PACK) {
-            if (isDisconnectScreen) {
-                checkLimboDisconnect(mc, screenName);
-                resetSessionFlags();
-                triggerRetry("Wykryto ekran rozłączenia (" + screenName + ")", 60);
-                return;
-            }
-            if (mc.player == null || mc.level == null) {
-                resetSessionFlags();
-                triggerRetry("Bot został rozłączony z serwerem", 60);
-                return;
-            }
-        }
-
-        switch (state) {
-            case CONNECTING -> {
-                timerTicks++;
-                if (isDisconnectScreen) {
-                    checkLimboDisconnect(mc, screenName);
-                    resetSessionFlags();
-                    triggerRetry("Błąd połączenia z serwerem (" + screenName + ")", 60);
+                    log("§e[AutoLogin] Paczka zasobów zaakceptowana. Czekam 3 sekundy na jej załadowanie...");
+                    state = State.WAITING_RESOURCE_PACK;
+                    timerTicks = 60; // 3 sekundy (60 ticków) na załadowanie
                     return;
                 }
-                if (mc.player != null && mc.level != null && mc.player.connection != null) {
-                    log("§a[AutoLogin] Połączono z serwerem! Czekam 1.25s na zsynchronizowanie świata...");
-                    state = State.WAITING_JOIN;
-                    timerTicks = 25; // 1.25s
-                } else if (timerTicks > 500) { // 25s timeout
-                    triggerRetry("Przekroczono limit czasu oczekiwania na połączenie z serwerem", 60);
+            }
+
+            if (state != State.CONNECTING && state != State.RETRYING && state != State.WAITING_RESOURCE_PACK) {
+                if (isDisconnectScreen) {
+                    stopBaritoneSafely();
+                    int delay = calculateDisconnectDelay(mc, screenName);
+                    resetSessionFlags();
+                    triggerRetry("Wykryto ekran rozłączenia (" + screenName + ")", delay);
+                    return;
+                }
+                if (mc.player == null || mc.level == null) {
+                    stopBaritoneSafely();
+                    resetSessionFlags();
+                    triggerRetry("Bot został rozłączony z serwerem", 100);
+                    return;
                 }
             }
+
+            switch (state) {
+                case CONNECTING -> {
+                    timerTicks++;
+                    if (isDisconnectScreen) {
+                        stopBaritoneSafely();
+                        int delay = calculateDisconnectDelay(mc, screenName);
+                        resetSessionFlags();
+                        triggerRetry("Błąd połączenia z serwerem (" + screenName + ")", delay);
+                        return;
+                    }
+                    if (mc.player != null && mc.level != null && mc.player.connection != null) {
+                        log("§a[AutoLogin] Połączono z serwerem! Czekam 1.25s na zsynchronizowanie świata...");
+                        state = State.WAITING_JOIN;
+                        timerTicks = 25; // 1.25s
+                    } else if (timerTicks > 500) { // 25s timeout
+                        triggerRetry("Przekroczono limit czasu oczekiwania na połączenie z serwerem", 100);
+                    }
+                }
 
             case WAITING_JOIN -> {
                 if (mc.player == null || mc.level == null) {
@@ -789,17 +801,66 @@ public class AnarchiaLoginAutomation {
                 } catch (Throwable ignored) {}
             }
         }
+        } catch (Throwable t) {
+            System.err.println("[Astra-AntiCrash] Przechwycono błąd w pętli logowania: " + t.getMessage());
+            t.printStackTrace();
+        }
     }
 
-    private void checkLimboDisconnect(Minecraft mc, String screenName) {
+    private int calculateDisconnectDelay(Minecraft mc, String screenName) {
+        String details = extractDisconnectDetails(mc);
+        String lower = details.toLowerCase(Locale.ROOT);
+        int jitter = 10 + (int) (Math.random() * 30); // 0.5s - 2s jitter
+
+        if (lower.contains("limbo") || lower.contains("nie udało się połączyć") || lower.contains("nie udalo sie polaczyc")) {
+            log("§c[AutoLogin] [LIMBO] Serwer anarchia.gg odrzucił połączenie z serwerem LIMBO (Ghost Session lub drugie połączenie z tego samego IP!).");
+            log("§e[AutoLogin] Oczekuję na wygaśnięcie sesji ducha na proxy Velocity (min. 12-25s)...");
+            log("§e[AutoLogin] Porada: Wpisz proxy do pliku 'proxies.txt' (np. ip:port), aby uruchomić 2 lub więcej botów naraz.");
+            // Exponential backoff: min 12s, 24s, rosnąco do 45s (240 ticków = 12s)
+            int baseTicks = Math.min(900, 240 * Math.max(1, retryCount));
+            return baseTicks + jitter;
+        }
+
+        if (lower.contains("zbyt szybko") || lower.contains("wait") || lower.contains("throttle") || lower.contains("spam")) {
+            return Math.min(600, 200 * Math.max(1, retryCount)) + jitter; // 10s - 30s
+        }
+
+        return Math.min(300, 100 + (retryCount * 20)) + jitter; // 5s - 15s
+    }
+
+    private String extractDisconnectDetails(Minecraft mc) {
+        if (mc == null || mc.screen == null) return "";
         try {
-            String details = "";
-            if (mc.screen != null && mc.screen.getNarrationMessage() != null) {
-                details = mc.screen.getNarrationMessage().getString();
+            if (mc.screen.getNarrationMessage() != null) {
+                String narr = mc.screen.getNarrationMessage().getString();
+                if (!narr.isBlank()) return narr;
             }
-            if (details.toLowerCase(Locale.ROOT).contains("limbo") || details.toLowerCase(Locale.ROOT).contains("nie udało się połączyć")) {
-                log("§c[AutoLogin] [LIMBO] Serwer anarchia.gg odrzucił drugie połączenie z tego samego IP!");
-                log("§e[AutoLogin] Porada: Wpisz proxy do pliku 'proxies.txt' (np. ip:port), aby uruchomić 2 lub więcej botów naraz.");
+            StringBuilder sb = new StringBuilder();
+            if (mc.screen.getTitle() != null) {
+                sb.append(mc.screen.getTitle().getString()).append(" ");
+            }
+            for (var child : mc.screen.children()) {
+                if (child instanceof net.minecraft.client.gui.components.MultiLineTextWidget multi && multi.getMessage() != null) {
+                    sb.append(multi.getMessage().getString()).append(" ");
+                } else if (child instanceof net.minecraft.client.gui.components.StringWidget str && str.getMessage() != null) {
+                    sb.append(str.getMessage().getString()).append(" ");
+                }
+            }
+            return sb.toString().trim();
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    private void stopBaritoneSafely() {
+        try {
+            if (baritone != null) {
+                if (baritone.getPathingBehavior() != null) {
+                    baritone.getPathingBehavior().cancelEverything();
+                }
+                if (baritone.getCustomGoalProcess() != null) {
+                    baritone.getCustomGoalProcess().setGoal(null);
+                }
             }
         } catch (Throwable ignored) {}
     }

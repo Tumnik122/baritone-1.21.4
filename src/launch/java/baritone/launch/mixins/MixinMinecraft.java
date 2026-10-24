@@ -177,6 +177,13 @@ public abstract class MixinMinecraft {
     @Inject(method = "<init>", at = @At("RETURN"))
     private void postInit(CallbackInfo ci) {
         BaritoneAPI.getProvider().getPrimaryBaritone();
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            System.err.println("[Astra-CrashGuard] Przechwycono krytyczny wyjątek w wątku [" + thread.getName() + "]: " + throwable.getMessage());
+            throwable.printStackTrace();
+            if (throwable instanceof OutOfMemoryError) {
+                System.gc();
+            }
+        });
     }
 
     // ══════ poniżej: oryginalne @Inject — BEZ ZMIAN ══════
