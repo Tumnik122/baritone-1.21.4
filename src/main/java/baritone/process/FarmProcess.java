@@ -480,10 +480,27 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     }
 
     private boolean readyForHarvest(Level world, BlockPos pos, BlockState state) {
-        if (Baritone.settings().farmWheatOnly.value || pracaMode) {
+        if (Baritone.settings().farmWheatOnly.value) {
             return state.getBlock() == Blocks.WHEAT && ((CropBlock) Blocks.WHEAT).isMaxAge(state);
         }
-        Harvest h = HARVEST_BY_BLOCK.get(state.getBlock());
+        Block block = state.getBlock();
+        if (block instanceof CropBlock crop) {
+            return crop.isMaxAge(state);
+        }
+        if (block == Blocks.NETHER_WART) {
+            return state.getValue(NetherWartBlock.AGE) >= 3;
+        }
+        if (block == Blocks.COCOA) {
+            return state.getValue(CocoaBlock.AGE) >= 2;
+        }
+        if (block == Blocks.MELON || block == Blocks.PUMPKIN) {
+            return true;
+        }
+        if (block == Blocks.SUGAR_CANE || block == Blocks.CACTUS || block == Blocks.BAMBOO) {
+            Block below = world.getBlockState(pos.below()).getBlock();
+            return below == block;
+        }
+        Harvest h = HARVEST_BY_BLOCK.get(block);
         return h != null && h.readyToHarvest(world, pos, state);
     }
 
@@ -496,6 +513,10 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             return Items.POTATO;
         if (crop == Blocks.BEETROOTS)
             return Items.BEETROOT_SEEDS;
+        if (crop == Blocks.NETHER_WART)
+            return Items.NETHER_WART;
+        if (crop == Blocks.COCOA)
+            return Items.COCOA_BEANS;
         if (crop == Blocks.TORCHFLOWER_CROP)
             return Items.TORCHFLOWER_SEEDS;
         if (crop == Blocks.PITCHER_CROP)
@@ -510,10 +531,12 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     private boolean isPlantable(ItemStack stack) {
         if (stack == null || stack.isEmpty())
             return false;
-        if (Baritone.settings().farmWheatOnly.value || pracaMode) {
+        if (Baritone.settings().farmWheatOnly.value) {
             return stack.getItem() == Items.WHEAT_SEEDS;
         }
-        return FARMLAND_PLANTABLE.contains(stack.getItem());
+        return FARMLAND_PLANTABLE.contains(stack.getItem())
+                || stack.is(Items.NETHER_WART)
+                || stack.is(Items.COCOA_BEANS);
     }
 
     private boolean hasPlantableSeeds() {
@@ -571,6 +594,26 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             }
         }
         return total;
+    }
+
+    public boolean hasAnyPlantableInInventory() {
+        if (ctx.player() == null || ctx.player().getInventory() == null) {
+            return false;
+        }
+        if (Baritone.settings().farmWheatOnly.value) {
+            return countWheatSeedsInInventory() > 0;
+        }
+        for (ItemStack stack : ctx.player().getInventory().items) {
+            if (stack != null && !stack.isEmpty() && isPlantable(stack)) {
+                return true;
+            }
+        }
+        for (ItemStack stack : ctx.player().getInventory().offhand) {
+            if (stack != null && !stack.isEmpty() && isPlantable(stack)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean isInventoryFull() {
@@ -3015,8 +3058,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         boolean isPracaActive = pracaMode || Baritone.settings().farmCollectDropsWhenLowCrops.value;
         int dropRadius = Baritone.settings().farmLowCropRadius.value;
         int seedsInInventory = countWheatSeedsInInventory();
-        boolean haveSeedsInEq = seedsInInventory > 0;
-        boolean hasMatureWheat = !toBreak.isEmpty();
+        boolean haveSeedsInEq = hasAnyPlantableInInventory();
+        boolean hasMatureCrops = !toBreak.isEmpty();
 
         try {
             for (Entity entity : ctx.entities()) {
@@ -3024,7 +3067,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     if (ei.isInLava()) {
                         continue;
                     }
-                    if (Math.abs(ei.getY() - (playerPos.getY() + 0.5D)) > 1.8D) {
+                    if (Math.abs(ei.getY() - (playerPos.getY() + 0.5D)) > 2.0D) {
                         continue; // Ignoruj itemy na suficie / innym piętrze
                     }
                     if (PICKUP_DROPPED.contains(ei.getItem().getItem())) {
@@ -3033,27 +3076,24 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         }
 
                         Item dropItem = ei.getItem().getItem();
-                        boolean isWheat = (dropItem == Items.WHEAT);
-                        boolean isSeeds = (dropItem == Items.WHEAT_SEEDS);
+                        boolean isSeeds = (dropItem == Items.WHEAT_SEEDS || dropItem == Items.BEETROOT_SEEDS
+                                || dropItem == Items.TORCHFLOWER_SEEDS || dropItem == Items.PITCHER_POD);
 
                         if (isPracaActive) {
+                            double distSq = ei.position().distanceToSqr(ctx.player().position());
+                            boolean inCorridor = (distSq <= 12.25D); // Korytarz 3.5m — zbieranie w biegu (nigdy nie zostawiaj plonów!)
+
                             if (haveSeedsInEq) {
-                                // 1. ZASADA BEZWZGLĘDNA: Jeśli mamy chociaż 1 nasiono w EQ -> CAŁKOWICIE IGNORUJ leżące nasiona!
-                                if (isSeeds) {
-                                    continue;
-                                }
-                                // 2. Jeśli na polu wciąż rośnie dojrzała pszenica (!toBreak.isEmpty()):
-                                // nie zbaczaj z trasy po daleką pszenicę z ziemi, bierz tylko leżącą w bezpośrednim zasięgu (<= 2.0m)
-                                if (isWheat && hasMatureWheat) {
-                                    if (ei.position().distanceToSqr(ctx.player().position()) > 4.0D) {
+                                // W korytarzu 3.5m zbieramy każdy upuszczony plon i nasiono w biegu
+                                if (!inCorridor) {
+                                    // Poza korytarzem (> 3.5m): ignoruj nasiona gdy mamy nasiona, i nie zbaczaj daleko po plon gdy kłosy są tuż przed nami
+                                    if (isSeeds || (hasMatureCrops && distSq > 20.25D)) {
                                         continue;
                                     }
                                 }
                             } else {
-                                // 3. Brak nasion w EQ ("chyba ze ich nei ma zeby zasa idzc to wtedfy to i to"):
-                                // Przepuszczaj zarówno nasiona jak i pszenicę, by zdobyć nasiona na siew.
-                                // Jeśli na polu jest dojrzała pszenica, ogranicz zasięg do 3.5m (nie biegaj na drugi koniec pola).
-                                if (hasMatureWheat && ei.position().distanceToSqr(ctx.player().position()) > 12.25D) {
+                                // Brak nasion: zbieraj nasiona i plony w promieniu do 4.5m nawet przy dojrzałych kłosach
+                                if (hasMatureCrops && distSq > 20.25D) {
                                     continue;
                                 }
                             }
@@ -3067,7 +3107,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         // Filtr zasięgu: w trybie #praca – promień od centrum farmy;
                         // bez trybu #praca – standardowy promień od gracza.
                         if (isPracaActive) {
-                            // Używamy centrum farmy jako punktu odniesienia (stabilny punkt)
                             double maxR = dropRadius > 0 ? dropRadius : (range > 0 ? range : 150);
                             if (ePos.distSqr(center) > maxR * maxR) {
                                 continue;
@@ -3084,17 +3123,17 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         } catch (Throwable ignored) {
         }
 
-        // Aktualizacja stanu skupienia na pszenicy (haveSeedsInEq = skupienie na pszenicy; 0 nasion = awaryjny zbiór nasion i pszenicy)
+        // Aktualizacja stanu skupienia na pszenicy/plonach
         pracaWheatPriorityState = haveSeedsInEq;
 
         // Sortowanie dropów z ziemi:
-        // W trybie #praca pszenica (Items.WHEAT) ma zawsze bezwzględny priorytet nad nasionami (Items.WHEAT_SEEDS)
+        // Plony jadalne/handlowe (pszenica, marchew, ziemniaki, buraki, melony) mają wyższy priorytet nad samymi nasionami
         if (isPracaActive) {
             nearbyDrops.sort((e1, e2) -> {
-                boolean isWheat1 = e1.getItem().is(Items.WHEAT);
-                boolean isWheat2 = e2.getItem().is(Items.WHEAT);
-                if (isWheat1 != isWheat2) {
-                    return isWheat1 ? -1 : 1; // Pszenica na początku listy
+                boolean isSeed1 = e1.getItem().is(Items.WHEAT_SEEDS) || e1.getItem().is(Items.BEETROOT_SEEDS);
+                boolean isSeed2 = e2.getItem().is(Items.WHEAT_SEEDS) || e2.getItem().is(Items.BEETROOT_SEEDS);
+                if (isSeed1 != isSeed2) {
+                    return isSeed1 ? 1 : -1; // Plony przed nasionami
                 }
                 return Double.compare(playerPos.distSqr(e1.blockPosition()), playerPos.distSqr(e2.blockPosition()));
             });
@@ -3110,11 +3149,11 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         if (isPracaActive) {
             // W trybie #praca:
             // 1. Awaryjny zbiór z ziemi TYLKO gdy bot ma 0 nasion w EQ i są wolne grządki do obsiania
-            //    oraz w bezpośrednim zasięgu ręki nie ma kłosów pszenicy (które po ścięciu same dają nasiona)
+            //    oraz w bezpośrednim zasięgu ręki nie ma dojrzałych plonów (które po ścięciu same dają nasiona)
             boolean emergencySeedsNeeded = !haveSeedsInEq && !openFarmland.isEmpty() && !nearbyDrops.isEmpty()
-                    && (!hasMatureWheat || playerPos.distSqr(nearbyDrops.get(0).blockPosition()) <= 4.0D);
-            // 2. Całe pole zostało skoszone: brak kłosów pszenicy na całym polu (toBreak puste ORAZ brak pustych grządek do obsiania)
-            boolean allCropsHarvested = !hasMatureWheat && openFarmland.isEmpty() && !nearbyDrops.isEmpty();
+                    && (!hasMatureCrops || playerPos.distSqr(nearbyDrops.get(0).blockPosition()) <= 4.0D);
+            // 2. Całe pole zostało skoszone: brak plonów na całym polu (toBreak puste ORAZ brak pustych grządek do obsiania)
+            boolean allCropsHarvested = !hasMatureCrops && openFarmland.isEmpty() && !nearbyDrops.isEmpty();
             executeGroundFirst = emergencySeedsNeeded || allCropsHarvested;
         } else {
             int threshold = Baritone.settings().farmLowCropThreshold.value;

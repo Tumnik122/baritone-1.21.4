@@ -164,6 +164,44 @@ public final class GrimSnapRotationUtil {
     }
 
     /**
+     * Wyznacza punkt na AABB plonu/grządki wymagający minimalnego kąta obrotu myszą
+     * z uwzględnieniem pre-aimingu w sprincie (0.65 ticka lookahead) oraz serwerowego marginesu bezpieczeństwa.
+     */
+    public static Vec3 getOptimalHitVec(LocalPlayer player, BlockPos pos, BlockState state, boolean isPlanting) {
+        Vec3 eye = player.getEyePosition(1.0f);
+        Vec3 vel = player.getDeltaMovement();
+        Vec3 predictedEye = eye.add(vel.x * 0.65D, 0.0D, vel.z * 0.65D);
+
+        AABB box;
+        if (isPlanting) {
+            // Celujemy w górną ściankę Farmlandu (Y = +0.9375) lub Soul Sandu (Y = +1.0)
+            double topY = state.getShape(player.level(), pos).isEmpty()
+                    ? 0.9375D
+                    : state.getShape(player.level(), pos).max(Direction.Axis.Y);
+            box = new AABB(
+                    pos.getX() + 0.18D, pos.getY() + topY - 0.05D, pos.getZ() + 0.18D,
+                    pos.getX() + 0.82D, pos.getY() + topY,         pos.getZ() + 0.82D
+            );
+        } else {
+            VoxelShape shape = state.getShape(player.level(), pos);
+            AABB local = shape.isEmpty() ? new AABB(0.1D, 0.0D, 0.1D, 0.9D, 0.8D, 0.9D) : shape.bounds();
+            box = new AABB(
+                    pos.getX() + Math.min(local.minX + 0.08D, 0.45D),
+                    pos.getY() + Math.min(local.minY + 0.08D, 0.35D),
+                    pos.getZ() + Math.min(local.minZ + 0.08D, 0.45D),
+                    pos.getX() + Math.max(local.maxX - 0.08D, 0.55D),
+                    pos.getY() + Math.max(local.maxY - 0.08D, 0.65D),
+                    pos.getZ() + Math.max(local.maxZ - 0.08D, 0.55D)
+            );
+        }
+
+        double targetX = Mth.clamp(predictedEye.x, box.minX, box.maxX);
+        double targetY = Mth.clamp(predictedEye.y, box.minY, box.maxY);
+        double targetZ = Mth.clamp(predictedEye.z, box.minZ, box.maxZ);
+        return new Vec3(targetX, targetY, targetZ);
+    }
+
+    /**
      * Wykonuje błyskawiczny 1-Tick obrót celownika rzutowany na dyskretną siatkę GCD.
      * Zapobiega flagom GrimAC: BadSensitivity, AimModulo360 oraz AimDuplicateLook.
      */
@@ -180,8 +218,12 @@ public final class GrimSnapRotationUtil {
         float deltaYaw = Mth.wrapDegrees(rawYaw - currentYaw);
         float deltaPitch = rawPitch - currentPitch;
 
-        int mouseX = Math.round(deltaYaw / gcd);
-        int mouseY = Math.round(deltaPitch / gcd);
+        // Błyskawiczny obrót do 125° yaw i 85° pitch w 1 ticku (pełna prędkość interakcji GrimAC)
+        float clampedYaw = Mth.clamp(deltaYaw, -125.0f, 125.0f);
+        float clampedPitch = Mth.clamp(deltaPitch, -85.0f, 85.0f);
+
+        int mouseX = Math.round(clampedYaw / gcd);
+        int mouseY = Math.round(clampedPitch / gcd);
 
         // GrimAC AimDuplicateLook guard: wymuś min. 1 krok GCD na osi X przy zmianie pitch, jeśli myszka się rusza
         if (mouseX == 0 && mouseY != 0 && Math.abs(deltaYaw) > 1e-4f) {
@@ -201,9 +243,22 @@ public final class GrimSnapRotationUtil {
             LocalPlayer player, float currentYaw, float currentPitch,
             BlockPos targetPos, boolean isHarvest, double maxReach) {
 
-        if (player == null || targetPos == null) return null;
+        if (player == null || targetPos == null || player.level() == null) return null;
         Vec3 eye = player.getEyePosition(1.0f);
         double maxReachSq = maxReach * maxReach;
+
+        // 1. Szybki pre-check: Closest-Point-on-AABB (0ms w >95% przypadków)
+        BlockState targetState = player.level().getBlockState(targetPos);
+        Vec3 optimal = getOptimalHitVec(player, targetPos, targetState, !isHarvest);
+        if (eye.distanceToSqr(optimal) <= maxReachSq) {
+            float[] fastSnapped = snapGcd(currentYaw, currentPitch, eye, optimal);
+            HitResult hit = RayTraceUtils.rayTraceTowards(player, new Rotation(fastSnapped[0], fastSnapped[1]), maxReach, player.isCrouching());
+            if (hit instanceof BlockHitResult bhr && bhr.getBlockPos().equals(targetPos)) {
+                if (isHarvest || bhr.getDirection() == Direction.UP) {
+                    return fastSnapped;
+                }
+            }
+        }
 
         if (isHarvest) {
             // Szukamy punktu wewnątrz bryły CropBlock (Y + 0.20..0.80), którego po kwantyzacji GCD nie zasłania Farmland

@@ -10,6 +10,7 @@ import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.CocoaBlock;
 import net.minecraft.world.level.block.CropBlock;
 import net.minecraft.world.level.block.FarmBlock;
 import net.minecraft.world.level.block.NetherWartBlock;
@@ -562,6 +563,22 @@ public final class FarmPathOptimizer {
         }
         if (block instanceof NetherWartBlock) {
             if (state.getValue(NetherWartBlock.AGE) >= 3) {
+                return TargetAction.HARVEST_MATURE;
+            }
+            return null;
+        }
+        if (block instanceof CocoaBlock) {
+            if (state.getValue(CocoaBlock.AGE) >= 2) {
+                return TargetAction.HARVEST_MATURE;
+            }
+            return null;
+        }
+        if (block == Blocks.MELON || block == Blocks.PUMPKIN) {
+            return TargetAction.HARVEST_MATURE;
+        }
+        if (block == Blocks.SUGAR_CANE || block == Blocks.CACTUS || block == Blocks.BAMBOO) {
+            Block below = level.getBlockState(pos.below()).getBlock();
+            if (below == block) {
                 return TargetAction.HARVEST_MATURE;
             }
             return null;
