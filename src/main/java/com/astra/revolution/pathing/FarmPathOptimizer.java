@@ -693,30 +693,31 @@ public final class FarmPathOptimizer {
      * Rzutuje sztuczny waypoint Boustrophedon na najbliższe rzeczywiste zadanie (kłos lub grządkę).
      * Zapobiega generowaniu celów w powietrzu lub na pustych krawędziach pola (Argon 4).
      */
-    public BlockPos snapSpineWaypointToNearestRealTask(BlockPos rawSpineWp, List<BlockPos> matureCrops, List<BlockPos> emptyFarmland) {
+    public BlockPos snapSpineWaypointToNearestRealTask(Vec3 playerPos, BlockPos rawSpineWp, List<BlockPos> matureCrops, List<BlockPos> emptyFarmland) {
         if (rawSpineWp == null) return null;
+        List<BlockPos> candidates = (matureCrops != null && !matureCrops.isEmpty()) ? matureCrops : emptyFarmland;
+        if (candidates == null || candidates.isEmpty()) return rawSpineWp;
+
         BlockPos bestTask = null;
         double bestDistSq = Double.MAX_VALUE;
 
-        if (matureCrops != null) {
-            for (BlockPos p : matureCrops) {
-                double dSq = p.distSqr(rawSpineWp);
-                if (dSq < bestDistSq) {
-                    bestDistSq = dSq;
-                    bestTask = p;
-                }
+        for (BlockPos p : candidates) {
+            Vec3 v = Vec3.atBottomCenterOf(p);
+            // Ignoruj bloki pod stopami gracza (< 1.5m), aby bot nie snapował waypointu w tył lub pod siebie
+            if (playerPos != null && v.distanceToSqr(playerPos) < 2.25D) {
+                continue;
             }
-        }
-        if (emptyFarmland != null) {
-            for (BlockPos p : emptyFarmland) {
-                double dSq = p.distSqr(rawSpineWp);
-                if (dSq < bestDistSq) {
-                    bestDistSq = dSq;
-                    bestTask = p;
-                }
+            double dSq = p.distSqr(rawSpineWp);
+            if (dSq < bestDistSq) {
+                bestDistSq = dSq;
+                bestTask = p;
             }
         }
         return (bestTask != null && bestDistSq <= 49.0D) ? bestTask : rawSpineWp;
+    }
+
+    public BlockPos snapSpineWaypointToNearestRealTask(BlockPos rawSpineWp, List<BlockPos> matureCrops, List<BlockPos> emptyFarmland) {
+        return snapSpineWaypointToNearestRealTask(null, rawSpineWp, matureCrops, emptyFarmland);
     }
 
     /**
@@ -837,18 +838,28 @@ public final class FarmPathOptimizer {
 
     public boolean isCorridorClearForDirectWalk(Vec3 playerPos, BlockPos targetPos, Level world) {
         if (world == null || playerPos == null || targetPos == null) return false;
-        if (Math.abs(playerPos.y - (targetPos.getY() + 0.5D)) > 1.35D) return false;
+        // Na Farmland gracz ma Y = blockY + 0.9375 -> dodajemy +0.45D, aby poprawnie pobrać blok na poziomie nóg
+        double startY = Math.floor(playerPos.y + 0.45D);
+        double endY = targetPos.getY();
+        if (Math.abs(startY - endY) > 1.35D) return false;
         double dx = (targetPos.getX() + 0.5D) - playerPos.x;
         double dz = (targetPos.getZ() + 0.5D) - playerPos.z;
         double dist = Math.hypot(dx, dz);
-        if (dist < 0.4D) return true;
-        int steps = (int) Math.ceil(dist * 2.0);
+        if (dist < 0.35D) return true;
+        int steps = Math.max(2, (int) Math.ceil(dist * 2.0));
         for (int i = 1; i <= steps; i++) {
             double t = (double) i / steps;
             double x = playerPos.x + dx * t;
             double z = playerPos.z + dz * t;
-            BlockPos footPos = BlockPos.containing(x, playerPos.y + 0.1D, z);
+            BlockPos footPos = BlockPos.containing(x, startY + 0.1D, z);
             BlockPos headPos = footPos.above();
+            BlockPos groundPos = footPos.below();
+
+            // Woda/lawa w korytarzu lub pod stopami -> oddaj do A*
+            if (!world.getFluidState(footPos).isEmpty() || !world.getFluidState(groundPos).isEmpty()) {
+                return false;
+            }
+
             BlockState footState = world.getBlockState(footPos);
             BlockState headState = world.getBlockState(headPos);
             if (!footState.isAir() && !(footState.getBlock() instanceof CropBlock) && footState.isSolid()) {
@@ -863,6 +874,10 @@ public final class FarmPathOptimizer {
                 return false;
             }
             if (!headState.isAir() && headState.isSolid()) {
+                return false;
+            }
+            // Brak podłoża (dziura / urwisko)
+            if (world.getBlockState(groundPos).getCollisionShape(world, groundPos).isEmpty()) {
                 return false;
             }
         }
