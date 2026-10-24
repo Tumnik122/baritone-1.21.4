@@ -131,9 +131,6 @@ public abstract class MixinMinecraft {
                 this.baritone$savedPauseOnLostFocus = this.options.pauseOnLostFocus;
             }
             this.options.pauseOnLostFocus = false; // = F3+P „Pause on lost focus: OFF"
-            if (isSecondaryBot && this.screen instanceof net.minecraft.client.gui.screens.PauseScreen) {
-                self.setScreen(null); // Bot w tle nie może być zablokowany przez PauseScreen
-            }
         } else if (this.baritone$savedPauseOnLostFocus != null) {
             // Restore oryginalnej wartości po zakończeniu pracy bota
             this.options.pauseOnLostFocus = this.baritone$savedPauseOnLostFocus;

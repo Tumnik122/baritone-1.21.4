@@ -20,6 +20,7 @@ package baritone.utils;
 import baritone.Baritone;
 import baritone.api.BaritoneAPI;
 import baritone.api.event.events.TickEvent;
+import baritone.api.process.IBaritoneProcess;
 import baritone.api.utils.IInputOverrideHandler;
 import baritone.api.utils.input.Input;
 import baritone.behavior.Behavior;
@@ -114,28 +115,34 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     }
 
     private boolean inControl() {
-        // Boty poboczne w tle: zawsze używają PlayerMovementInput (omija brak fokusu GLFW)
-        if (com.astra.revolution.perf.AstraPerformanceConfig.getBotNum() > 1
-                || baritone != BaritoneAPI.getProvider().getPrimaryBaritone()) {
-            return true;
-        }
-
-        // Główny klient (gracz): przejmuje kontrolę TYLKO, gdy Baritone faktycznie
-        // pathuje lub bezpośrednio wymusza wciśnięcie klawisza ruchu.
+        // (1) Bezpośrednio wymuszane klawisze ruchu lub akcji przez Baritone:
         for (Input input : new Input[]{Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT, Input.MOVE_RIGHT, Input.SNEAK, Input.JUMP, Input.SPRINT}) {
             if (isInputForcedDown(input)) {
                 return true;
             }
         }
 
+        // (2) Wewnętrzne procesy Baritone:
         if (baritone.getAutoDropProcess() != null && baritone.getAutoDropProcess().isCleaning()) {
             return true;
         }
         if (baritone.getAutoEatProcess() != null && baritone.getAutoEatProcess().isSuppressingMovement()) {
             return true;
         }
+        if (baritone.getHomeProcess() != null && baritone.getHomeProcess().isActive()) {
+            return true;
+        }
 
-        return baritone.getPathingBehavior().isPathing();
+        // (3) Aktywne pathowanie lub jakikolwiek aktywny proces Baritone (np. MineProcess, FarmProcess, BuilderProcess):
+        if (baritone.getPathingBehavior().isPathing()) {
+            return true;
+        }
+        if (baritone.getPathingControlManager() != null && baritone.getPathingControlManager().mostRecentInControl().map(IBaritoneProcess::isActive).orElse(false)) {
+            return true;
+        }
+
+        // Gdy bot jest bezczynny (IDLE), oddajemy 100% kontroli klawiaturze gracza (KeyboardInput)
+        return false;
     }
 
     public BlockBreakHelper getBlockBreakHelper() {

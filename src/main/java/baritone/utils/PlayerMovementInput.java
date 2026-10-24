@@ -40,12 +40,6 @@ public class PlayerMovementInput extends ClientInput {
 
         // (2) Screen otwarty lub czyszczenie ekwipunku AutoDrop: zawsze zero input (GrimAC MultiActions safe)
         boolean screenOpen = Minecraft.getInstance().screen != null;
-        if (screenOpen && Minecraft.getInstance().screen instanceof net.minecraft.client.gui.screens.PauseScreen) {
-            if (com.astra.revolution.perf.AstraPerformanceConfig.getBotNum() > 1 || Baritone.isPrimaryActive()) {
-                Minecraft.getInstance().setScreen(null);
-                screenOpen = false;
-            }
-        }
         boolean isContainerScreen = screenOpen && Minecraft.getInstance().screen instanceof net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
         boolean strictAntiCheat = Baritone.settings().antiCheatCompat.value || Baritone.settings().antiCheatCompatibility.value;
         boolean autoDropCleaning = handler != null && handler.baritone != null

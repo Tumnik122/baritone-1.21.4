@@ -1357,69 +1357,149 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
      *      Slot 20: Zielone łóżko (Home 2)
      *      Sloty 21..25: Czerwone łóżka (Home 3..7)
      */
+    private boolean isFillerOrGlassPane(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
+        Item item = stack.getItem();
+        String path = BuiltInRegistries.ITEM.getKey(item).getPath();
+        return path.contains("stained_glass_pane") || path.contains("glass_pane")
+                || path.contains("barrier") || path.contains("structure_void")
+                || path.contains("iron_bars");
+    }
+
+    private String extractFullItemText(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder(stack.getHoverName().getString());
+        var lore = stack.get(net.minecraft.core.component.DataComponents.LORE);
+        if (lore != null) {
+            for (var line : lore.lines()) {
+                sb.append(" ").append(line.getString());
+            }
+        }
+        return sb.toString().toLowerCase(Locale.ROOT);
+    }
+
     private int resolveSlotForHome(int homeNum) {
         if (ctx.player() == null || ctx.player().containerMenu == null) {
             return 18 + homeNum;
         }
 
         var menu = ctx.player().containerMenu;
+        int containerSlots = Math.max(0, menu.slots.size() - 36);
+        if (containerSlots <= 0) {
+            containerSlots = menu.slots.size();
+        }
 
-        // Jeśli Home 1: sprawdź czy slot 19 zawiera kamień, lub poszukaj kamienia / nazwy w menu
+        // 1. Sprawdzenie dedykowanych reguł dla danego numeru home
         if (homeNum == 1) {
             if (menu.slots.size() > 19 && isHome1Item(menu.getSlot(19).getItem())) {
                 return 19;
             }
-            for (int s = 0; s < Math.min(54, menu.slots.size()); s++) {
+            for (int s = 0; s < containerSlots; s++) {
                 if (isHome1Item(menu.getSlot(s).getItem())) {
+                    return s;
+                }
+            }
+            // Fallback: pierwszy nie-szybowy przedmiot
+            for (int s = 0; s < containerSlots; s++) {
+                if (!isFillerOrGlassPane(menu.getSlot(s).getItem()) && !menu.getSlot(s).getItem().isEmpty()) {
                     return s;
                 }
             }
             return 19;
         }
 
-        // Jeśli Home 2: sprawdź czy slot 20 zawiera zielone/jasnozielone łóżko lub nazwę "home 2"
         if (homeNum == 2) {
+            // Szybki check: czy domyślny slot 20 to Home 2?
             if (menu.slots.size() > 20 && isHome2Item(menu.getSlot(20).getItem())) {
                 return 20;
             }
-            for (int s = 0; s < Math.min(54, menu.slots.size()); s++) {
+
+            // Przeszukaj wszystkie sloty kontenera
+            for (int s = 0; s < containerSlots; s++) {
                 if (isHome2Item(menu.getSlot(s).getItem())) {
                     return s;
                 }
             }
-            // Fallback: sprawdź czy w rzędzie 2 slot 20 nie jest pusty
-            if (menu.slots.size() > 20 && !menu.getSlot(20).getItem().isEmpty()) {
-                return 20;
+
+            // Fallback 1: Sprawdź czy po slocie Home 1 jest kolejny nie-pusty i nie-szybowy slot
+            int home1Slot = resolveSlotForHome(1);
+            for (int s = home1Slot + 1; s < containerSlots; s++) {
+                ItemStack stack = menu.getSlot(s).getItem();
+                if (!stack.isEmpty() && !isFillerOrGlassPane(stack)) {
+                    return s;
+                }
             }
-            return 20;
+
+            // Fallback 2: Sprawdź czy slot 20 nie jest szybą/fillerem
+            if (menu.slots.size() > 20) {
+                ItemStack s20 = menu.getSlot(20).getItem();
+                if (!s20.isEmpty() && !isFillerOrGlassPane(s20)) {
+                    return 20;
+                }
+            }
+
+            // Fallback 3: Drugi nie-szybowy przedmiot w całym menu
+            int nonFillerFound = 0;
+            for (int s = 0; s < containerSlots; s++) {
+                ItemStack stack = menu.getSlot(s).getItem();
+                if (!stack.isEmpty() && !isFillerOrGlassPane(stack)) {
+                    nonFillerFound++;
+                    if (nonFillerFound == 2) {
+                        return s;
+                    }
+                }
+            }
+
+            return Math.min(20, containerSlots - 1);
         }
 
-        // Home 3..7: slot = 18 + homeNum
+        // Home 3..7: przeszukaj po nazwie lub ilości stacka == homeNum
+        for (int s = 0; s < containerSlots; s++) {
+            ItemStack stack = menu.getSlot(s).getItem();
+            if (stack.isEmpty() || isFillerOrGlassPane(stack)) continue;
+            String text = extractFullItemText(stack);
+            if (text.contains("home " + homeNum) || text.contains("dom " + homeNum) || stack.getCount() == homeNum) {
+                return s;
+            }
+        }
+
         int calculated = 18 + homeNum;
-        if (calculated < menu.slots.size()) {
+        if (calculated < containerSlots && !isFillerOrGlassPane(menu.getSlot(calculated).getItem())) {
             return calculated;
         }
-        return 18 + homeNum;
+        return Math.min(calculated, containerSlots - 1);
     }
 
     private boolean isHome1Item(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return false;
+        if (isFillerOrGlassPane(stack)) return false;
         if (stack.is(Items.STONE)) return true;
-        String name = stack.getHoverName().getString().toLowerCase(Locale.ROOT);
-        return name.contains("home 1") || name.contains("dom 1") || name.contains("baza");
+        String text = extractFullItemText(stack);
+        return text.contains("home 1") || text.contains("home1") || text.contains("home #1") || text.contains("home: 1")
+                || text.contains("dom 1") || text.contains("dom1") || text.contains("dom #1") || text.contains("dom: 1")
+                || text.contains("baza");
     }
 
     private boolean isHome2Item(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return false;
-        if (isGreenBed(stack)) return true;
-        String name = stack.getHoverName().getString().toLowerCase(Locale.ROOT);
-        return name.contains("home 2") || name.contains("home2") || name.contains("dom 2")
-                || name.contains("dom: 2") || name.contains("kopalnia") || name.contains("działka") || name.contains("dzialka");
+        if (isFillerOrGlassPane(stack)) return false;
+
+        // Jeśli to dowolne łóżko (zielone, limonkowe, czerwone itp.)
+        if (isAnyBed(stack)) return true;
+
+        // Jeśli ilość stacka == 2 w menu wyboru domków
+        if (stack.getCount() == 2) return true;
+
+        String text = extractFullItemText(stack);
+        return text.contains("home 2") || text.contains("home2") || text.contains("home #2") || text.contains("home: 2") || text.contains("home-2") || text.contains("home_2")
+                || text.contains("dom 2") || text.contains("dom2") || text.contains("dom #2") || text.contains("dom: 2") || text.contains("dom-2") || text.contains("dom_2")
+                || text.contains("kopalnia") || text.contains("kopaln") || text.contains("działka") || text.contains("dzialka");
     }
 
-    private boolean isGreenBed(ItemStack stack) {
+    private boolean isAnyBed(ItemStack stack) {
         if (stack.isEmpty()) return false;
-        return stack.is(Items.LIME_BED) || stack.is(Items.GREEN_BED);
+        return stack.getItem() instanceof net.minecraft.world.item.BedItem
+                || BuiltInRegistries.ITEM.getKey(stack.getItem()).getPath().endsWith("_bed");
     }
 
     private PathingCommand enforceDeadStop() {
