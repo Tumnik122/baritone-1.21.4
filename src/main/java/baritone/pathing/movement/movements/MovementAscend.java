@@ -242,8 +242,15 @@ public class MovementAscend extends Movement {
             return state.setInput(Input.JUMP, true);
         }
 
-        if (flatDistToNext > 1.2 || sideDist > 0.2) {
+        // Tolerancja boczna dopasowana do hitboxa gracza (0.6 szerokości, promień 0.3 na bloku 1.0)
+        double maxSideDist = (ticksAscending >= 3 || ctx.player().horizontalCollision) ? 0.44 : 0.35;
+        if (flatDistToNext > 1.35 || sideDist > maxSideDist) {
             return state;
+        }
+
+        // Natychmiastowy skok przy kontakcie ze ścianą bloku docelowego (eliminuje klinowanie o krawędź)
+        if (ctx.player().horizontalCollision && flatDistToNext <= 1.35) {
+            return state.setInput(Input.JUMP, true);
         }
 
         // Once we are pointing the right way and moving, start jumping

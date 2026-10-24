@@ -73,10 +73,16 @@ public final class AstraMovementFluidityEngine {
         double distToCurrentSq = sq(player.getX() - targetX) + sq(player.getZ() - targetZ);
         if (distToCurrentSq < 0.32 && pathPos + 2 < positions.size()) {
             BetterBlockPos nextNode = positions.get(pathPos + 2);
-            // Płynne zaokrąglanie wektora docelowego na kolejny segment (Corner Pre-Rounding)
             double blend = 1.0 - (Math.sqrt(distToCurrentSq) / 0.565);
-            targetX = Mth.lerp(blend * 0.55, targetX, nextNode.x + 0.5);
-            targetZ = Mth.lerp(blend * 0.55, targetZ, nextNode.z + 0.5);
+            double candidateX = Mth.lerp(blend * 0.55, targetX, nextNode.x + 0.5);
+            double candidateZ = Mth.lerp(blend * 0.55, targetZ, nextNode.z + 0.5);
+
+            // Weryfikacja AABB: pre-rounding dozwolony TYLKO wtedy, gdy linia nie przecina narożnika ściany!
+            AABB pbox = player.getBoundingBox();
+            if (player.level().noCollision(player, pbox.move(candidateX - player.getX(), 0.05, candidateZ - player.getZ()))) {
+                targetX = candidateX;
+                targetZ = candidateZ;
+            }
         }
 
         double dx = targetX - player.getX();
@@ -100,12 +106,27 @@ public final class AstraMovementFluidityEngine {
 
         // 3. Corner Feeler & Micro-Unstuck Injection
         if ((stallTicks >= 2 || player.horizontalCollision) && !isActivelyMiningOrPlacing) {
+            double normDx = dx / horizDist;
+            double normDz = dz / horizDist;
+
             if (unstuckPulseRemaining <= 0) {
-                unstuckStrafeDir = computeCornerEscapeStrafe(player, dx / horizDist, dz / horizDist);
+                unstuckStrafeDir = computeCornerEscapeStrafe(player, normDx, normDz);
                 unstuckPulseRemaining = 3; // 150ms mikro-korekty omijającej narożnik
             }
-            // Early Ascend Assist: jeśli docelowy węzeł jest wyżej o 1 blok, skaczemy zanim pęd spadnie do 0
-            if (currentTarget.y > Mth.floor(player.getY() + 0.05) && player.onGround()) {
+
+            // A) Early Ascend Assist: jeśli docelowy węzeł jest wyżej o 1 blok, skaczemy zanim pęd spadnie do 0
+            boolean targetIsAbove = currentTarget.y > Mth.floor(player.getY() + 0.05);
+
+            // B) Step-Up Obstacle Assist: przed graczem jest schodek/krawędź, ale nad nią jest puste miejsce
+            boolean stepUpClear = false;
+            if (player.onGround()) {
+                AABB box = player.getBoundingBox();
+                boolean highClear = player.level().noCollision(player, box.move(normDx * 0.32, 1.05, normDz * 0.32));
+                boolean lowBlocked = !player.level().noCollision(player, box.move(normDx * 0.32, 0.05, normDz * 0.32));
+                stepUpClear = highClear && lowBlocked;
+            }
+
+            if ((targetIsAbove || stepUpClear || stallTicks >= 4) && player.onGround()) {
                 baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
             }
         }
@@ -186,21 +207,35 @@ public final class AstraMovementFluidityEngine {
     }
 
     /**
-     * Sondowanie dwóch narożników AABB (lewa/prawa czujka) w celu wykrycia, która strona zahacza o przeszkodę.
+     * Inteligentna sonda narożnikowa AABB (3-kierunkowy sensor lewo/prawo/skośny).
+     * Wyznacza optymalny wektor ominięcia krawędzi bloku, unikając oscylacji w przód i w tył.
      */
     private int computeCornerEscapeStrafe(LocalPlayer player, double dirX, double dirZ) {
         AABB box = player.getBoundingBox();
-        double perpX = dirZ * 0.28;
-        double perpZ = -dirX * 0.28;
-        double probeFwdX = dirX * 0.22;
-        double probeFwdZ = dirZ * 0.22;
+        double perpX = dirZ * 0.32;
+        double perpZ = -dirX * 0.32;
+        double probeFwdX = dirX * 0.20;
+        double probeFwdZ = dirZ * 0.20;
 
-        boolean leftBlocked = !player.level().noCollision(player, box.move(probeFwdX + perpX, 0.0, probeFwdZ + perpZ));
-        boolean rightBlocked = !player.level().noCollision(player, box.move(probeFwdX - perpX, 0.0, probeFwdZ - perpZ));
+        // 1. Sprawdzenie skosów (lewy i prawy przedni narożnik)
+        boolean leftFwdBlocked = !player.level().noCollision(player, box.move(probeFwdX + perpX, 0.05, probeFwdZ + perpZ));
+        boolean rightFwdBlocked = !player.level().noCollision(player, box.move(probeFwdX - perpX, 0.05, probeFwdZ - perpZ));
 
-        if (leftBlocked && !rightBlocked) return -1; // Omiń w prawo (D)
-        if (rightBlocked && !leftBlocked) return 1;  // Omiń w lewo (A)
-        return (player.tickCount & 4) == 0 ? 1 : -1;
+        if (leftFwdBlocked && !rightFwdBlocked) return -1; // Lewa strona haczy -> omiń w prawo (D)
+        if (rightFwdBlocked && !leftFwdBlocked) return 1;  // Prawa strona haczy -> omiń w lewo (A)
+
+        // 2. Jeśli oba skosy są zablokowane (np. płaska ściana przed graczem), sprawdź czysty ruch boczny
+        boolean leftLateralClear = player.level().noCollision(player, box.move(perpX * 1.25, 0.05, perpZ * 1.25));
+        boolean rightLateralClear = player.level().noCollision(player, box.move(-perpX * 1.25, 0.05, -perpZ * 1.25));
+
+        if (leftLateralClear && !rightLateralClear) return 1;  // Wolne z lewej -> idź w lewo
+        if (rightLateralClear && !leftLateralClear) return -1; // Wolne z prawej -> idź w prawo
+
+        // 3. Jeśli obie strony są otwarte lub zablokowane, zachowaj stabilny kierunek (brak oscylacji)
+        if (unstuckStrafeDir != 0) {
+            return unstuckStrafeDir;
+        }
+        return (player.getId() % 2 == 0) ? 1 : -1;
     }
 
     public void resetState() {

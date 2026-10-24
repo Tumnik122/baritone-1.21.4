@@ -294,8 +294,12 @@ public class MovementDiagonal extends Movement {
         } else if (!playerInValidPosition() && !inWater && !(MovementHelper.isLiquid(ctx, src) && getValidPositions().contains(ctx.playerFeet().above()))) {
             return state.setStatus(MovementStatus.UNREACHABLE);
         }
-        if (dest.y > src.y && ctx.player().position().y < src.y + 0.1 && ctx.player().horizontalCollision) {
-            state.setInput(Input.JUMP, true);
+        if (ctx.player().horizontalCollision && ctx.player().onGround()) {
+            if (dest.y > src.y && ctx.player().position().y < src.y + 0.1) {
+                state.setInput(Input.JUMP, true);
+            } else if (dest.y == src.y && MovementHelper.canWalkThrough(ctx, ctx.playerFeet().above(2))) {
+                state.setInput(Input.JUMP, true);
+            }
         }
         if (sprint()) {
             state.setInput(Input.SPRINT, true);
