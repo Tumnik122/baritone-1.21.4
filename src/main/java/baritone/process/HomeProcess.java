@@ -507,23 +507,55 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
             case MENU_OPENED -> {
                 enforceDeadStop();
                 stateTicks++;
-                if (stateTicks >= 2) {
-                    int slotToClick = resolveSlotForHome(targetHome);
-                    int containerId = ctx.player().containerMenu.containerId;
-                    ItemStack clickedStack = ItemStack.EMPTY;
-                    if (slotToClick < ctx.player().containerMenu.slots.size()) {
-                        clickedStack = ctx.player().containerMenu.getSlot(slotToClick).getItem();
-                    }
-                    String itemDesc = clickedStack.isEmpty()
-                            ? "slot " + slotToClick
-                            : BuiltInRegistries.ITEM.getKey(clickedStack.getItem()).getPath();
 
-                    ctx.playerController().windowClick(containerId, slotToClick, 0, ClickType.PICKUP, ctx.player());
-                    logDirect(String.format("§a[Home] Kliknięto w menu: Home %d (§e%s§a, slot %d). Trwa teleportacja...",
-                            targetHome, itemDesc, slotToClick));
-
+                if (ctx.player().containerMenu == ctx.player().inventoryMenu) {
                     state = State.CLICKED;
                     stateTicks = 0;
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+
+                if (stateTicks >= 8) {
+                    var menu = ctx.player().containerMenu;
+                    int slotToClick = resolveSlotForHome(targetHome);
+
+                    boolean hasItemsLoaded = false;
+                    for (int s = 0; s < Math.min(27, menu.slots.size()); s++) {
+                        if (!menu.getSlot(s).getItem().isEmpty()) {
+                            hasItemsLoaded = true;
+                            break;
+                        }
+                    }
+                    if (!hasItemsLoaded && stateTicks < 25) {
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+
+                    if (stateTicks == 8 || stateTicks % 10 == 0) {
+                        int containerId = menu.containerId;
+                        ItemStack clickedStack = (slotToClick < menu.slots.size()) ? menu.getSlot(slotToClick).getItem() : ItemStack.EMPTY;
+                        String itemDesc = clickedStack.isEmpty()
+                                ? "slot " + slotToClick
+                                : BuiltInRegistries.ITEM.getKey(clickedStack.getItem()).getPath();
+
+                        ctx.playerController().windowClick(containerId, slotToClick, 0, ClickType.PICKUP, ctx.player());
+                        logDirect(String.format("§a[Home] Kliknięto w menu: Home %d (§e%s§a, slot %d)...",
+                                targetHome, itemDesc, slotToClick));
+                    }
+
+                    if (stateTicks >= 35) {
+                        logDirect("§e[Home] Menu nie zamyka się – wysyłam /home " + targetHome + " bezpośrednio i zamykam GUI!");
+                        if (ctx.player().connection != null) {
+                            ctx.player().connection.sendCommand("home " + targetHome);
+                        }
+                        ctx.player().closeContainer();
+                        try {
+                            if (Minecraft.getInstance().screen != null) {
+                                Minecraft.getInstance().setScreen(null);
+                            }
+                        } catch (Throwable ignored) {}
+                        state = State.CLICKED;
+                        stateTicks = 0;
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
@@ -587,13 +619,49 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
             case CLICK_HOME_1 -> {
                 enforceDeadStop();
                 stateTicks++;
-                if (stateTicks >= 2) {
-                    int slotToClick = resolveSlotForHome(1);
-                    int containerId = ctx.player().containerMenu.containerId;
-                    ctx.playerController().windowClick(containerId, slotToClick, 0, ClickType.PICKUP, ctx.player());
-                    logDirect("§a[Home] [2/5] Kliknięto Home 1 (Kamień). Rozpoczynam 7-sekundowy cooldown...");
+
+                if (ctx.player().containerMenu == ctx.player().inventoryMenu) {
                     state = State.TELEPORTING_TO_HOME_1;
                     stateTicks = 0;
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+
+                if (stateTicks >= 8) {
+                    var menu = ctx.player().containerMenu;
+                    int slotToClick = resolveSlotForHome(1);
+
+                    boolean hasItemsLoaded = false;
+                    for (int s = 0; s < Math.min(27, menu.slots.size()); s++) {
+                        if (!menu.getSlot(s).getItem().isEmpty()) {
+                            hasItemsLoaded = true;
+                            break;
+                        }
+                    }
+                    if (!hasItemsLoaded && stateTicks < 25) {
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+
+                    if (stateTicks == 8 || stateTicks % 10 == 0) {
+                        int containerId = menu.containerId;
+                        ctx.playerController().windowClick(containerId, slotToClick, 0, ClickType.PICKUP, ctx.player());
+                        logDirect("§a[Home] [2/5] Kliknięto Home 1 (Kamień)...");
+                    }
+
+                    if (stateTicks >= 35) {
+                        logDirect("§e[Home] Menu \"Twoje domki\" nie zamyka się – wysyłam /home 1 bezpośrednio!");
+                        if (ctx.player().connection != null) {
+                            ctx.player().connection.sendCommand("home 1");
+                        }
+                        ctx.player().closeContainer();
+                        try {
+                            if (Minecraft.getInstance().screen != null) {
+                                Minecraft.getInstance().setScreen(null);
+                            }
+                        } catch (Throwable ignored) {}
+                        state = State.TELEPORTING_TO_HOME_1;
+                        stateTicks = 0;
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
@@ -918,22 +986,71 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
             case CLICK_HOME_2 -> {
                 enforceDeadStop();
                 stateTicks++;
-                if (stateTicks >= 2) {
-                    int slotToClick = resolveSlotForHome(2);
-                    int containerId = ctx.player().containerMenu.containerId;
-                    ctx.playerController().windowClick(containerId, slotToClick, 0, ClickType.PICKUP, ctx.player());
-                    logDirect("§a[Home] Kliknięto Home 2 (Zielone łóżko). Teleportuję z powrotem do kopalni...");
+
+                // 1. Sprawdź czy menu zamknęło się samoistnie (serwer zareagował na kliknięcie)
+                if (ctx.player().containerMenu == ctx.player().inventoryMenu) {
+                    logDirect("§a[Home] Menu \"Twoje domki\" zamknięte – oczekuję na teleportację...");
                     state = State.TELEPORTING_TO_HOME_2;
                     stateTicks = 0;
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+
+                // 2. Odczekaj min. 8 ticków na nadejście pakietu zawartości slotów
+                if (stateTicks >= 8) {
+                    var menu = ctx.player().containerMenu;
+                    int slotToClick = resolveSlotForHome(2);
+
+                    boolean hasItemsLoaded = false;
+                    for (int s = 0; s < Math.min(27, menu.slots.size()); s++) {
+                        if (!menu.getSlot(s).getItem().isEmpty()) {
+                            hasItemsLoaded = true;
+                            break;
+                        }
+                    }
+                    if (!hasItemsLoaded && stateTicks < 25) {
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+
+                    // Ponawiaj kliknięcie co 10 ticków (0.5s) dopóki menu nie zniknie
+                    if (stateTicks == 8 || stateTicks % 10 == 0) {
+                        int containerId = menu.containerId;
+                        ItemStack clickedStack = (slotToClick < menu.slots.size()) ? menu.getSlot(slotToClick).getItem() : ItemStack.EMPTY;
+                        String itemDesc = clickedStack.isEmpty()
+                                ? "slot " + slotToClick
+                                : BuiltInRegistries.ITEM.getKey(clickedStack.getItem()).getPath();
+
+                        ctx.playerController().windowClick(containerId, slotToClick, 0, ClickType.PICKUP, ctx.player());
+                        logDirect(String.format("§a[Home] Kliknięto w menu: Home 2 (§e%s§a, slot %d)...", itemDesc, slotToClick));
+                    }
+
+                    // Fallback: jeśli po 35 tickach menu wciąż wisi, wyślij komendę /home 2 bezpośrednio
+                    if (stateTicks >= 35) {
+                        logDirect("§e[Home] Menu \"Twoje domki\" nie zamyka się – wysyłam /home 2 bezpośrednio i zamykam GUI!");
+                        if (ctx.player().connection != null) {
+                            ctx.player().connection.sendCommand("home 2");
+                        }
+                        ctx.player().closeContainer();
+                        try {
+                            if (Minecraft.getInstance().screen != null) {
+                                Minecraft.getInstance().setScreen(null);
+                            }
+                        } catch (Throwable ignored) {}
+                        state = State.TELEPORTING_TO_HOME_2;
+                        stateTicks = 0;
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
             case TELEPORTING_TO_HOME_2 -> {
                 enforceDeadStop();
                 stateTicks++;
-                int delayTicks = Math.max(40, Baritone.settings().homeTeleportDelayTicks.value);
+                int delayTicks = Math.max(60, Baritone.settings().homeTeleportDelayTicks.value);
                 if (stateTicks == 1) {
-                    logDirect(String.format("§b[Home] Czekam %.1f s bez ruchu na teleportację serwera (warmup 5s) powrotu do kopalni...", delayTicks / 20.0F));
+                    logDirect(String.format("§b[Home] Czekam %.1f s bez ruchu na teleportację serwera (warmup 5s) powrotu do kopalni/farmy...", delayTicks / 20.0F));
+                }
+                if (stateTicks % 15 == 0 && ctx.player().containerMenu != ctx.player().inventoryMenu) {
+                    ctx.player().closeContainer();
                 }
                 if (stateTicks >= delayTicks) {
                     state = State.RESUMING_MINING;
@@ -1247,28 +1364,32 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
 
         var menu = ctx.player().containerMenu;
 
-        // Jeśli Home 1: sprawdź czy slot 19 zawiera kamień, lub poszukaj kamienia w rzędzie 2
+        // Jeśli Home 1: sprawdź czy slot 19 zawiera kamień, lub poszukaj kamienia / nazwy w menu
         if (homeNum == 1) {
-            if (menu.slots.size() > 19 && menu.getSlot(19).getItem().is(Items.STONE)) {
+            if (menu.slots.size() > 19 && isHome1Item(menu.getSlot(19).getItem())) {
                 return 19;
             }
-            for (int s = 18; s <= 26 && s < menu.slots.size(); s++) {
-                if (menu.getSlot(s).getItem().is(Items.STONE)) {
+            for (int s = 0; s < Math.min(54, menu.slots.size()); s++) {
+                if (isHome1Item(menu.getSlot(s).getItem())) {
                     return s;
                 }
             }
             return 19;
         }
 
-        // Jeśli Home 2: sprawdź czy slot 20 zawiera zielone/jasnozielone łóżko
+        // Jeśli Home 2: sprawdź czy slot 20 zawiera zielone/jasnozielone łóżko lub nazwę "home 2"
         if (homeNum == 2) {
-            if (menu.slots.size() > 20 && isGreenBed(menu.getSlot(20).getItem())) {
+            if (menu.slots.size() > 20 && isHome2Item(menu.getSlot(20).getItem())) {
                 return 20;
             }
-            for (int s = 18; s <= 26 && s < menu.slots.size(); s++) {
-                if (isGreenBed(menu.getSlot(s).getItem())) {
+            for (int s = 0; s < Math.min(54, menu.slots.size()); s++) {
+                if (isHome2Item(menu.getSlot(s).getItem())) {
                     return s;
                 }
+            }
+            // Fallback: sprawdź czy w rzędzie 2 slot 20 nie jest pusty
+            if (menu.slots.size() > 20 && !menu.getSlot(20).getItem().isEmpty()) {
+                return 20;
             }
             return 20;
         }
@@ -1279,6 +1400,21 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
             return calculated;
         }
         return 18 + homeNum;
+    }
+
+    private boolean isHome1Item(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
+        if (stack.is(Items.STONE)) return true;
+        String name = stack.getHoverName().getString().toLowerCase(Locale.ROOT);
+        return name.contains("home 1") || name.contains("dom 1") || name.contains("baza");
+    }
+
+    private boolean isHome2Item(ItemStack stack) {
+        if (stack == null || stack.isEmpty()) return false;
+        if (isGreenBed(stack)) return true;
+        String name = stack.getHoverName().getString().toLowerCase(Locale.ROOT);
+        return name.contains("home 2") || name.contains("home2") || name.contains("dom 2")
+                || name.contains("dom: 2") || name.contains("kopalnia") || name.contains("działka") || name.contains("dzialka");
     }
 
     private boolean isGreenBed(ItemStack stack) {
