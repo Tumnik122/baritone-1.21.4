@@ -11,6 +11,7 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.lwjgl.opengl.GL11;
+import java.util.List;
 
 /**
  * Ultra-wydajny silnik efektów God-Tier (Zero-Allocation, Zero-glGet Pipeline Stall).
@@ -291,5 +292,129 @@ public final class AstraGodTierVisuals {
             BufferUploader.drawWithShader(buf.buildOrThrow());
             RenderSystem.disableBlend();
         }
+    }
+
+    /**
+     * Renderuje wstęgę ścieżki Baritone (Centripetal Catmull-Rom Spline) z wielowarstwowym Additive Bloom
+     * oraz animowanymi szewronami prędkości (> > >) płynącymi wzdłuż trajektorii ku celowi (Argon 4).
+     */
+    public static void renderPathCatmullRomRibbonWithChevrons(
+            PoseStack poseStack, Vec3 camPos,
+            List<baritone.api.utils.BetterBlockPos> positions, int startIndex) {
+
+        if (positions == null || positions.size() < 2) return;
+        int total = positions.size();
+        int start = Math.max(0, Math.min(total - 1, startIndex));
+        if (start >= total - 1) return;
+
+        Matrix4f mat = poseStack.last().pose();
+        Tesselator tess = Tesselator.getInstance();
+        long now = System.currentTimeMillis();
+        float timeSec = (now % 100000L) / 1000.0F;
+        float flowOffset = (float) ((now % 1200L) / 1200.0F);
+
+        beginAdditiveGlowPass(true);
+
+        // 1. Catmull-Rom Ribbon (TRIANGLE_STRIP)
+        BufferBuilder buf = tess.begin(VertexFormat.Mode.TRIANGLE_STRIP, DefaultVertexFormat.POSITION_COLOR);
+        float ribbonHalfWidth = 0.22F;
+        int subSteps = 3;
+
+        for (int i = start; i < total - 1; i++) {
+            baritone.api.utils.BetterBlockPos p0 = positions.get(Math.max(0, i - 1));
+            baritone.api.utils.BetterBlockPos p1 = positions.get(i);
+            baritone.api.utils.BetterBlockPos p2 = positions.get(i + 1);
+            baritone.api.utils.BetterBlockPos p3 = positions.get(Math.min(total - 1, i + 2));
+
+            double x0 = p0.x + 0.5, y0 = p0.y + 0.12, z0 = p0.z + 0.5;
+            double x1 = p1.x + 0.5, y1 = p1.y + 0.12, z1 = p1.z + 0.5;
+            double x2 = p2.x + 0.5, y2 = p2.y + 0.12, z2 = p2.z + 0.5;
+            double x3 = p3.x + 0.5, y3 = p3.y + 0.12, z3 = p3.z + 0.5;
+
+            for (int s = 0; s < subSteps; s++) {
+                float t = (float) s / (float) subSteps;
+                float t2 = t * t;
+                float t3 = t2 * t;
+
+                double px = 0.5 * ((2 * x1) + (-x0 + x2) * t + (2 * x0 - 5 * x1 + 4 * x2 - x3) * t2 + (-x0 + 3 * x1 - 3 * x2 + x3) * t3);
+                double py = 0.5 * ((2 * y1) + (-y0 + y2) * t + (2 * y0 - 5 * y1 + 4 * y2 - y3) * t2 + (-y0 + 3 * y1 - 3 * y2 + y3) * t3);
+                double pz = 0.5 * ((2 * z1) + (-z0 + z2) * t + (2 * z0 - 5 * z1 + 4 * z2 - z3) * t2 + (-z0 + 3 * z1 - 3 * z2 + z3) * t3);
+
+                // Tangent vector
+                double tx = 0.5 * ((-x0 + x2) + 2 * (2 * x0 - 5 * x1 + 4 * x2 - x3) * t + 3 * (-x0 + 3 * x1 - 3 * x2 + x3) * t2);
+                double tz = 0.5 * ((-z0 + z2) + 2 * (2 * z0 - 5 * z1 + 4 * z2 - z3) * t + 3 * (-z0 + 3 * z1 - 3 * z2 + z3) * t2);
+                double tLen = Math.hypot(tx, tz);
+                double nx = (tLen > 1e-4) ? (-tz / tLen) : 1.0;
+                double nz = (tLen > 1e-4) ? (tx / tLen) : 0.0;
+
+                float rx = (float) (px - camPos.x);
+                float ry = (float) (py - camPos.y);
+                float rz = (float) (pz - camPos.z);
+
+                float progress = (float) (i - start + t) / (float) Math.max(1, total - 1 - start);
+                // Pulse waves along path
+                float pulse = 0.75F + 0.25F * Mth.sin(progress * 18.0F - timeSec * 6.0F);
+
+                // Chroma-Neon Cyan to Lilac gradient
+                int r = (int) (Mth.lerp(progress, 0.0F, 199.0F));
+                int g = (int) (Mth.lerp(progress, 240.0F, 125.0F));
+                int b = 255;
+                int alpha = (int) (180 * (1.0F - progress * 0.45F) * pulse);
+
+                buf.addVertex(mat, (float) (rx - nx * ribbonHalfWidth), ry, (float) (rz - nz * ribbonHalfWidth)).setColor(r, g, b, alpha);
+                buf.addVertex(mat, (float) (rx + nx * ribbonHalfWidth), ry, (float) (rz + nz * ribbonHalfWidth)).setColor(r, g, b, alpha);
+            }
+        }
+
+        BufferUploader.drawWithShader(buf.buildOrThrow());
+
+        // 2. Animated Directional Chevrons (> > >) and Center Laser Filament
+        BufferBuilder lineBuf = tess.begin(VertexFormat.Mode.LINES, DefaultVertexFormat.POSITION_COLOR);
+        float chevronSpacing = 1.8F;
+
+        for (int i = start; i < total - 1; i++) {
+            baritone.api.utils.BetterBlockPos p1 = positions.get(i);
+            baritone.api.utils.BetterBlockPos p2 = positions.get(i + 1);
+
+            double x1 = p1.x + 0.5, y1 = p1.y + 0.14, z1 = p1.z + 0.5;
+            double x2 = p2.x + 0.5, y2 = p2.y + 0.14, z2 = p2.z + 0.5;
+
+            double dx = x2 - x1, dz = z2 - z1;
+            double len = Math.hypot(dx, dz);
+            if (len < 0.1) continue;
+            double dirX = dx / len, dirZ = dz / len;
+            double perpX = -dirZ, perpZ = dirX;
+
+            float rx1 = (float) (x1 - camPos.x), ry1 = (float) (y1 - camPos.y), rz1 = (float) (z1 - camPos.z);
+            float rx2 = (float) (x2 - camPos.x), ry2 = (float) (y2 - camPos.y), rz2 = (float) (z2 - camPos.z);
+
+            // Center neon laser filament
+            lineBuf.addVertex(mat, rx1, ry1 + 0.02F, rz1).setColor(255, 255, 255, 220);
+            lineBuf.addVertex(mat, rx2, ry2 + 0.02F, rz2).setColor(255, 255, 255, 220);
+
+            // Flowing chevrons
+            double chevronPos = (flowOffset * chevronSpacing) % len;
+            while (chevronPos < len) {
+                double cx = x1 + dirX * chevronPos - camPos.x;
+                double cy = y1 + 0.03 - camPos.y;
+                double cz = z1 + dirZ * chevronPos - camPos.z;
+
+                double wingBack = 0.22;
+                double wingSpan = 0.18;
+
+                // Wing left
+                lineBuf.addVertex(mat, (float) cx, (float) cy, (float) cz).setColor(0, 240, 255, 240);
+                lineBuf.addVertex(mat, (float) (cx - dirX * wingBack + perpX * wingSpan), (float) cy, (float) (cz - dirZ * wingBack + perpZ * wingSpan)).setColor(0, 240, 255, 0);
+
+                // Wing right
+                lineBuf.addVertex(mat, (float) cx, (float) cy, (float) cz).setColor(0, 240, 255, 240);
+                lineBuf.addVertex(mat, (float) (cx - dirX * wingBack - perpX * wingSpan), (float) cy, (float) (cz - dirZ * wingBack - perpZ * wingSpan)).setColor(0, 240, 255, 0);
+
+                chevronPos += chevronSpacing;
+            }
+        }
+
+        BufferUploader.drawWithShader(lineBuf.buildOrThrow());
+        endGlowPass();
     }
 }

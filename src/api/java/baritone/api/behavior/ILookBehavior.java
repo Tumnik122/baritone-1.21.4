@@ -56,4 +56,15 @@ public interface ILookBehavior extends IBehavior {
     default Rotation getServerRotation() {
         return null;
     }
+
+    /**
+     * Returns the rotation effective for the current tick (scheduled target rotation if set,
+     * otherwise the last transmitted server rotation).
+     * Eliminates 1-tick delay desync for packet validation under GrimAC.
+     *
+     * @return The effective rotation for the current tick
+     */
+    default java.util.Optional<Rotation> getEffectiveRotation() {
+        return java.util.Optional.ofNullable(getServerRotation());
+    }
 }

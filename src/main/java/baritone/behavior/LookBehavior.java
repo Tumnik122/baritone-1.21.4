@@ -167,6 +167,20 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     }
 
     @Override
+    public java.util.Optional<Rotation> getEffectiveRotation() {
+        if (this.target != null && this.target.rotation != null) {
+            return java.util.Optional.of(this.target.rotation);
+        }
+        if (this.serverRotation != null) {
+            return java.util.Optional.of(this.serverRotation);
+        }
+        if (ctx.player() != null) {
+            return java.util.Optional.of(new Rotation(ctx.player().getYRot(), ctx.player().getXRot()));
+        }
+        return java.util.Optional.empty();
+    }
+
+    @Override
     public void onWorldEvent(WorldEvent event) {
         this.serverRotation = null;
         this.target         = null;
@@ -198,13 +212,6 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             return new Rotation(yaw, Mth.clamp(pitch, -90.0F, 90.0F));
         }
         return target;
-    }
-
-    public Optional<Rotation> getEffectiveRotation() {
-        if (Baritone.settings().freeLook.value) {
-            return Optional.ofNullable(this.serverRotation);
-        }
-        return Optional.empty();
     }
 
     @Override

@@ -155,6 +155,37 @@ public final class AstraMovementFluidityEngine {
     }
 
     /**
+     * Sprint-Preserving Decoupled Input (rekomendacja Argon 4).
+     * Utrzymuje wciśnięty klawisz W (forwardImpulse = 1.0, sprint 5.61 m/s)
+     * dopóki kąt kamery do osi korytarza wynosi <= 70°, kompensując kierunek klawiszami strafe (A/D).
+     */
+    public void applySprintSafeDecoupledInput(IBaritone baritone, float serverYaw, float spineYaw) {
+        if (baritone == null) return;
+        var ioh = baritone.getInputOverrideHandler();
+        float diff = Mth.wrapDegrees(spineYaw - serverYaw);
+
+        if (Math.abs(diff) <= 70.0f) {
+            ioh.setInputForceState(Input.MOVE_FORWARD, true);
+            ioh.setInputForceState(Input.MOVE_BACK, false);
+            ioh.setInputForceState(Input.SPRINT, true);
+
+            if (diff > 18.0f) {
+                ioh.setInputForceState(Input.MOVE_RIGHT, true);
+                ioh.setInputForceState(Input.MOVE_LEFT, false);
+            } else if (diff < -18.0f) {
+                ioh.setInputForceState(Input.MOVE_LEFT, true);
+                ioh.setInputForceState(Input.MOVE_RIGHT, false);
+            } else {
+                ioh.setInputForceState(Input.MOVE_LEFT, false);
+                ioh.setInputForceState(Input.MOVE_RIGHT, false);
+            }
+        } else {
+            // Poza stożkiem 70° użyj pełnej kwantyzacji 8-kierunkowej
+            applyQuantizedMovementInputs(baritone, serverYaw, spineYaw);
+        }
+    }
+
+    /**
      * Sondowanie dwóch narożników AABB (lewa/prawa czujka) w celu wykrycia, która strona zahacza o przeszkodę.
      */
     private int computeCornerEscapeStrafe(LocalPlayer player, double dirX, double dirZ) {

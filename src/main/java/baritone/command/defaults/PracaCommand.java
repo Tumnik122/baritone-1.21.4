@@ -62,8 +62,8 @@ public class PracaCommand extends Command {
                 logDirect("  §fTryb #praca: " + (pracaMode ? "§aWŁĄCZONY" : "§7WYŁĄCZONY"));
                 logDirect(String.format("  §fDojrzałe rośliny w r=100: §e%d szt. §7(próg: §e%d§7)", harvestable, threshold));
                 logDirect(String.format("  §fItemy na ziemi do zebrania: §e%d szt.", drops));
-                logDirect(String.format("  §fNasiona w EQ: §e%d szt. §7(skupienie na pszenicy: >%d, powrót do nasion: ≤%d)", seeds, highThresh, lowThresh));
-                logDirect("  §fFokus zbierania: " + (wheatPriority ? "§a[SKUPIENIE NA PSZENICY (>100 nasion)]" : "§e[ZBIERANIE NASION I PSZENICY (≤30 nasion)]"));
+                logDirect(String.format("  §fNasiona w EQ: §e%d szt. §7(skupienie na pszenicy: gdy >0 nasion; zbiór nasion i pszenicy: gdy 0 nasion)", seeds));
+                logDirect("  §fFokus zbierania: " + (wheatPriority ? "§a[SKUPIENIE NA PSZENICY (nasiona > 0 - nasiona na ziemi ignorowane)]" : "§e[AWARYJNY ZBIÓR NASION I PSZENICY (0 nasion w EQ)]"));
                 logDirect(String.format("  §fBieżący priorytet: %s",
                         (harvestable < threshold && drops > 0) ? "§6[ZBIERANIE Z ZIEMI]" : "§a[NORMALNY ZBIÓR PLONÓW]"));
                 logDirect("  §7(#praca stop | #praca status)");
@@ -84,21 +84,32 @@ public class PracaCommand extends Command {
         Baritone.settings().antiCheatCompatibility.value = true;
         Baritone.settings().grimSafeReach.value = 3.0;
 
+        int range = 0; // Domyślnie 0 = całe pole bez ograniczenia zasięgu (jak w #farm)
+        if (args.hasAny()) {
+            try {
+                range = Integer.parseInt(args.getString());
+            } catch (Exception ignored) {
+            }
+        }
+
         // Aktywuj tryb #praca w FarmProcess
-        HomeProcess.setSavedMiningCommand("praca");
+        HomeProcess.setSavedMiningCommand("praca" + (range > 0 ? (" " + range) : ""));
 
-        // Uruchom farm z zasięgiem 100 bloków (promień dla skanowania #praca)
-        BlockPos center = baritone.getPlayerContext().playerFeet();
-        baritone.getFarmProcess().farmPraca(100, center);
+        // Uruchom farm z dynamicznym zasięgiem (0 = cała farma)
+        BlockPos center = (range > 0 && ctx.player() != null) ? baritone.getPlayerContext().playerFeet() : null;
+        baritone.getFarmProcess().farmPraca(range, center);
 
-        logDirect("§a[Praca] Uruchamiam zoptymalizowany DO MAKA tryb pracy na farmie!");
-        logDirect("§7  • Cel: §aTylko dojrzała pszenica §7(blokada niszczenia bruku/struktur: §aAKTYWNA§7)");
-        logDirect("§7  • Sadzenie: §aBłyskawiczne i gwarantowane 100% replantów §7(brak pomijania grządek!)");
-        logDirect("§7  • Zbiór: §aCelowanie w dół w nasadę plonu §7(idealne przejście w zasiew bez szarpania kamery)");
-        logDirect("§7  • Zasięg skanowania: §f100 bloków §7| Płynny bieg wzdłuż alei (lane traversal, brak nawrotów 180°)");
-        logDirect("§7  • Gdy nasion > §f100§7: priorytet §apszenicy§7 (mniej biegania za nasionami, aż do spadku do §f30§7)");
-        logDirect("§7  • Jeśli plonów < §f200§7: priorytet §azbierania z ziemi§7 (przechodzenie przez itemy)");
-        logDirect("§7  • Jeśli plonów ≥ §f200§7: szybki zbiór i replant pszenicy w rzędach");
+        logDirect(String.format("§a[Praca] Uruchamiam zoptymalizowany DO MAKA tryb pracy na farmie (Argon 4 Engine)%s!",
+                range > 0 ? (" w zasięgu " + range + " bloków") : " (cała dostępna farma bez limitu zasięgu)"));
+        logDirect("§7  • Mózg nawigacji: §aBoustrophedon Serpentine Spine (korytarz 3.5m, 4 rzędy/przelot, 0 zatrzymań!)");
+        logDirect("§7  • Rotacja: §aUltra-Fast 1-Tick GCD Snap §7(100% legalności GrimAC, brak flag BadSensitivity/AimInvalid)");
+        logDirect("§7  • Celowanie: §aLookahead Pre-Aiming (1.5-6.5m) §7(celownik z wyprzedzeniem trafia w kłos w ticku 0)");
+        logDirect("§7  • Sadzenie: §a1-Tick Shared-Ray Replant §7(brak przestojów, idealne trafienie w Farmland Direction.UP)");
+        logDirect("§7  • Nawroty: §aCatmull-Rom U-Turn Arc §7(płynne 180° z odpychaniem od wody, brak wpadania do kanałów)");
+        logDirect("§7  • Sterowanie: §aDecoupled Sprint WASD (5.61 m/s) §7(bieg w przód niezależny od obrotów głowy)");
+        logDirect("§7  • Priorytet pszenicy: §agdy nasiona > 0, bot w 100% kosi pszenicę (nasiona na ziemi są ignorowane)§7");
+        logDirect("§7  • Zbiór nasion i pszenicy: §ctylko awaryjnie gdy 0 nasion w EQ§7 (zbiera nasiona i pszenicę aby siać)");
+        logDirect("§7  • Oś Boustrophedon: §awprost w kłosy dojrzałej pszenicy §7(replant w 1 tick w pełnym biegu)");
         logDirect("§7  (zatrzymaj: §f#praca stop§7)");
     }
 

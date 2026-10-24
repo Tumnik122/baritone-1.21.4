@@ -96,22 +96,37 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
     // Motion trail record
     public record TrailNode(Vec3 pos, float height, long timestamp) {}
 
-    // Jump circles & dynamic shockwave sparks
+    // Jump circles & dynamic shockwave sparks (Newtonian Drag & Vortex Physics)
     public static class SparkParticle {
         public final float angle;
         public final float speed;
         public float y;
         public float vy;
+        public final float initialVy;
         public final float size;
         public final int color;
+        public final float spinOmega;
+        public final float drag;
+        public final float bounceDamping;
+        public final float lifetimeSec;
 
-        public SparkParticle(float angle, float speed, float vy, float size, int color) {
+        public SparkParticle(float angle, float speed, float vy, float size, int color,
+                             float spinOmega, float drag, float bounceDamping, float lifetimeSec) {
             this.angle = angle;
             this.speed = speed;
             this.y = 0.02F;
             this.vy = vy;
+            this.initialVy = vy;
             this.size = size;
             this.color = color;
+            this.spinOmega = spinOmega;
+            this.drag = drag;
+            this.bounceDamping = bounceDamping;
+            this.lifetimeSec = lifetimeSec;
+        }
+
+        public SparkParticle(float angle, float speed, float vy, float size, int color) {
+            this(angle, speed, vy, size, color, 2.0F, 1.4F, 0.48F, 1.2F);
         }
     }
 
@@ -343,15 +358,45 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
             // Pass 6: God-Tier 3D Combat Impact Waves & Dispersion Rings (Zero-Alloc)
             AstraGodTierVisuals.renderActiveShockwaves(poseStack, camPos);
 
-            // Pass 7: Volumetric Cyber-Beacon & Double-Helix DNA Beacon for Path Goal
+            // Pass 7: Volumetric Cyber-Beacon & Double-Helix DNA Beacon for Path Goal (All goal types)
             if (baritone != null && baritone.getPathingBehavior() != null && baritone.getPathingBehavior().getGoal() != null) {
                 var goal = baritone.getPathingBehavior().getGoal();
+                BlockPos targetGoalPos = null;
                 if (goal instanceof baritone.api.pathing.goals.GoalBlock gb) {
-                    float timeSec = (System.currentTimeMillis() % 100000L) / 1000.0F;
-                    AstraGodTierVisuals.renderVolumetricCyberBeacon(poseStack, camPos, gb.x + 0.5, gb.y, gb.z + 0.5, COLOR_CYAN, COLOR_LILAC, timeSec);
+                    targetGoalPos = gb.getGoalPos();
+                } else if (goal instanceof baritone.api.pathing.goals.GoalNear gn) {
+                    targetGoalPos = gn.getGoalPos();
+                } else if (goal instanceof baritone.api.pathing.goals.GoalGetToBlock gtb) {
+                    targetGoalPos = gtb.getGoalPos();
                 } else if (goal instanceof baritone.api.pathing.goals.GoalXZ gxz) {
+                    targetGoalPos = new BlockPos(gxz.getX(), player.getBlockY(), gxz.getZ());
+                } else if (goal instanceof baritone.api.pathing.goals.GoalComposite gc) {
+                    for (var g : gc.goals()) {
+                        if (g instanceof baritone.api.pathing.goals.GoalBlock gb2) {
+                            targetGoalPos = gb2.getGoalPos();
+                            break;
+                        } else if (g instanceof baritone.api.pathing.goals.GoalNear gn2) {
+                            targetGoalPos = gn2.getGoalPos();
+                            break;
+                        }
+                    }
+                }
+                if (targetGoalPos != null) {
                     float timeSec = (System.currentTimeMillis() % 100000L) / 1000.0F;
-                    AstraGodTierVisuals.renderVolumetricCyberBeacon(poseStack, camPos, gxz.getX() + 0.5, player.getY(), gxz.getZ() + 0.5, COLOR_CYAN, COLOR_LILAC, timeSec);
+                    AstraGodTierVisuals.renderVolumetricCyberBeacon(poseStack, camPos,
+                            targetGoalPos.getX() + 0.5, targetGoalPos.getY(), targetGoalPos.getZ() + 0.5,
+                            COLOR_CYAN, COLOR_LILAC, timeSec);
+                }
+            }
+
+            // Pass 8: God-Tier 3D Catmull-Rom Spline Path Ribbon with Animated Chevrons (> > >)
+            if (baritone != null && baritone.getPathingBehavior() != null && baritone.getPathingBehavior().hasPath()) {
+                var current = baritone.getPathingBehavior().getCurrent();
+                if (current != null && current.getPath() != null) {
+                    var positions = current.getPath().positions();
+                    if (positions != null && positions.size() >= 2) {
+                        AstraGodTierVisuals.renderPathCatmullRomRibbonWithChevrons(poseStack, camPos, positions, current.getPosition());
+                    }
                 }
             }
         }
@@ -1078,8 +1123,8 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
         Vec3 groundPos = snapToGround(Minecraft.getInstance(), worldPos);
 
         float baseRadius = Baritone.settings() != null ? Baritone.settings().jumpCirclesRadius.value.floatValue() : jumpCirclesRadius;
-        float maxRadius = isLanding ? Math.min(4.4F, baseRadius * (1.0F + Math.min(1.2F, fallDistance * 0.25F))) : baseRadius;
-        float duration = isLanding ? 1350.0F : 1100.0F;
+        float maxRadius = isLanding ? Math.min(4.8F, baseRadius * (1.0F + Math.min(1.4F, fallDistance * 0.28F))) : baseRadius;
+        float duration = isLanding ? Math.min(1600.0F, 1250.0F + fallDistance * 55.0F) : 1050.0F;
 
         int primColor, secColor;
         switch (mode) {
@@ -1116,17 +1161,23 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
         List<SparkParticle> sparks = new ArrayList<>();
         boolean enableSparks = Baritone.settings() != null ? Baritone.settings().jumpCirclesSparks.value : jumpCirclesSparks;
         if (enableSparks) {
-            int sparkCount = isLanding ? 18 : 12;
+            int sparkCount = isLanding ? Math.min(32, 18 + (int) (fallDistance * 3.0F)) : 16;
             for (int i = 0; i < sparkCount; i++) {
-                float angle = (float) (i * Math.PI * 2.0D / sparkCount) + (float) ((Math.random() - 0.5D) * 0.35D);
-                float speed = 0.85F + (float) (Math.random() * 0.30D);
-                float vy = isLanding ? (0.65F + (float) (Math.random() * 0.65D)) : (0.45F + (float) (Math.random() * 0.45D));
-                float size = isLanding ? 0.045F : 0.035F;
+                float angle = (float) (i * Math.PI * 2.0D / sparkCount) + (float) ((Math.random() - 0.5D) * 0.40D);
+                float speed = 0.85F + (float) (Math.random() * 0.45D);
+                float vy = isLanding ? (0.75F + (float) (Math.random() * 0.75D) + Math.min(0.55F, fallDistance * 0.14F))
+                                     : (0.48F + (float) (Math.random() * 0.48D));
+                float size = isLanding ? (0.042F + (float) (Math.random() * 0.020F)) : (0.032F + (float) (Math.random() * 0.015F));
+                float spinOmega = (float) ((Math.random() > 0.5D ? 1.0D : -1.0D) * (1.8D + Math.random() * 2.4D));
+                float drag = 1.25F + (float) (Math.random() * 0.65D);
+                float bounceDamping = 0.48F + (float) (Math.random() * 0.12D);
+                float lifetimeSec = (duration / 1000.0F) * (0.80F + (float) (Math.random() * 0.20F));
+
                 int sparkCol = (i % 2 == 0) ? primColor : secColor;
                 if (mode == 1) {
                     sparkCol = Mth.hsvToRgb((float) i / sparkCount, 0.9F, 1.0F) | 0xFF000000;
                 }
-                sparks.add(new SparkParticle(angle, speed, vy, size, sparkCol));
+                sparks.add(new SparkParticle(angle, speed, vy, size, sparkCol, spinOmega, drag, bounceDamping, lifetimeSec));
             }
         }
 
@@ -1153,8 +1204,8 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
             float currentRadius = circle.maxRadius * easeOut;
 
             // Dynamic thickness tapering (shockwave dissipation)
-            float baseThickness = (circle.isLanding ? 0.28F : 0.20F) * (1.0F - progress * 0.72F);
-            float alphaCurve = (float) Math.pow(1.0F - progress, 1.8D);
+            float baseThickness = (circle.isLanding ? 0.30F : 0.22F) * (1.0F - progress * 0.70F);
+            float alphaCurve = (float) Math.pow(1.0F - progress, 1.75D);
             int baseAlpha = (int) (alphaCurve * 255.0F);
             if (baseAlpha <= 2) {
                 continue;
@@ -1166,32 +1217,61 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
 
             boolean isChroma = circle.mode == 1;
 
-            // 1. Warstwa rozbłysku podłoża (Radial ground bloom disk)
-            int diskAlpha = (int) (baseAlpha * 0.22F);
+            // Additive bloom blend for laser shockwave intensity
+            RenderSystem.blendFuncSeparate(
+                    GlStateManager.SourceFactor.SRC_ALPHA,
+                    GlStateManager.DestFactor.ONE,
+                    GlStateManager.SourceFactor.ONE,
+                    GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA
+            );
+
+            // 1. Sub-Surface Ground Acoustic Resonance (Radial ground bloom disk)
+            int diskAlpha = (int) (baseAlpha * 0.24F);
             if (diskAlpha > 1) {
-                drawRadialDisk(mat, 0.0F, 0.002F, 0.0F, currentRadius * 0.88F, 36, circle.primaryColor, diskAlpha, 0);
+                drawRadialDisk(mat, 0.0F, 0.002F, 0.0F, currentRadius * 0.94F, 40, circle.primaryColor, diskAlpha, 0);
             }
 
-            // 2. Główny pierścień uderzeniowy (Double-feathered glowing shockwave)
-            drawFeatheredShockwave(mat, 0.004F, currentRadius, baseThickness, 52, circle.primaryColor, circle.secondaryColor, baseAlpha, isChroma, time * 0.7F);
-
-            // 3. Centralna neonowa żyła / laser core (Crisp glowing filament)
-            int coreColor = isChroma ? (Mth.hsvToRgb((time * 0.7F) % 1.0F, 0.6F, 1.0F) | 0xFF000000) : 0xFFFFFFFF;
-            drawRing(mat, 0.006F, currentRadius, 0.026F, 52, coreColor, (int) (baseAlpha * 0.85F));
-
-            // 4. Wtórna fala echa (Secondary delayed echo ripple po 75ms)
-            if (elapsed > 75.0F) {
-                float echoProgress = (elapsed - 75.0F) / (circle.durationMs - 75.0F);
-                float echoEase = 1.0F - (float) Math.pow(1.0F - echoProgress, 3.0D);
-                float echoRadius = (circle.maxRadius * 0.78F) * echoEase;
-                int echoAlpha = (int) (baseAlpha * 0.58F);
-                drawFeatheredShockwave(mat, 0.005F, echoRadius, baseThickness * 0.65F, 44, circle.secondaryColor, circle.primaryColor, echoAlpha, isChroma, (time * 0.7F) + 0.33F);
+            // 2. Precursor Ionization Rim (Ultra-fast thin barrier ahead of shockwave)
+            float preProgress = Math.min(1.0F, progress * 1.6F);
+            int preAlpha = (int) ((1.0F - preProgress) * (float) Math.exp(-progress * 3.5F) * 220.0F);
+            if (preAlpha > 2) {
+                float preRadius = currentRadius * 1.14F;
+                int preColor = isChroma ? (Mth.hsvToRgb((time * 0.9F) % 1.0F, 0.4F, 1.0F) | 0xFF000000) : 0xFFFFFFFF;
+                drawRing(mat, 0.003F, preRadius, 0.016F, 48, preColor, preAlpha);
             }
 
-            // 5. Unoszące się iskry i drobiny energii z fizyką odbicia (Bouncing Embers)
+            // 3. Primary Double-Feathered Shockwave (Glowing body)
+            drawFeatheredShockwave(mat, 0.005F, currentRadius, baseThickness, 56, circle.primaryColor, circle.secondaryColor, baseAlpha, isChroma, time * 0.75F);
+
+            // 4. Diamond Laser Core Filament (White-hot energy crest)
+            int coreColor = isChroma ? (Mth.hsvToRgb((time * 0.75F) % 1.0F, 0.5F, 1.0F) | 0xFF000000) : 0xFFFFFFFF;
+            drawRing(mat, 0.007F, currentRadius, 0.024F, 56, coreColor, (int) (baseAlpha * 0.92F));
+
+            // 5. Secondary Delayed Echo Ripple (starts after 65ms)
+            if (elapsed > 65.0F) {
+                float echoProgress = (elapsed - 65.0F) / (circle.durationMs - 65.0F);
+                float echoEase = 1.0F - (float) Math.pow(1.0F - echoProgress, 3.2D);
+                float echoRadius = (circle.maxRadius * 0.76F) * echoEase;
+                int echoAlpha = (int) (baseAlpha * 0.62F);
+                drawFeatheredShockwave(mat, 0.006F, echoRadius, baseThickness * 0.60F, 48, circle.secondaryColor, circle.primaryColor, echoAlpha, isChroma, (time * 0.75F) + 0.35F);
+            }
+
+            // 6. Tertiary Cavitation Micro-Ripple for heavy landings
+            if (circle.isLanding && elapsed > 130.0F) {
+                float cavProgress = (elapsed - 130.0F) / (circle.durationMs - 130.0F);
+                float cavEase = 1.0F - (float) Math.pow(1.0F - cavProgress, 2.5D);
+                float cavRadius = (circle.maxRadius * 0.52F) * cavEase;
+                int cavAlpha = (int) (baseAlpha * 0.40F);
+                drawRing(mat, 0.004F, cavRadius, 0.020F, 40, circle.primaryColor, cavAlpha);
+            }
+
+            // 7. Aerodynamic Motion Streak Sparks with Ground Restitution Physics
             if (circle.sparks != null && !circle.sparks.isEmpty()) {
                 renderSparks(mat, circle, currentRadius, progress, elapsed / 1000.0F);
             }
+
+            // Restore default blending
+            RenderSystem.defaultBlendFunc();
 
             poseStack.popPose();
         }
@@ -1262,36 +1342,98 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
         }
     }
 
+    private static float computeBouncingHeight(SparkParticle sp, float t) {
+        float g = 8.6F;
+        float ground = 0.02F;
+        float v0 = sp.initialVy;
+        float t1 = (2.0F * v0) / g;
+        if (t <= t1) {
+            return ground + Math.max(0.0F, v0 * t - 0.5F * g * t * t);
+        }
+        float v1 = v0 * sp.bounceDamping;
+        float t2 = t1 + (2.0F * v1) / g;
+        if (t <= t2) {
+            float dt1 = t - t1;
+            return ground + Math.max(0.0F, v1 * dt1 - 0.5F * g * dt1 * dt1);
+        }
+        float v2 = v1 * sp.bounceDamping;
+        float dt2 = t - t2;
+        return ground + Math.max(0.0F, v2 * dt2 - 0.5F * g * dt2 * dt2);
+    }
+
     private static void renderSparks(Matrix4f mat, JumpCircleInstance circle, float currentRadius, float progress, float elapsedSec) {
-        float sparkAlpha = Math.max(0.0F, 1.0F - progress * 1.15F) * (circle.isLanding ? 245.0F : 210.0F);
+        float sparkAlpha = Math.max(0.0F, 1.0F - progress * 1.10F) * (circle.isLanding ? 255.0F : 225.0F);
         int sa = (int) sparkAlpha;
         if (sa <= 3) return;
 
         BufferBuilder buf = Tesselator.getInstance().begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_COLOR);
-        for (SparkParticle sp : circle.sparks) {
-            // Fizyka: opór powietrza + grawitacja z odbiciem (Restitution e = 0.45)
-            float t = elapsedSec;
-            float dist = (sp.speed * currentRadius) * (1.0F - 0.12F * t);
-            float sx = Mth.cos(sp.angle) * dist;
-            float sz = Mth.sin(sp.angle) * dist;
+        float t = elapsedSec;
+        float dt = 0.022F;
+        float tPrev = Math.max(0.0F, t - dt);
 
-            // Parabola z odbiciem od ziemi
-            float curY = Math.max(0.015F, sp.y + (sp.vy * t - 0.5F * 7.5F * t * t));
-            if (curY <= 0.02F && t > 0.15F) {
-                float bounceTime = t - 0.15F;
-                curY = 0.02F + Math.max(0.0F, (sp.vy * 0.45F * bounceTime - 0.5F * 7.5F * bounceTime * bounceTime));
+        for (SparkParticle sp : circle.sparks) {
+            if (t > sp.lifetimeSec) {
+                continue;
             }
 
-            float s = sp.size * (1.0F - progress * 0.40F);
+            // 1. Current position at time t with vortex angular rotation & aerodynamic drag
+            float angle = sp.angle + (sp.spinOmega * t) / (1.0F + 0.45F * t);
+            float dragMod = (float) Math.exp(-sp.drag * t * 0.55F);
+            float dist = (sp.speed * currentRadius) * dragMod;
+            float sx = Mth.cos(angle) * dist;
+            float sz = Mth.sin(angle) * dist;
+            float curY = computeBouncingHeight(sp, t);
+
+            // 2. Previous position at t - dt for motion streak vector
+            float anglePrev = sp.angle + (sp.spinOmega * tPrev) / (1.0F + 0.45F * tPrev);
+            float dragModPrev = (float) Math.exp(-sp.drag * tPrev * 0.55F);
+            float progressFactor = (t > 0.001F) ? (float) Math.pow(tPrev / t, 0.85D) : 0.0F;
+            float distPrev = (sp.speed * currentRadius * progressFactor) * dragModPrev;
+            float sxPrev = Mth.cos(anglePrev) * distPrev;
+            float szPrev = Mth.sin(anglePrev) * distPrev;
+            float curYPrev = computeBouncingHeight(sp, tPrev);
+
+            // 3. Velocity tangent vector
+            float vx = sx - sxPrev;
+            float vy = curY - curYPrev;
+            float vz = sz - szPrev;
+            float vMag = (float) Math.sqrt(vx * vx + vy * vy + vz * vz);
+
             int sc = sp.color;
             int sr = (sc >> 16) & 0xFF, sg = (sc >> 8) & 0xFF, sb = sc & 0xFF;
+            float pSize = sp.size * (1.0F - progress * 0.45F);
 
-            // Diamentowa cząsteczka 3D
-            buf.addVertex(mat, sx - s, curY, sz).setColor(sr, sg, sb, sa);
-            buf.addVertex(mat, sx, curY + s * 1.5F, sz).setColor(255, 255, 255, sa);
-            buf.addVertex(mat, sx + s, curY, sz).setColor(sr, sg, sb, sa);
-            buf.addVertex(mat, sx, curY - s * 0.5F, sz).setColor(sr, sg, sb, sa);
+            if (vMag >= 0.001F) {
+                // Directional Motion Streak Ribbon
+                float invMag = 1.0F / vMag;
+                float dirX = vx * invMag;
+                float dirY = vy * invMag;
+                float dirZ = vz * invMag;
+
+                float streakLen = Math.min(0.24F, vMag * 2.2F + pSize * 0.8F);
+                float tailX = sx - dirX * streakLen;
+                float tailY = curY - dirY * streakLen;
+                float tailZ = sz - dirZ * streakLen;
+
+                float halfW = pSize * 0.55F;
+                float sideX = -dirZ * halfW;
+                float sideZ = dirX * halfW;
+
+                // Motion ribbon: Tail (faded, saturated) -> Head (intense, white-hot)
+                buf.addVertex(mat, tailX + sideX, tailY, tailZ + sideZ).setColor(sr, sg, sb, 0);
+                buf.addVertex(mat, tailX - sideX, tailY, tailZ - sideZ).setColor(sr, sg, sb, 0);
+                buf.addVertex(mat, sx - sideX, curY, sz - sideZ).setColor(255, 255, 255, sa);
+                buf.addVertex(mat, sx + sideX, curY, sz + sideZ).setColor(255, 255, 255, sa);
+            }
+
+            // Volumetric diamond core at particle head
+            float ds = pSize * 0.75F;
+            buf.addVertex(mat, sx - ds, curY, sz).setColor(sr, sg, sb, sa);
+            buf.addVertex(mat, sx, curY + ds * 1.4F, sz).setColor(255, 255, 255, sa);
+            buf.addVertex(mat, sx + ds, curY, sz).setColor(sr, sg, sb, sa);
+            buf.addVertex(mat, sx, curY - ds * 0.5F, sz).setColor(sr, sg, sb, sa);
         }
+
         MeshData mesh = buf.build();
         if (mesh != null) {
             BufferUploader.drawWithShader(mesh);

@@ -17,13 +17,11 @@ public final class AstraGlStateGuard implements AutoCloseable {
     private final boolean prevCull;
     private final boolean prevDepthTest;
     private final boolean prevBlend;
-    private final int prevDepthFunc;
 
     public AstraGlStateGuard(boolean additive, boolean writeDepth, boolean depthTest) {
         this.prevCull = GL11.glIsEnabled(GL11.GL_CULL_FACE);
         this.prevDepthTest = GL11.glIsEnabled(GL11.GL_DEPTH_TEST);
         this.prevBlend = GL11.glIsEnabled(GL11.GL_BLEND);
-        this.prevDepthFunc = GL11.glGetInteger(GL11.GL_DEPTH_FUNC);
 
         RenderSystem.enableBlend();
         if (additive) {
@@ -60,7 +58,7 @@ public final class AstraGlStateGuard implements AutoCloseable {
         } else {
             RenderSystem.disableDepthTest();
         }
-        RenderSystem.depthFunc(this.prevDepthFunc);
+        RenderSystem.depthFunc(GL11.GL_LEQUAL);
 
         if (this.prevCull) {
             RenderSystem.enableCull();

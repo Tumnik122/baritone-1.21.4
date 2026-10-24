@@ -73,9 +73,11 @@ public final class BotOptimizer {
             int botNum = getBotNumber();
 
             if (botNum > 1) {
-                // Tylko dla botów w tle (Bot 2+)
-                opts.renderDistance().set(2);
-                opts.simulationDistance().set(2);
+                // Dla botów w tle (Bot 2+) - minimum 6 chunków (96 bloków zasięgu),
+                // aby ścieżki A* w #praca / #farm nie uderzały w krawędź załadowanych chunków
+                int targetChunks = Math.max(6, opts.renderDistance().get());
+                opts.renderDistance().set(targetChunks);
+                opts.simulationDistance().set(targetChunks);
                 opts.framerateLimit().set(30);
                 opts.graphicsMode().set(GraphicsStatus.FAST);
                 opts.ambientOcclusion().set(false);

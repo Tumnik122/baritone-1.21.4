@@ -313,7 +313,11 @@ function Prepare-BotDirectory([int]$num) {
         try {
             $optContent = Get-Content $optFile -Raw
             # pauseOnLostFocus:false dla KAŻDEGO bota (nie pauzuje gry gdy gracz klika inne okno!)
-            $optContent = $optContent -replace 'pauseOnLostFocus:true', 'pauseOnLostFocus:false'
+            if ($optContent -notmatch 'pauseOnLostFocus:') {
+                $optContent += "`npauseOnLostFocus:false`n"
+            } else {
+                $optContent = $optContent -replace 'pauseOnLostFocus:true', 'pauseOnLostFocus:false'
+            }
             $optContent = $optContent -replace 'fullscreen:true', 'fullscreen:false'
 
             if ($num -eq 1) {
@@ -327,10 +331,10 @@ function Prepare-BotDirectory([int]$num) {
                 $optContent = $optContent -replace 'renderDistance:\d+', 'renderDistance:6'
                 $optContent = $optContent -replace 'simulationDistance:\d+', 'simulationDistance:6'
             } else {
-                # Boty w tle (3+) - minimalne zużycie zasobów
-                $optContent = $optContent -replace 'renderDistance:\d+', 'renderDistance:2'
-                $optContent = $optContent -replace 'simulationDistance:\d+', 'simulationDistance:2'
-                $optContent = $optContent -replace 'maxFps:\d+', 'maxFps:20'
+                # Boty w tle (3+) - 6 chunków (96m) bez uderzania w krawędź chunków w pathingu A*
+                $optContent = $optContent -replace 'renderDistance:\d+', 'renderDistance:6'
+                $optContent = $optContent -replace 'simulationDistance:\d+', 'simulationDistance:6'
+                $optContent = $optContent -replace 'maxFps:\d+', 'maxFps:30'
                 $optContent = $optContent -replace 'entityShadows:true', 'entityShadows:false'
                 $optContent = $optContent -replace 'ao:true', 'ao:false'
                 $optContent = $optContent -replace 'graphicsMode:\d+', 'graphicsMode:0'

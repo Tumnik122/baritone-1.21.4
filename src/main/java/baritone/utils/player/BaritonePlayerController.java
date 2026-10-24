@@ -177,13 +177,14 @@ public final class BaritonePlayerController implements IPlayerController {
 
         IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(player);
 
-        // 1. GRIMAC PRIMARY: serverRotation — raycast z perspektywy serwera (z poprzedniego pakietu Rot)
+        // 1. GRIMAC PRIMARY: effectiveRotation — raycast z perspektywy rotacji bieżącego ticku (zsynchronizowany obrót)
         if (baritone != null) {
-            Rotation serverRot = baritone.getLookBehavior().getServerRotation();
-            if (serverRot != null) {
-                HitResult serverHit = RayTraceUtils.rayTraceTowards(player, serverRot, reach, player.isCrouching());
+            Rotation effectiveRot = baritone.getLookBehavior().getEffectiveRotation()
+                    .orElseGet(() -> baritone.getLookBehavior().getServerRotation());
+            if (effectiveRot != null) {
+                HitResult serverHit = RayTraceUtils.rayTraceTowards(player, effectiveRot, reach, player.isCrouching());
                 if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(targetPos)) {
-                    // ✅ serverRotation trafia bezpośrednio w docelowy blok — używamy prawdziwego wektora i Direction
+                    // ✅ effectiveRotation trafia bezpośrednio w docelowy blok — używamy prawdziwego wektora i Direction
                     candidateHit = sbhr;
                 }
                 if (candidateHit == null && isGrim) {
@@ -277,16 +278,17 @@ public final class BaritonePlayerController implements IPlayerController {
         // GrimAC Protection: RotationBreak & PositionBreakA
         IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(mc.player);
         if (baritone != null && isGrim) {
-            Rotation serverRot = baritone.getLookBehavior().getServerRotation();
-            if (serverRot == null) {
+            Rotation effectiveRot = baritone.getLookBehavior().getEffectiveRotation()
+                    .orElseGet(() -> baritone.getLookBehavior().getServerRotation());
+            if (effectiveRot == null) {
                 return false;
             }
             double reach = Math.min(3.0D, Math.min(Baritone.settings().grimSafeReach.value, getBlockReachDistance()));
-            HitResult serverHit = RayTraceUtils.rayTraceTowards(mc.player, serverRot, reach, mc.player.isCrouching());
+            HitResult serverHit = RayTraceUtils.rayTraceTowards(mc.player, effectiveRot, reach, mc.player.isCrouching());
             if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(loc)) {
                 face = sbhr.getDirection();
             } else {
-                // serverRotation nie przecina jeszcze bloku na serwerze! Czekamy aż rotacja zostanie zsynchronizowana.
+                // effectiveRotation nie przecina jeszcze bloku na serwerze! Czekamy aż rotacja zostanie zsynchronizowana.
                 return false;
             }
         }

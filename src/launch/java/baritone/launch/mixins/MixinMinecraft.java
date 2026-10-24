@@ -124,11 +124,15 @@ public abstract class MixinMinecraft {
         astra$pollSchematicHotkey(self);
 
         // (1) Tryb tła przez NATYWNE ustawienie (zawsze wykonane):
-        if ((Baritone.settings().noPauseWhenPathing.value || Baritone.settings().runBackgroundWhenUnfocused.value)
-                && Baritone.isPrimaryActive()) {
+        boolean isSecondaryBot = AstraPerformanceConfig.getBotNum() > 1;
+        if (isSecondaryBot || ((Baritone.settings().noPauseWhenPathing.value || Baritone.settings().runBackgroundWhenUnfocused.value)
+                && Baritone.isPrimaryActive())) {
             if (this.baritone$savedPauseOnLostFocus == null) {
                 this.baritone$savedPauseOnLostFocus = this.options.pauseOnLostFocus;
-                this.options.pauseOnLostFocus = false; // = F3+P „Pause on lost focus: OFF"
+            }
+            this.options.pauseOnLostFocus = false; // = F3+P „Pause on lost focus: OFF"
+            if (isSecondaryBot && this.screen instanceof net.minecraft.client.gui.screens.PauseScreen) {
+                self.setScreen(null); // Bot w tle nie może być zablokowany przez PauseScreen
             }
         } else if (this.baritone$savedPauseOnLostFocus != null) {
             // Restore oryginalnej wartości po zakończeniu pracy bota
@@ -167,8 +171,8 @@ public abstract class MixinMinecraft {
     // (w multiplayerze isPaused() i tak jest false; działa tylko w SP)
     @Inject(method = "isPaused", at = @At("HEAD"), cancellable = true, require = 0)
     private void baritone$forceNotPaused(CallbackInfoReturnable<Boolean> cir) {
-        if ((Baritone.settings().noPauseWhenPathing.value || Baritone.settings().runBackgroundWhenUnfocused.value)
-                && Baritone.isPrimaryActive()) {
+        if (AstraPerformanceConfig.getBotNum() > 1 || ((Baritone.settings().noPauseWhenPathing.value || Baritone.settings().runBackgroundWhenUnfocused.value)
+                && Baritone.isPrimaryActive())) {
             cir.setReturnValue(false);
         }
     }

@@ -40,6 +40,12 @@ public class PlayerMovementInput extends ClientInput {
 
         // (2) Screen otwarty lub czyszczenie ekwipunku AutoDrop: zawsze zero input (GrimAC MultiActions safe)
         boolean screenOpen = Minecraft.getInstance().screen != null;
+        if (screenOpen && Minecraft.getInstance().screen instanceof net.minecraft.client.gui.screens.PauseScreen) {
+            if (com.astra.revolution.perf.AstraPerformanceConfig.getBotNum() > 1 || Baritone.isPrimaryActive()) {
+                Minecraft.getInstance().setScreen(null);
+                screenOpen = false;
+            }
+        }
         boolean isContainerScreen = screenOpen && Minecraft.getInstance().screen instanceof net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
         boolean strictAntiCheat = Baritone.settings().antiCheatCompat.value || Baritone.settings().antiCheatCompatibility.value;
         boolean autoDropCleaning = handler != null && handler.baritone != null
@@ -56,7 +62,14 @@ public class PlayerMovementInput extends ClientInput {
                 && handler.baritone.getInventoryBehavior().swapController != null
                 && handler.baritone.getInventoryBehavior().swapController.isBusy();
 
-        if (chatSuppressed || autoDropCleaning || homeTeleporting || autoEatSuppress || safeInventorySwapping || (screenOpen && (!Baritone.settings().inputWhileScreenOpen.value || (strictAntiCheat && isContainerScreen)))) {
+        boolean isSecondaryBot = com.astra.revolution.perf.AstraPerformanceConfig.getBotNum() > 1;
+        boolean shouldBlockScreen = screenOpen && (!Baritone.settings().inputWhileScreenOpen.value || (strictAntiCheat && isContainerScreen));
+        if (isSecondaryBot && !isContainerScreen) {
+            // Drugi bot i kolejne boty pracujące w tle nie mogą być blokowane przez ekrany informacyjne lub czat
+            shouldBlockScreen = false;
+        }
+
+        if (chatSuppressed || autoDropCleaning || homeTeleporting || autoEatSuppress || safeInventorySwapping || shouldBlockScreen) {
             this.keyPresses = new net.minecraft.world.entity.player.Input(
                     false, false, false, false, false, false, false);
             this.forwardImpulse = 0.0F;
@@ -64,15 +77,25 @@ public class PlayerMovementInput extends ClientInput {
             return;
         }
 
+        net.minecraft.client.Options opts = Minecraft.getInstance().options;
+        boolean keyUp    = opts != null && opts.keyUp.isDown();
+        boolean keyDown  = opts != null && opts.keyDown.isDown();
+        boolean keyLeft  = opts != null && opts.keyLeft.isDown();
+        boolean rightKey = opts != null && opts.keyRight.isDown();
+        boolean jumpKey  = opts != null && opts.keyJump.isDown();
+        boolean sneakKey = opts != null && opts.keyShift.isDown();
+        boolean sprintKey = opts != null && opts.keySprint.isDown();
+
         // (3) JEDYNY zapis inputu w ticku — kolejność vanilla:
         //     input.tick() → aiStep/fizyka → sendInput → pakiety
-        boolean forward  = handler.isInputForcedDown(Input.MOVE_FORWARD);
-        boolean backward = handler.isInputForcedDown(Input.MOVE_BACK);
-        boolean left     = handler.isInputForcedDown(Input.MOVE_LEFT);
-        boolean right    = handler.isInputForcedDown(Input.MOVE_RIGHT);
-        boolean jump     = handler.isInputForcedDown(Input.JUMP);
-        boolean sneak    = handler.isInputForcedDown(Input.SNEAK);
-        boolean rawSprint = handler.isInputForcedDown(Input.SPRINT);
+        //     Łączymy stan wymuszony przez Baritone z fizycznymi klawiszami gracza
+        boolean forward   = (handler != null && handler.isInputForcedDown(Input.MOVE_FORWARD)) || keyUp;
+        boolean backward  = (handler != null && handler.isInputForcedDown(Input.MOVE_BACK)) || keyDown;
+        boolean left      = (handler != null && handler.isInputForcedDown(Input.MOVE_LEFT)) || keyLeft;
+        boolean right     = (handler != null && handler.isInputForcedDown(Input.MOVE_RIGHT)) || rightKey;
+        boolean jump      = (handler != null && handler.isInputForcedDown(Input.JUMP)) || jumpKey;
+        boolean sneak     = (handler != null && handler.isInputForcedDown(Input.SNEAK)) || sneakKey;
+        boolean rawSprint = (handler != null && handler.isInputForcedDown(Input.SPRINT)) || sprintKey;
 
         boolean isBreaking = handler != null && handler.isInputForcedDown(Input.CLICK_LEFT);
 
@@ -83,7 +106,10 @@ public class PlayerMovementInput extends ClientInput {
         boolean canSprintVanilla = forward && !backward && !sneak && !isBreaking;
         boolean sprint = false;
 
-        if (canSprintVanilla && (rawSprint || Baritone.settings().allowSprint.value)) {
+        boolean botMoving = handler != null && (handler.isInputForcedDown(Input.MOVE_FORWARD) || handler.isInputForcedDown(Input.SPRINT));
+        boolean sprintDesired = rawSprint || (player != null && player.isSprinting()) || (botMoving && Baritone.settings().allowSprint.value);
+
+        if (canSprintVanilla && sprintDesired) {
             if (player != null && player.getFoodData().getFoodLevel() > 6
                     && !player.hasEffect(net.minecraft.world.effect.MobEffects.BLINDNESS)
                     && (!player.horizontalCollision || player.minorHorizontalCollision)) {

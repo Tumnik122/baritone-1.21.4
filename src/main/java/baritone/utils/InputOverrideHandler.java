@@ -114,22 +114,28 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     }
 
     private boolean inControl() {
+        // Boty poboczne w tle: zawsze używają PlayerMovementInput (omija brak fokusu GLFW)
+        if (com.astra.revolution.perf.AstraPerformanceConfig.getBotNum() > 1
+                || baritone != BaritoneAPI.getProvider().getPrimaryBaritone()) {
+            return true;
+        }
+
+        // Główny klient (gracz): przejmuje kontrolę TYLKO, gdy Baritone faktycznie
+        // pathuje lub bezpośrednio wymusza wciśnięcie klawisza ruchu.
         for (Input input : new Input[]{Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT, Input.MOVE_RIGHT, Input.SNEAK, Input.JUMP, Input.SPRINT}) {
             if (isInputForcedDown(input)) {
                 return true;
             }
         }
-        if (baritone.getAutoDropProcess() != null && baritone.getAutoDropProcess().isActive()) {
+
+        if (baritone.getAutoDropProcess() != null && baritone.getAutoDropProcess().isCleaning()) {
             return true;
         }
-        if (baritone.getHomeProcess() != null && baritone.getHomeProcess().isActive()) {
+        if (baritone.getAutoEatProcess() != null && baritone.getAutoEatProcess().isSuppressingMovement()) {
             return true;
         }
-        if (baritone.getAutoEatProcess() != null && baritone.getAutoEatProcess().isActive()) {
-            return true;
-        }
-        // if we are not primary (a bot) we should set the movementinput even when idle (not pathing)
-        return baritone.getPathingBehavior().isPathing() || baritone != BaritoneAPI.getProvider().getPrimaryBaritone();
+
+        return baritone.getPathingBehavior().isPathing();
     }
 
     public BlockBreakHelper getBlockBreakHelper() {

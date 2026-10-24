@@ -44,8 +44,8 @@ public abstract class MixinScreen implements IGuiScreen {
             cancellable = true
     )
     private void baritoneCancelPauseScreen(CallbackInfoReturnable<Boolean> cir) {
-        if ((Baritone.settings().noPauseWhenPathing.value || Baritone.settings().runBackgroundWhenUnfocused.value)
-                && Baritone.isPrimaryActive()) {
+        if (com.astra.revolution.perf.AstraPerformanceConfig.getBotNum() > 1 || ((Baritone.settings().noPauseWhenPathing.value || Baritone.settings().runBackgroundWhenUnfocused.value)
+                && Baritone.isPrimaryActive())) {
             cir.setReturnValue(false);
         }
     }
