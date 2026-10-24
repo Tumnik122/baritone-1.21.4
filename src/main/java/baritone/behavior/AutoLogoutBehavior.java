@@ -67,6 +67,7 @@ public class AutoLogoutBehavior extends Behavior implements Helper {
         }
 
         float health = ctx.player().getHealth();
+        float maxHealth = ctx.player().getMaxHealth();
         if (health <= 0.0f) {
             return;
         }
@@ -75,12 +76,22 @@ public class AutoLogoutBehavior extends Behavior implements Helper {
         if (healthEnabled) {
             double hearts = health / 2.0D;
             double thresholdHearts = Baritone.settings().disconnectHealthHearts.value;
-            if (Baritone.settings().anarchiaMode.value && thresholdHearts < 6.0D) {
-                thresholdHearts = 6.0D;
+
+            // Na serwerach typu Anarchia (np. anarchia.gg) gracz może mieć obniżoną liczbę serc (np. 1 serce = 2 HP).
+            // Jeżeli maksymalne zdrowie gracza wynosi <= 2 serca (<= 4 HP), rozłączaj wyłącznie przy < 1 HP (0.5 serca).
+            if (maxHealth <= 4.0f) {
+                thresholdHearts = 0.5D;
+            } else if (Baritone.settings().anarchiaMode.value) {
+                if (thresholdHearts < 4.0D) thresholdHearts = 4.0D;
+            }
+
+            // Zabezpieczenie przed natychmiastowym kickiem gracza, który ma 1 serce (np. system lifesteal na anarchii)
+            if (hearts <= 1.0D && thresholdHearts > 1.0D) {
+                thresholdHearts = 0.5D;
             }
 
             // Jeśli ma mniej niż próg serc
-            if (hearts < thresholdHearts) {
+            if (hearts < thresholdHearts && hearts > 0.0D) {
                 triggerAutoLogout(hearts, thresholdHearts, health);
                 return;
             }

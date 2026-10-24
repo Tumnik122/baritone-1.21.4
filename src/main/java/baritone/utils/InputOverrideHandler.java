@@ -133,8 +133,20 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             return true;
         }
 
-        // (3) Aktywne pathowanie lub jakikolwiek aktywny proces Baritone (np. MineProcess, FarmProcess, BuilderProcess):
+        // (3) Aktywne pathowanie lub jakikolwiek aktywny proces Baritone (np. FarmProcess, MineProcess, CustomGoalProcess, BuilderProcess):
         if (baritone.getPathingBehavior().isPathing()) {
+            return true;
+        }
+        if (baritone.getFarmProcess() != null && baritone.getFarmProcess().isActive()) {
+            return true;
+        }
+        if (baritone.getMineProcess() != null && baritone.getMineProcess().isActive()) {
+            return true;
+        }
+        if (baritone.getCustomGoalProcess() != null && baritone.getCustomGoalProcess().isActive()) {
+            return true;
+        }
+        if (baritone.getBuilderProcess() != null && baritone.getBuilderProcess().isActive()) {
             return true;
         }
         if (baritone.getPathingControlManager() != null && baritone.getPathingControlManager().mostRecentInControl().map(IBaritoneProcess::isActive).orElse(false)) {

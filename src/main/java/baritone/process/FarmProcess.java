@@ -2201,9 +2201,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         int pX = playerPos.getX();
         int pY = playerPos.getY();
         int pZ = playerPos.getZ();
-        for (int dx = -6; dx <= 6; dx++) {
-            for (int dz = -6; dz <= 6; dz++) {
-                for (int dy = -3; dy <= 3; dy++) {
+        for (int dx = -14; dx <= 14; dx++) {
+            for (int dz = -14; dz <= 14; dz++) {
+                for (int dy = -2; dy <= 2; dy++) {
                     mut.set(pX + dx, pY + dy, pZ + dz);
                     if (range != 0 && mut.distSqr(center) > (double) range * range)
                         continue;
@@ -3078,8 +3078,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             //    oraz w bezpośrednim zasięgu ręki nie ma kłosów pszenicy (które po ścięciu same dają nasiona)
             boolean emergencySeedsNeeded = !haveSeedsInEq && !openFarmland.isEmpty() && !nearbyDrops.isEmpty()
                     && (!hasMatureWheat || playerPos.distSqr(nearbyDrops.get(0).blockPosition()) <= 4.0D);
-            // 2. Lub gdy całe pole zostało już skoszone (!hasMatureWheat) i zbieramy pozostałości z ziemi
-            boolean allCropsHarvested = !hasMatureWheat && !nearbyDrops.isEmpty();
+            // 2. Całe pole zostało skoszone: brak kłosów pszenicy na całym polu (toBreak puste ORAZ brak pustych grządek do obsiania)
+            boolean allCropsHarvested = !hasMatureWheat && openFarmland.isEmpty() && !nearbyDrops.isEmpty();
             executeGroundFirst = emergencySeedsNeeded || allCropsHarvested;
         } else {
             int threshold = Baritone.settings().farmLowCropThreshold.value;
@@ -3107,7 +3107,14 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             // Anti-stall dla najbliższego dropu (zapobiega blokowaniu bota na niepodnoszalnym itemie)
             ItemEntity closestDrop = nearbyDrops.get(0);
             BlockPos closestStand = BlockPos.containing(closestDrop.getX(), closestDrop.getY() + 0.1D, closestDrop.getZ());
-            if (playerPos.distSqr(closestStand) <= 2.25) {
+            double distToDropSq = playerPos.distSqr(closestStand);
+            if (distToDropSq <= 3.5D) {
+                // Krok bezpośrednio w stronę upuszczonego itemu, by go natychmiast wchłonąć (anti-stall)
+                float yawToDrop = (float) (Math.toDegrees(Math.atan2(
+                        closestDrop.getZ() - ctx.player().position().z,
+                        closestDrop.getX() - ctx.player().position().x)) - 90.0D);
+                applyForwardOnlyCorridorSteering(getSafeServerRotation().getYaw(), yawToDrop, false);
+
                 if (closestDrop.getId() == currentDropTargetId) {
                     dropPickupWaitTicks++;
                     if (dropPickupWaitTicks > 25) {
@@ -3125,8 +3132,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             }
 
             // W trybie #praca z plonami poniżej progu: priorytet zbierania itemów leżących na ziemi.
-            // Max 2 cele na raz — bezpośrednio przechodzimy przez itemy!
-            int maxPickupGoals = Math.min(2, nearbyDrops.size());
+            // Max 3 cele na raz — bezpośrednio przechodzimy przez itemy!
+            int maxPickupGoals = Math.min(3, nearbyDrops.size());
             for (int i = 0; i < maxPickupGoals; i++) {
                 ItemEntity ei = nearbyDrops.get(i);
                 if (i > 0 && playerPos.distSqr(ei.blockPosition()) > 35.0D * 35.0D && !toBreak.isEmpty()) {
@@ -3140,8 +3147,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     logDirect(String.format("§e[Praca] Tryb zbierania: priorytet PSZENICY (nasiona w EQ: %d). Zbieram: %d itemów pszenicy z ziemi",
                             seedsInInventory, nearbyDrops.size()));
                 } else {
-                    logDirect(String.format("§e[Praca] Awaryjne zbieranie nasion i pszenicy (0 nasion w EQ). Zbieram: %d itemów",
-                            nearbyDrops.size()));
+                    logDirect(String.format("§e[Praca] Zbieranie nasion i plonów (nasiona w EQ: %d). Zbieram: %d itemów z ziemi",
+                            seedsInInventory, nearbyDrops.size()));
                 }
             }
 
@@ -3495,7 +3502,20 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         }
 
         if (goalz.isEmpty()) {
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            if (isPracaModeActive()) {
+                // Gdy w bieżącym ticku lista celów jest pusta (np. chwila między ścięciem a pojawieniem się nowego kłosa w skanie),
+                // NIE wolno zatrzymywać bota! Sprawdzamy waypoint optymalizatora lub kontynuujemy bieg wzdłuż alei (laneForwardDir).
+                if (pracaActiveSpineWaypoint != null) {
+                    goalz.add(new GoalNear(new BetterBlockPos(pracaActiveSpineWaypoint.above()), 2));
+                } else if (laneForwardDir != null && laneForwardDir.lengthSqr() > 0.01D) {
+                    BlockPos forwardPos = playerPos.offset((int) Math.round(laneForwardDir.x * 3.0D), 0, (int) Math.round(laneForwardDir.z * 3.0D));
+                    goalz.add(new GoalGetToBlock(forwardPos));
+                } else {
+                    goalz.add(new GoalGetToBlock(playerPos));
+                }
+            } else {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
         }
         if (Baritone.settings().farmFastMode.value
                 && !ctx.player().isInWater()
