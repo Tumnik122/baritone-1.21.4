@@ -130,6 +130,10 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
     private final AtomicBoolean isScanning = new AtomicBoolean(false);
 
+    // ── Persistent Soil & Farmland Cache (Argon 4: Zero gubienia grządek) ──
+    private final LongOpenHashSet persistentFarmlandCache = new LongOpenHashSet();
+    private int cachePruneTicker = 0;
+
     private BlockPos lastPlayerPos = null;
     private int idleStuckTicks = 0;
 
@@ -309,6 +313,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
         active = true;
         locations = null;
+        persistentFarmlandCache.clear();
+        cachePruneTicker = 0;
         scanGeneration++;
         scanCooldownTicks = 0;
         currentTargetPos = null;
@@ -2225,21 +2231,36 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             }
 
             BlockState state = ctx.world().getBlockState(pos);
-            boolean airAbove = ctx.world().getBlockState(pos.above()).isAir();
             if (state.getBlock() == Blocks.FARMLAND) {
-                if (airAbove) {
-                    openFarmland.add(pos);
-                    farmlandSet.add(pos.asLong());
+                persistentFarmlandCache.add(pos.asLong());
+                BlockPos above = pos.above();
+                BlockState aboveState = ctx.world().getBlockState(above);
+                if (!plantOnly && readyForHarvest(ctx.world(), above, aboveState)) {
+                    if (toBreakSet.add(above.asLong())) {
+                        toBreak.add(above);
+                    }
+                } else if (aboveState.isAir() || aboveState.canBeReplaced()) {
+                    if (farmlandSet.add(pos.asLong())) {
+                        openFarmland.add(pos);
+                    }
                 }
                 continue;
             }
             if (state.getBlock() == Blocks.SOUL_SAND) {
-                if (airAbove) {
+                persistentFarmlandCache.add(pos.asLong());
+                BlockPos above = pos.above();
+                BlockState aboveState = ctx.world().getBlockState(above);
+                if (!plantOnly && readyForHarvest(ctx.world(), above, aboveState)) {
+                    if (toBreakSet.add(above.asLong())) {
+                        toBreak.add(above);
+                    }
+                } else if (aboveState.isAir() || aboveState.canBeReplaced()) {
                     openSoulsand.add(pos);
                 }
                 continue;
             }
             if (state.getBlock() == Blocks.JUNGLE_LOG) {
+                persistentFarmlandCache.add(pos.asLong());
                 for (Direction direction : Direction.Plane.HORIZONTAL) {
                     if (ctx.world().getBlockState(pos.relative(direction)).getBlock() instanceof AirBlock) {
                         openLog.add(pos);
@@ -2249,8 +2270,10 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 continue;
             }
             if (!plantOnly && readyForHarvest(ctx.world(), pos, state)) {
-                toBreak.add(pos);
-                toBreakSet.add(pos.asLong());
+                if (toBreakSet.add(pos.asLong())) {
+                    toBreak.add(pos);
+                }
+                persistentFarmlandCache.add(pos.below().asLong());
                 continue;
             }
             if (haveBoneMeal && state.getBlock() instanceof BonemealableBlock ig) {
@@ -2262,6 +2285,86 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         }
 
         BetterBlockPos playerPos = ctx.playerFeet();
+        int plX = playerPos.getX();
+        int plY = playerPos.getY();
+        int plZ = playerPos.getZ();
+
+        // ─────────────────────────────────────────────────────────────────
+        // 2b. SPRAWDZENIE CAŁEGO PERSISTENT SOIL CACHE (Argon 4: Zero gubienia grządek)
+        // ─────────────────────────────────────────────────────────────────
+        double maxSoilDistSqr = 64.0D * 64.0D;
+        it.unimi.dsi.fastutil.longs.LongIterator soilIter = persistentFarmlandCache.iterator();
+        while (soilIter.hasNext()) {
+            long soilKey = soilIter.nextLong();
+            int sx = BlockPos.getX(soilKey);
+            int sy = BlockPos.getY(soilKey);
+            int sz = BlockPos.getZ(soilKey);
+
+            double sdx = sx - plX;
+            double sdy = sy - plY;
+            double sdz = sz - plZ;
+            if (sdx * sdx + sdz * sdz > maxSoilDistSqr || Math.abs(sdy) > 16) {
+                continue;
+            }
+            if (range != 0) {
+                double scdx = sx - center.getX();
+                double scdz = sz - center.getZ();
+                if (scdx * scdx + scdz * scdz > (double) range * range) {
+                    continue;
+                }
+            }
+
+            mut.set(sx, sy, sz);
+            BlockState groundState = ctx.world().getBlockState(mut);
+            if (groundState.is(Blocks.FARMLAND)) {
+                up.set(sx, sy + 1, sz);
+                BlockState cropState = ctx.world().getBlockState(up);
+                if (!plantOnly && readyForHarvest(ctx.world(), up, cropState)) {
+                    if (toBreakSet.add(up.asLong())) {
+                        toBreak.add(up.immutable());
+                    }
+                } else if ((cropState.isAir() || cropState.canBeReplaced()) && farmlandSet.add(soilKey)) {
+                    openFarmland.add(mut.immutable());
+                }
+            } else if (groundState.is(Blocks.SOUL_SAND)) {
+                up.set(sx, sy + 1, sz);
+                BlockState cropState = ctx.world().getBlockState(up);
+                if (!plantOnly && readyForHarvest(ctx.world(), up, cropState)) {
+                    if (toBreakSet.add(up.asLong())) {
+                        toBreak.add(up.immutable());
+                    }
+                } else if (cropState.isAir() || cropState.canBeReplaced()) {
+                    openSoulsand.add(mut.immutable());
+                }
+            } else if (groundState.is(Blocks.JUNGLE_LOG)) {
+                for (Direction direction : Direction.Plane.HORIZONTAL) {
+                    if (ctx.world().getBlockState(mut.relative(direction)).getBlock() instanceof AirBlock) {
+                        openLog.add(mut.immutable());
+                        break;
+                    }
+                }
+            } else if (!groundState.isAir() && !(groundState.getBlock() instanceof CropBlock)) {
+                // Grządka została zniszczona lub zdeptana w zwykłą ziemię
+                soilIter.remove();
+            }
+        }
+
+        // Cykliczne oczyszczanie cache z obiektów poza strefą działania gracza (>96m)
+        if (++cachePruneTicker >= 100) {
+            cachePruneTicker = 0;
+            double pruneDistSqr = 96.0D * 96.0D;
+            it.unimi.dsi.fastutil.longs.LongIterator pruneIter = persistentFarmlandCache.iterator();
+            while (pruneIter.hasNext()) {
+                long key = pruneIter.nextLong();
+                int kx = BlockPos.getX(key);
+                int kz = BlockPos.getZ(key);
+                double dkx = kx - plX;
+                double dkz = kz - plZ;
+                if (dkx * dkx + dkz * dkz > pruneDistSqr) {
+                    pruneIter.remove();
+                }
+            }
+        }
 
         // Aktualizuj kierunek marszu wzdłuż rzędu (Lane Forward Direction)
         Vec3 currentPos = ctx.player().position();
@@ -2281,32 +2384,48 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         }
 
         // ─────────────────────────────────────────────────────────────────
-        // 3. LOKALNY SKAN 360° BEZ ALOKACJI (Pkt 14)
+        // 3. LOKALNY SKAN 3D WOKÓŁ GRACZA (Argon 4: Pełny zakres pionowy dy = -7..7 dla farm tarasowych)
         // ─────────────────────────────────────────────────────────────────
         int pX = playerPos.getX();
         int pY = playerPos.getY();
         int pZ = playerPos.getZ();
-        for (int dx = -14; dx <= 14; dx++) {
-            for (int dz = -14; dz <= 14; dz++) {
-                for (int dy = -2; dy <= 2; dy++) {
+        for (int dx = -18; dx <= 18; dx++) {
+            for (int dz = -18; dz <= 18; dz++) {
+                for (int dy = -7; dy <= 7; dy++) {
                     mut.set(pX + dx, pY + dy, pZ + dz);
                     if (range != 0 && mut.distSqr(center) > (double) range * range)
                         continue;
                     BlockState st = ctx.world().getBlockState(mut);
+                    if (st.isAir()) continue;
+
                     if (!plantOnly && readyForHarvest(ctx.world(), mut, st)) {
                         if (toBreakSet.add(mut.asLong()))
                             toBreak.add(mut.immutable());
+                        persistentFarmlandCache.add(mut.below().asLong());
                     } else if (st.is(Blocks.FARMLAND)) {
+                        persistentFarmlandCache.add(mut.asLong());
                         up.set(mut.getX(), mut.getY() + 1, mut.getZ());
-                        if (ctx.world().getBlockState(up).isAir() && farmlandSet.add(mut.asLong())) {
+                        BlockState upState = ctx.world().getBlockState(up);
+                        if (!plantOnly && readyForHarvest(ctx.world(), up, upState)) {
+                            if (toBreakSet.add(up.asLong())) {
+                                toBreak.add(up.immutable());
+                            }
+                        } else if ((upState.isAir() || upState.canBeReplaced()) && farmlandSet.add(mut.asLong())) {
                             openFarmland.add(mut.immutable());
                         }
                     } else if (st.is(Blocks.SOUL_SAND)) {
+                        persistentFarmlandCache.add(mut.asLong());
                         up.set(mut.getX(), mut.getY() + 1, mut.getZ());
-                        if (ctx.world().getBlockState(up).isAir()) {
+                        BlockState upState = ctx.world().getBlockState(up);
+                        if (!plantOnly && readyForHarvest(ctx.world(), up, upState)) {
+                            if (toBreakSet.add(up.asLong())) {
+                                toBreak.add(up.immutable());
+                            }
+                        } else if (upState.isAir() || upState.canBeReplaced()) {
                             openSoulsand.add(mut.immutable());
                         }
                     } else if (st.is(Blocks.JUNGLE_LOG)) {
+                        persistentFarmlandCache.add(mut.asLong());
                         for (Direction direction : Direction.Plane.HORIZONTAL) {
                             if (ctx.world().getBlockState(mut.relative(direction)).getBlock() instanceof AirBlock) {
                                 openLog.add(mut.immutable());
@@ -2765,7 +2884,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                                 if (bState.getBlock() == Blocks.WHEAT) {
                                     totalWheatHarvested++;
                                 }
-                                if (locations != null) locations.remove(pos);
                                 toBreak.remove(pos);
                                 toBreakSet.remove(pos.asLong());
 
@@ -2794,7 +2912,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                             ctx.player().swing(InteractionHand.MAIN_HAND);
                             acted = true;
                             resetWatchdogOnProgress();
-                            if (locations != null) locations.remove(pos);
                             toBreak.remove(pos);
                             toBreakSet.remove(pos.asLong());
                             lockedTarget = null;
@@ -2873,7 +2990,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                             openFarmland.remove(pos);
                             farmlandSet.remove(pos.asLong());
                             pendingReplants.remove(pos);
-                            if (locations != null) locations.remove(pos);
                             if (plantQueue != null) plantQueue.remove(pos);
                             if (pos.equals(immediateReplantPos)) {
                                 immediateReplantPos = null;
@@ -2955,8 +3071,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         if (res.consumesAction()) {
                             ctx.player().swing(InteractionHand.MAIN_HAND);
                             openSoulsand.remove(pos);
-                            if (locations != null)
-                                locations.remove(pos);
                             acted = true;
                             lastProgressTick = farmTicks;
                         }
@@ -3596,9 +3710,13 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             else if (!toBreak.isEmpty() || !openFarmland.isEmpty()) {
                 blacklistUntil.clear();
                 attempts.clear();
-                for (BlockPos p : (!toBreak.isEmpty() ? toBreak : openFarmland)) {
+                for (BlockPos p : toBreak) {
                     goalz.add(new GoalFarmTarget(p));
                     if (goalz.size() >= 3) break;
+                }
+                for (BlockPos p : openFarmland) {
+                    goalz.add(new GoalFarmTarget(p));
+                    if (goalz.size() >= 6) break;
                 }
             }
 
@@ -3681,6 +3799,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         blacklistUntil.clear();
         attempts.clear();
         itemBlacklist.clear();
+        persistentFarmlandCache.clear();
+        cachePruneTicker = 0;
         lastPlayerPos = null;
         idleStuckTicks = 0;
         waterTicks = 0;
