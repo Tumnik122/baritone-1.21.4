@@ -498,7 +498,7 @@ public final class FarmPathOptimizer {
                     }
 
                     Vec3 targetCenter = action == TargetAction.HARVEST_MATURE
-                            ? new Vec3(pos.getX() + 0.5, pos.getY() + 0.35, pos.getZ() + 0.5)
+                            ? new Vec3(pos.getX() + 0.5, pos.getY() + 0.25, pos.getZ() + 0.5)
                             : new Vec3(pos.getX() + 0.5, pos.getY() + 0.9375, pos.getZ() + 0.5); // Górna ściana Farmland (15/16 blk)
 
                     double dist = eyePos.distanceTo(targetCenter);

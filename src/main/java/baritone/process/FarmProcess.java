@@ -789,6 +789,25 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         return null;
     }
 
+    private BlockHitResult getServerCropHit(BlockPos cropPos) {
+        if (ctx.player() == null || cropPos == null) return null;
+        Rotation serverRot = baritone.getLookBehavior().getServerRotation();
+        final boolean isGrim = Baritone.settings().antiCheatCompatibility.value
+                || Baritone.settings().grimCompat.value
+                || Baritone.settings().antiCheatCompat.value;
+        if (serverRot == null) {
+            if (isGrim) return null;
+            serverRot = ctx.playerRotations();
+        }
+        double safeReach = isGrim ? Math.min(3.15D, Baritone.settings().grimSafeReach.value) : Baritone.settings().grimSafeReach.value;
+        double reach = Math.min(safeReach, ctx.playerController().getBlockReachDistance());
+        HitResult hit = RayTraceUtils.rayTraceTowards(ctx.player(), serverRot, reach, ctx.player().isCrouching());
+        if (hit instanceof BlockHitResult bhr && bhr.getBlockPos().equals(cropPos)) {
+            return bhr;
+        }
+        return null;
+    }
+
     private boolean isServerRotationAimedForPlant(BlockPos farmlandPos) {
         return getServerFarmlandHit(farmlandPos) != null;
     }
@@ -2685,15 +2704,17 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         MovementHelper.switchToBestToolFor(ctx, bState);
                     }
 
-                    boolean aimed = !isGrim || isPracaModeActive() || canInteractGrimSafe(pos, smoothRot, blockReachDistance, false) || ctx.isLookingAt(pos);
-
-                    if (aimed) {
-                        ctx.playerController().syncHeldItem();
-                        Direction breakFace = Direction.UP;
-                        HitResult hit = RayTraceUtils.rayTraceTowards(ctx.player(), smoothRot, blockReachDistance, ctx.player().isCrouching());
-                        if (hit instanceof BlockHitResult bhr && bhr.getBlockPos().equals(pos)) {
-                            breakFace = bhr.getDirection();
+                    BlockHitResult cropHit = getServerCropHit(pos);
+                    if (cropHit == null && ctx.isLookingAt(pos)) {
+                        HitResult chr = ctx.objectMouseOver();
+                        if (chr instanceof BlockHitResult bhr && bhr.getBlockPos().equals(pos)) {
+                            cropHit = bhr;
                         }
+                    }
+
+                    if (cropHit != null) {
+                        ctx.playerController().syncHeldItem();
+                        Direction breakFace = cropHit.getDirection();
 
                         if (isInstant) {
                             if (ctx.playerController().clickBlock(pos, breakFace)) {
@@ -2740,6 +2761,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         } else if (ctx.playerController().onPlayerDamageBlock(pos, breakFace)) {
                             ctx.player().swing(InteractionHand.MAIN_HAND);
                         }
+                    } else {
+                        // GrimAC Safe: Rotacja została ustawiona (applyAimRotation), czekamy 1 tick na wysłanie pakietu w naturalnym sendPosition()
+                        acted = true;
                     }
 
                     if (lockedTargetTicks >= (isInstant ? 14 : 80)) {
@@ -2795,8 +2819,11 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     updateSweepState(smoothRot);
 
                     BlockHitResult sbhr = getServerFarmlandHit(pos);
-                    if (sbhr == null && !isGrim && (isPracaModeActive() || canInteractGrimSafe(pos, smoothRot, plantReach, true))) {
-                        sbhr = new BlockHitResult(new Vec3(pos.getX() + 0.5D, pos.getY() + 0.9375D, pos.getZ() + 0.5D), Direction.UP, pos, false);
+                    if (sbhr == null && ctx.isLookingAt(pos)) {
+                        HitResult chr = ctx.objectMouseOver();
+                        if (chr instanceof BlockHitResult bhr && isValidFarmlandHit(bhr, pos)) {
+                            sbhr = bhr;
+                        }
                     }
 
                     if (sbhr != null) {

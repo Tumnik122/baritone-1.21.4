@@ -27,8 +27,11 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.CropBlock;
 import net.minecraft.world.level.block.FarmBlock;
 import net.minecraft.world.level.block.NetherWartBlock;
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
@@ -80,6 +83,11 @@ public final class FarmProcess implements IBaritoneProcess {
     private int lastSyncedHotbarSlot = -1;
     private int slotSwitchCooldownTicks = 0;
 
+    // Synchronizacja rotacji i interakcji pod GrimAC (Argon 4)
+    private BlockPos lockedTargetPos = null;
+    private int ticksSyncedOnTarget = 0;
+    private int actionCooldownTicks = 0;
+
     // Telemetria przekazywana do ModernCapsuleHud oraz BaritoneBypassScreen
     public record HudTelemetrySnapshot(
             String processStateLabel,
@@ -115,6 +123,9 @@ public final class FarmProcess implements IBaritoneProcess {
     public void stopFarming() {
         this.active = false;
         this.currentRoute = null;
+        this.lockedTargetPos = null;
+        this.ticksSyncedOnTarget = 0;
+        this.actionCooldownTicks = 0;
         baritone.getInputOverrideHandler().clearAllKeys();
         updateHudTelemetry("IDLE");
     }
@@ -180,6 +191,10 @@ public final class FarmProcess implements IBaritoneProcess {
 
         float corridorYaw = computeYawTowards(player.position(), Vec3.atBottomCenterOf(targetWaypoint));
 
+        if (actionCooldownTicks > 0) {
+            actionCooldownTicks--;
+        }
+
         // 5. Ciągły Zbiór i Natychmiastowy Replant w locie (Continuous Sprint-Harvest)
         Optional<HarvestTarget> inFlightTarget = pathOptimizer.findBestInFlightTarget(
                 player,
@@ -191,11 +206,32 @@ public final class FarmProcess implements IBaritoneProcess {
 
         if (inFlightTarget.isPresent()) {
             HarvestTarget target = inFlightTarget.get();
-            applySmoothGrimRotation(player, target.requiredYaw(), target.requiredPitch(), 0.48F);
-            executeInFlightAction(player, level, target);
+
+            if (!target.pos().equals(lockedTargetPos)) {
+                lockedTargetPos = target.pos();
+                ticksSyncedOnTarget = 0;
+            }
+
+            // 1. Obrót z kwantyzacją GCD (Argon 4)
+            applyGrimGcdRotation(player, target.requiredYaw(), target.requiredPitch(), 0.55F);
+
+            // 2. Weryfikacja rzeczywistego przecięcia promienia wzroku z blokiem
+            BlockHitResult realHit = raycastTargetBlock(player, level, target);
+            if (realHit != null) {
+                ticksSyncedOnTarget++;
+                // Wykonaj akcję DOPIERO gdy serwer otrzymał rotację (min. 1 tick) i minął cooldown
+                if (ticksSyncedOnTarget >= 1 && actionCooldownTicks == 0) {
+                    executeVerifiedAction(player, level, target, realHit);
+                    ticksSyncedOnTarget = 0;
+                }
+            } else {
+                ticksSyncedOnTarget = 0;
+            }
         } else {
+            lockedTargetPos = null;
+            ticksSyncedOnTarget = 0;
             // Gdy brak plonów w bezpośrednim stożku, płynnie wyrównaj wzrok wzdłuż osi korytarza
-            applySmoothGrimRotation(player, corridorYaw, 18.0F, 0.32F);
+            applyGrimGcdRotation(player, corridorYaw, 18.0F, 0.32F);
         }
 
         // 6. Sterowanie ciągłym ruchem + Ochrona Zasiewów (Sprint-Jump Farmland Guard)
@@ -212,10 +248,10 @@ public final class FarmProcess implements IBaritoneProcess {
     }
 
     /**
-     * Wykonuje zbiór dojrzałego plonu lub natychmiastowe zasianie (immediateReplant) w biegu.
-     * Automatycznie obsługuje nasiona w Offhandzie lub przełącza slot Hotbara bez zatrzymania sprintu.
+     * Wykonuje zbiór dojrzałego plonu lub natychmiastowe zasianie (immediateReplant) w biegu
+     * wyłącznie przy użyciu zweryfikowanego przez raycast wektora BlockHitResult.
      */
-    private void executeInFlightAction(LocalPlayer player, ClientLevel level, HarvestTarget target) {
+    private void executeVerifiedAction(LocalPlayer player, ClientLevel level, HarvestTarget target, BlockHitResult verifiedHit) {
         if (mc.gameMode == null) {
             return;
         }
@@ -223,7 +259,7 @@ public final class FarmProcess implements IBaritoneProcess {
         long now = System.currentTimeMillis();
 
         if (target.action() == TargetAction.HARVEST_MATURE) {
-            mc.gameMode.startDestroyBlock(target.pos(), target.hitFace());
+            mc.gameMode.startDestroyBlock(verifiedHit.getBlockPos(), verifiedHit.getDirection());
             player.swing(InteractionHand.MAIN_HAND);
             recentBlockInteractions.put(target.pos(), now);
             sellProcess.recordHarvestedItem(1);
@@ -231,11 +267,12 @@ public final class FarmProcess implements IBaritoneProcess {
             // Natychmiastowy replant w kolejnym kroku na bloku gleby poniżej
             BlockPos soilBelow = target.pos().below();
             recentBlockInteractions.remove(soilBelow);
+            actionCooldownTicks = 2;
             return;
         }
 
         if (target.action() == TargetAction.PLANT_SEED) {
-            BlockState soilState = level.getBlockState(target.pos());
+            BlockState soilState = level.getBlockState(verifiedHit.getBlockPos());
             boolean isSoulSand = soilState.is(Blocks.SOUL_SAND);
 
             // Sprawdzenie, czy odpowiednie nasiona są już w Offhandzie
@@ -244,10 +281,10 @@ public final class FarmProcess implements IBaritoneProcess {
                 return; // Czekamy 1 tick na synchronizację zmiany slotu hotbara
             }
 
-            BlockHitResult placeHit = new BlockHitResult(target.hitVec(), target.hitFace(), target.pos(), false);
-            mc.gameMode.useItemOn(player, seedHand, placeHit);
+            mc.gameMode.useItemOn(player, seedHand, verifiedHit);
             player.swing(seedHand);
-            recentBlockInteractions.put(target.pos(), now);
+            recentBlockInteractions.put(verifiedHit.getBlockPos(), now);
+            actionCooldownTicks = 2;
         }
     }
 
@@ -331,31 +368,69 @@ public final class FarmProcess implements IBaritoneProcess {
     }
 
     /**
-     * Wygładza obrót kamery zgodnie z ograniczeniami GCD (Greatest Common Divisor) czułości myszy Minecrafta,
-     * zapobiegając flagom GrimAC AimDuplicateLook / AimModulo360.
+     * Kwantyzacja rotacji zgodna z GrimAC (Aim Checks + Vanilla Mouse GCD).
      */
-    private void applySmoothGrimRotation(LocalPlayer player, float targetYaw, float targetPitch, float blendFactor) {
+    private void applyGrimGcdRotation(LocalPlayer player, float targetYaw, float targetPitch, float speedFactor) {
         float currentYaw = player.getYRot();
         float currentPitch = player.getXRot();
 
         float deltaYaw = Mth.wrapDegrees(targetYaw - currentYaw);
         float deltaPitch = targetPitch - currentPitch;
 
-        float maxYawStep = 28.5F;
-        float maxPitchStep = 19.0F;
+        float stepFactor = (Math.abs(deltaYaw) < 2.5F && Math.abs(deltaPitch) < 2.5F) ? 1.0F : speedFactor;
 
-        float stepYaw = Mth.clamp(deltaYaw * blendFactor, -maxYawStep, maxYawStep);
-        float stepPitch = Mth.clamp(deltaPitch * blendFactor, -maxPitchStep, maxPitchStep);
+        float maxYawStep = 42.0F;
+        float maxPitchStep = 28.0F;
 
-        // Kwantyzacja kroku do siatki GCD czułości myszy klienta
+        float moveYaw = Mth.clamp(deltaYaw * stepFactor, -maxYawStep, maxYawStep);
+        float movePitch = Mth.clamp(deltaPitch * stepFactor, -maxPitchStep, maxPitchStep);
+
+        // Kwantyzacja do siatki czułości myszy Vanilla (GCD)
         float gcd = computeMouseSensitivityGcd();
         if (gcd > 1e-5F) {
-            stepYaw = Math.round(stepYaw / gcd) * gcd;
-            stepPitch = Math.round(stepPitch / gcd) * gcd;
+            moveYaw = Math.round(moveYaw / gcd) * gcd;
+            movePitch = Math.round(movePitch / gcd) * gcd;
         }
 
-        player.setYRot(currentYaw + stepYaw);
-        player.setXRot(Mth.clamp(currentPitch + stepPitch, -89.9F, 89.9F));
+        float nextYaw = currentYaw + moveYaw;
+        float nextPitch = Mth.clamp(currentPitch + movePitch, -89.9F, 89.9F);
+
+        player.setYRot(nextYaw);
+        player.setXRot(nextPitch);
+        player.setYHeadRot(nextYaw);
+    }
+
+    private BlockHitResult raycastTargetBlock(LocalPlayer player, ClientLevel level, HarvestTarget target) {
+        double maxReach = 4.05D;
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        Vec3 lookVec = player.getViewVector(1.0F);
+        Vec3 endPos = eyePos.add(lookVec.scale(maxReach));
+
+        BlockHitResult hit = level.clip(new ClipContext(
+                eyePos,
+                endPos,
+                ClipContext.Block.OUTLINE,
+                ClipContext.Fluid.NONE,
+                player
+        ));
+
+        if (hit == null || hit.getType() != HitResult.Type.BLOCK) {
+            return null;
+        }
+
+        if (target.action() == TargetAction.HARVEST_MATURE) {
+            if (hit.getBlockPos().equals(target.pos()) && eyePos.distanceToSqr(hit.getLocation()) <= (maxReach * maxReach)) {
+                return hit;
+            }
+        } else if (target.action() == TargetAction.PLANT_SEED) {
+            BlockPos expectedFarmland = target.pos();
+            if (hit.getBlockPos().equals(expectedFarmland)
+                    && hit.getDirection() == Direction.UP
+                    && eyePos.distanceToSqr(hit.getLocation()) <= (maxReach * maxReach)) {
+                return hit;
+            }
+        }
+        return null;
     }
 
     private float computeMouseSensitivityGcd() {
