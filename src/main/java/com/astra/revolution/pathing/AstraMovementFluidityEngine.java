@@ -5,6 +5,7 @@ import baritone.api.pathing.calc.IPath;
 import baritone.api.pathing.path.IPathExecutor;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.IPlayerContext;
+import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.util.Mth;
@@ -163,6 +164,17 @@ public final class AstraMovementFluidityEngine {
         if (unstuckPulseRemaining > 0) {
             unstuckPulseRemaining--;
             effectiveTargetYaw += unstuckStrafeDir * (-38.0F);
+        }
+
+        // Płynna orientacja wzroku wzdłuż aktywnego wektora ścieżki (GrimAC GCD Safe)
+        // Eliminuje błąd, gdzie bot celuje w odległy koniec trasy zamiast w aktywny krok/zakręt (np. blok z lewej strony)
+        if (!isActivelyMiningOrPlacing && baritone.getLookBehavior() != null) {
+            double dy = (currentTarget.y + 0.5) - player.getEyeY();
+            double hDist = Math.max(horizDist, 0.4);
+            float pitchToNode = (float) -Math.toDegrees(Math.atan2(dy, hDist));
+            float targetPitch = Mth.clamp(pitchToNode, -22.0f, 22.0f);
+
+            baritone.getLookBehavior().updateTarget(new Rotation(effectiveTargetYaw, targetPitch), true);
         }
 
         if (wantsToMove && !player.isInWater() && !player.isInLava()) {

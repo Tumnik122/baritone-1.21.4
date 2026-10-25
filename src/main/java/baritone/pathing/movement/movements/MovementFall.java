@@ -149,7 +149,7 @@ public class MovementFall extends Movement {
         if (targetRotation != null) {
             state.setTarget(new MovementTarget(targetRotation, true));
         } else {
-            state.setTarget(new MovementTarget(toDest, false));
+            state.setTarget(new MovementTarget(toDest, true));
         }
         if ((playerFeet.equals(dest) || (isWater && (playerFeet.equals(dest.above()) || (playerFeet.getX() == dest.getX() && playerFeet.getZ() == dest.getZ() && Math.abs(ctx.player().position().y - dest.getY()) < 1.8)))) && (ctx.player().position().y - playerFeet.getY() < 0.094 || isWater)) { // 0.094 because lilypads
             if (isWater) { // only match water, not flowing water (which we cannot pick up with a bucket)
@@ -214,7 +214,7 @@ public class MovementFall extends Movement {
         }
         if (targetRotation == null) {
             Vec3 destCenterOffset = new Vec3(destCenter.x + 0.125 * avoid.getX(), destCenter.y, destCenter.z + 0.125 * avoid.getZ());
-            state.setTarget(new MovementTarget(RotationUtils.calcRotationFromVec3d(ctx.playerHead(), destCenterOffset, ctx.playerRotations()), false));
+            state.setTarget(new MovementTarget(RotationUtils.calcRotationFromVec3d(ctx.playerHead(), destCenterOffset, ctx.playerRotations()), true));
         }
         return state;
     }

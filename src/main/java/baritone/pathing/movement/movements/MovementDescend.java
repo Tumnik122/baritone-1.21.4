@@ -259,7 +259,7 @@ public class MovementDescend extends Movement {
                     RotationUtils.calcRotationFromVec3d(ctx.playerHead(),
                             new Vec3(destX, dest.getY(), destZ),
                             ctx.playerRotations()).withPitch(ctx.playerRotations().getPitch()),
-                    false
+                    true
             )).setInput(Input.MOVE_FORWARD, true);
             return state;
         }

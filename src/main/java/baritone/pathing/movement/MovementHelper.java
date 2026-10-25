@@ -807,7 +807,7 @@ public interface MovementHelper extends ActionCosts, Helper {
                 RotationUtils.calcRotationFromVec3d(ctx.playerHead(),
                         VecUtils.getBlockPosCenter(pos),
                         ctx.playerRotations()).withPitch(ctx.playerRotations().getPitch()),
-                false
+                true
         )).setInput(Input.MOVE_FORWARD, true);
     }
 
@@ -837,15 +837,10 @@ public interface MovementHelper extends ActionCosts, Helper {
                 VecUtils.getBlockPosCenter(dest),
                 ctx.playerRotations()
         ).getYaw();
-        float distance = Rotation.yawDistanceFromOffset(ctx.playerRotations().getYaw(), idealYaw) % 45f;
-        float newYaw = distance > 0f ?
-                distance > 22.5f ? distance - 45f : distance :
-                distance < -22.5f ? distance + 45f : distance;
         state.setTarget(new MovementTarget(new Rotation(
-                ctx.playerRotations().getYaw() - newYaw,
+                idealYaw,
                 ctx.playerRotations().getPitch()
-        ), true));
-        moveTowardsWithoutRotation(ctx, state, idealYaw);
+        ), true)).setInput(Input.MOVE_FORWARD, true);
     }
 
     /**
