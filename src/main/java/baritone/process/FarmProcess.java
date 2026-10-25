@@ -71,6 +71,7 @@ import net.minecraft.world.level.block.SugarCaneBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -1270,16 +1271,17 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             }
         }
 
-        // Blokuj klawisze, które pchnęłyby bota z krawędzi grządki do wody
+        // Blokuj klawisze, które pchnęłyby bota z krawędzi grządki do wody (Argon 4)
         if (ctx.world() != null) {
             Vec3 pos = ctx.player().position();
-            if (pressW && wouldMoveIntoWater(pos, ctx.world(), currentCamYaw, 0.50D)) {
+            double probe = (ctx.player().isSprinting()) ? 0.95D : 0.65D;
+            if (pressW && wouldMoveIntoWater(pos, ctx.world(), currentCamYaw, probe)) {
                 pressW = false;
             }
-            if (pressA && wouldMoveIntoWater(pos, ctx.world(), currentCamYaw - 90.0F, 0.50D)) {
+            if (pressA && wouldMoveIntoWater(pos, ctx.world(), currentCamYaw - 90.0F, probe)) {
                 pressA = false;
             }
-            if (pressD && wouldMoveIntoWater(pos, ctx.world(), currentCamYaw + 90.0F, 0.50D)) {
+            if (pressD && wouldMoveIntoWater(pos, ctx.world(), currentCamYaw + 90.0F, probe)) {
                 pressD = false;
             }
         }
@@ -1297,14 +1299,16 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 && ctx.player().getFoodData().getFoodLevel() > 6
                 && Baritone.settings().allowSprint.value;
 
+        boolean imminentHazard = (ctx.world() != null && detectImminentWaterHazard(currentCamYaw) != null);
+
         input.setInputForceState(Input.MOVE_FORWARD, pressW);
         input.setInputForceState(Input.MOVE_BACK, false);
         input.setInputForceState(Input.MOVE_LEFT, pressA);
         input.setInputForceState(Input.MOVE_RIGHT, pressD);
-        input.setInputForceState(Input.SPRINT, canSprintSafely);
-        input.setInputForceState(Input.SNEAK, false);
+        input.setInputForceState(Input.SPRINT, canSprintSafely && !imminentHazard);
+        input.setInputForceState(Input.SNEAK, imminentHazard);
         if (ctx.player() != null) {
-            ctx.player().setSprinting(canSprintSafely);
+            ctx.player().setSprinting(canSprintSafely && !imminentHazard);
         }
         return pressW || pressA || pressD;
     }
@@ -2155,33 +2159,175 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         return state.is(Blocks.WATER) || state.is(Blocks.WATER_CAULDRON);
     }
 
+    // ============================================================================
+    // MODUŁ 1: PROFILAKTYKA PRZED WPADANIEM DO WODY (SWEPT AABB + SNEAK EDGE LOCK) (Argon 4)
+    // ============================================================================
+
+    /**
+     * Sprawdza, czy dana kolumna (x, z) wokół wysokości stóp gracza stanowi
+     * dziurę z wodą (nawadnianie pola) lub brak podłoża prowadzący do wody.
+     */
+    private boolean isWaterHazardAt(Level level, int x, int feetY, int z) {
+        if (level == null) return false;
+
+        BlockPos posAtFeet = new BlockPos(x, feetY, z);
+        BlockState stateAtFeet = level.getBlockState(posAtFeet);
+
+        // 1. Woda bezpośrednio na poziomie stóp (np. gdy Farmland ma wys. 0.9375, a woda jest w tym samym Y)
+        if (!stateAtFeet.getFluidState().isEmpty() || stateAtFeet.is(Blocks.WATER) || stateAtFeet.is(Blocks.WATER_CAULDRON)) {
+            return true;
+        }
+
+        // 2. Jeśli blok na poziomie stóp nie ma kolizji (np. powietrze/pszenica/pochodnie), sprawdzamy blok niżej (feetY - 1)
+        if (stateAtFeet.getCollisionShape(level, posAtFeet).isEmpty()) {
+            BlockPos posBelow = posAtFeet.below();
+            BlockState stateBelow = level.getBlockState(posBelow);
+            if (!stateBelow.getFluidState().isEmpty() || stateBelow.is(Blocks.WATER) || stateBelow.is(Blocks.WATER_CAULDRON)) {
+                return true;
+            }
+            // Sprawdź też feetY - 2 na wypadek głębszego kanału
+            if (stateBelow.getCollisionShape(level, posBelow).isEmpty()) {
+                BlockState stateDeep = level.getBlockState(posBelow.below());
+                if (!stateDeep.getFluidState().isEmpty() || stateDeep.is(Blocks.WATER) || stateDeep.is(Blocks.WATER_CAULDRON)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Skanuje 4 narożniki hitboxa gracza (0.6 x 0.6 + margines bezpieczeństwa 0.12m)
+     * wzdłuż rzeczywistego wektora ruchu (bezwładność deltaMovement + kierunek patrzenia)
+     * na 3 ticki w przód. Zwraca BlockPos dziury z wodą, jeśli grozi wpadnięcie.
+     */
+    private BlockPos detectImminentWaterHazard(float targetYaw) {
+        if (ctx.player() == null || ctx.world() == null || ctx.player().isInWater()) {
+            return null;
+        }
+
+        Level level = ctx.world();
+        Vec3 pos = ctx.player().position();
+        Vec3 vel = ctx.player().getDeltaMovement();
+        int feetY = Mth.floor(pos.y + 0.08D);
+
+        // Wektor kierunku, w którym bot zamierza iść (Yaw)
+        float rad = targetYaw * ((float) Math.PI / 180F);
+        double lookX = -Mth.sin(rad);
+        double lookZ =  Mth.cos(rad);
+
+        // Łączymy aktualną bezwładność (vel) z kierunkiem marszu (look)
+        double stepX = vel.x * 1.35D + lookX * 0.28D;
+        double stepZ = vel.z * 1.35D + lookZ * 0.28D;
+
+        // Półszerokość hitboxa gracza (0.30) + margines hamowania (0.12) = 0.42
+        final double r = 0.42D;
+        final double[][] corners = {
+            { -r, -r }, { r, -r }, { -r, r }, { r, r }, { 0.0D, 0.0D }
+        };
+
+        // Predykcja w 3 krokach (od 0.35 do ~1.05 kratki przed graczem)
+        for (int step = 1; step <= 3; step++) {
+            double factor = step * 0.45D;
+            double predX = pos.x + stepX * factor;
+            double predZ = pos.z + stepZ * factor;
+
+            for (double[] c : corners) {
+                int bx = Mth.floor(predX + c[0]);
+                int bz = Mth.floor(predZ + c[1]);
+                if (isWaterHazardAt(level, bx, feetY, bz)) {
+                    return new BlockPos(bx, feetY, bz);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Aktywuje natychmiastowy hamulec krawędziowy (Sneak Edge Lock + Counter-Strafe)
+     * oraz opcjonalne ominięcie dziury z wodą bokiem (Strafe), aby bot NIGDY nie wpadł do wody.
+     */
+    private void applyWaterHazardProtection(BlockPos currentCropTarget) {
+        if (ctx.player() == null || ctx.player().isInWater() || ctx.player().isUnderWater()) {
+            return;
+        }
+
+        Rotation serverRot = baritone.getLookBehavior().getServerRotation();
+        float activeYaw = (serverRot != null) ? serverRot.getYaw() : ctx.player().getYRot();
+
+        BlockPos hazardPos = detectImminentWaterHazard(activeYaw);
+        if (hazardPos == null) {
+            return;
+        }
+
+        // 1. BEZWZGLĘDNA BLOKADA KRAWĘDZI: Input.SNEAK na Farmland włącza w silniku Minecrafta
+        //    metodę maybeBackOffFromEdge(), która fizycznie blokuje zsunięcie się do dziury z wodą!
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+        if (ctx.player() != null) {
+            ctx.player().setSprinting(false);
+        }
+
+        Vec3 playerPos = ctx.player().position();
+        Vec3 hazardCenter = new Vec3(hazardPos.getX() + 0.5D, playerPos.y, hazardPos.getZ() + 0.5D);
+        Vec3 toHazard = hazardCenter.subtract(playerPos).normalize();
+        Vec3 vel = ctx.player().getDeltaMovement();
+
+        // Iloczyn skalarny prędkości i wektora do wody (jak szybko ślizgamy się w stronę dziury)
+        double closingSpeed = vel.x * toHazard.x + vel.z * toHazard.z;
+
+        // 2. Jeśli bot ma pęd w stronę wody, odcinamy W i dajemy 1 tick kontry (S), aby zbić ślizg po sprincie
+        if (closingSpeed > 0.06D || playerPos.distanceToSqr(hazardCenter) < 0.85D) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            if (closingSpeed > 0.12D) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+            }
+        }
+
+        // 3. Ominięcie styczne (Tangential Strafe): jeśli celujemy w plon za wodą, obchodzimy wodę bokiem (A lub D)
+        if (currentCropTarget != null) {
+            Vec3 toCrop = Vec3.atCenterOf(currentCropTarget).subtract(playerPos);
+            double cross = toHazard.x * toCrop.z - toHazard.z * toCrop.x;
+            int feetY = Mth.floor(playerPos.y + 0.08D);
+
+            float rad = activeYaw * ((float) Math.PI / 180F);
+            double leftX = Mth.cos(rad);
+            double leftZ = Mth.sin(rad);
+
+            boolean preferLeft = cross >= 0.0D;
+            int checkX = Mth.floor(playerPos.x + (preferLeft ? leftX : -leftX) * 0.85D);
+            int checkZ = Mth.floor(playerPos.z + (preferLeft ? leftZ : -leftZ) * 0.85D);
+
+            if (!isWaterHazardAt(ctx.world(), checkX, feetY, checkZ)) {
+                baritone.getInputOverrideHandler().setInputForceState(
+                        preferLeft ? Input.MOVE_LEFT : Input.MOVE_RIGHT, true
+                );
+            }
+        }
+    }
+
     private boolean wouldMoveIntoWater(Vec3 currentPos, Level world, float moveYaw, double probeDist) {
         if (world == null || currentPos == null) return false;
+        int feetY = Mth.floor(currentPos.y + 0.08D);
         double rad = Math.toRadians(moveYaw);
-        double[] offsets = { -0.22D, 0.0D, 0.22D };
-        for (double off : offsets) {
-            double perpRad = rad + Math.PI / 2.0D;
-            double testX = currentPos.x - Math.sin(rad) * probeDist + Math.cos(perpRad) * off;
-            double testZ = currentPos.z + Math.cos(rad) * probeDist + Math.sin(perpRad) * off;
-            double testY = currentPos.y;
+        double fwdX = -Math.sin(rad);
+        double fwdZ =  Math.cos(rad);
+        double perpX = -fwdZ;
+        double perpZ =  fwdX;
 
-            BlockPos feetPos = new BlockPos(Mth.floor(testX), Mth.floor(testY), Mth.floor(testZ));
-            BlockPos belowPos = feetPos.below();
+        // Sprawdź 5 punktów: środek, lewy i prawy bok oraz narożniki przednie AABB
+        double[] probeSteps = { probeDist * 0.6D, probeDist };
+        double[] sideOffsets = { -0.32D, 0.0D, 0.32D };
 
-            BlockState feetState = world.getBlockState(feetPos);
-            // Jeśli na wysokości stóp jest solidna powierzchnia (Farmland, płyta, lilia, podłoga), gracz na nią staje bez wpadania
-            if (!feetState.getCollisionShape(world, feetPos).isEmpty() && !isWaterOrFluid(world, feetPos)) {
-                continue;
-            }
-
-            if (isWaterOrFluid(world, feetPos)) {
-                return true;
-            }
-            if (isWaterOrFluid(world, belowPos) && feetState.getCollisionShape(world, feetPos).isEmpty()) {
-                return true;
-            }
-            if (world.getBlockState(belowPos).isAir() && isWaterOrFluid(world, belowPos.below())) {
-                return true;
+        for (double pStep : probeSteps) {
+            for (double sOff : sideOffsets) {
+                int bx = Mth.floor(currentPos.x + fwdX * pStep + perpX * sOff);
+                int bz = Mth.floor(currentPos.z + fwdZ * pStep + perpZ * sOff);
+                if (isWaterHazardAt(world, bx, feetY, bz)) {
+                    return true;
+                }
             }
         }
         return false;
@@ -2580,7 +2726,111 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         // wdLevel celowo NIE jest zerowany — eskalacja watchdoga ma przeżyć reset stanu
     }
 
-    private BlockPos findWaterEscapeTarget(BetterBlockPos feet) {
+    // ============================================================================
+    // MODUŁ 2: EWAKUACJA Z WODY POD PÓŁPŁYTKĄ / SŁUPKIEM Z POCHODNIAMI (Argon 4)
+    // ============================================================================
+
+    /**
+     * Sprawdza, czy bezpośrednio nad kratką wody (na Y+1, Y+2 lub Y+3) wisi
+     * blok, półpłytka (slab), murek lub słupek ograniczający wyskok.
+     */
+    private boolean hasOverheadCeilingAboveWater(Level level, BlockPos waterPos) {
+        if (level == null || waterPos == null) return false;
+        BlockPos above1 = waterPos.above(1);
+        BlockPos above2 = waterPos.above(2);
+        BlockPos above3 = waterPos.above(3);
+
+        return !level.getBlockState(above1).getCollisionShape(level, above1).isEmpty()
+            || !level.getBlockState(above2).getCollisionShape(level, above2).isEmpty()
+            || !level.getBlockState(above3).getCollisionShape(level, above3).isEmpty();
+    }
+
+    /**
+     * Sprawdza, czy dany blok ma pusty kształt kolizji (powietrze, pszenica, pochodnie, tabliczki).
+     * KRYTYCZNE: Pochodnie (WallTorchBlock) i plony (CropBlock) zwracają true!
+     */
+    private boolean isCollisionFree(Level level, BlockPos pos) {
+        if (level == null || pos == null) return false;
+        BlockState state = level.getBlockState(pos);
+        return state.getFluidState().isEmpty() && state.getCollisionShape(level, pos).isEmpty();
+    }
+
+    /**
+     * Sprawdza, czy na danej pozycji (nx, waterY, nz) znajduje się stabilny brzeg
+     * (Farmland, Dirt, Grass, pełny blok), na który można wyjść z wody.
+     */
+    private boolean isSolidDryBank(Level level, BlockPos bankPos) {
+        if (level == null || bankPos == null) return false;
+        BlockState state = level.getBlockState(bankPos);
+        if (!state.getFluidState().isEmpty()) return false;
+        VoxelShape shape = state.getCollisionShape(level, bankPos);
+        if (shape.isEmpty()) return false;
+        double maxY = shape.max(Direction.Axis.Y);
+        // Akceptujemy Farmland (0.9375), SoulSand (0.875), pełne bloki (1.0) oraz półpłytki
+        return maxY >= 0.5D && maxY <= 1.0D;
+    }
+
+    /**
+     * Wyznacza najlepszy KARDYNALNY (N, S, E, W - nigdy po przekątnej!) brzeg wyjścia z wody.
+     * Ignoruje pochodnie i pszenicę (sprawdza rzeczywisty CollisionShape),
+     * a premiuje kierunek z największym prześwitem nad głową i suchym lądem dalej.
+     */
+    private BlockPos findBestCardinalWaterExit(BlockPos waterPos) {
+        Level level = ctx.world();
+        if (level == null || waterPos == null) return null;
+
+        BlockPos bestBank = null;
+        double bestScore = Double.NEGATIVE_INFINITY;
+
+        // 1. ZAWSZE sprawdzamy najpierw 4 kierunki kardynalne (N, S, E, W),
+        //    ponieważ wyjście prostopadłe do ściany w 1x1 wodzie nie klinuje hitboxa w narożniku!
+        for (Direction dir : Direction.Plane.HORIZONTAL) {
+            BlockPos bankPos = waterPos.relative(dir);
+
+            if (!isSolidDryBank(level, bankPos)) {
+                continue;
+            }
+
+            // Nad brzegiem (Y+1 oraz Y+2) nie może być twardych bloków (pszenica i pochodnie są OK!)
+            if (!isCollisionFree(level, bankPos.above(1)) || !isCollisionFree(level, bankPos.above(2))) {
+                continue;
+            }
+
+            double score = 100.0D;
+
+            // Duży bonus, jeśli na Y+3 nad tym brzegiem również nie ma sufitu/slaba
+            if (isCollisionFree(level, bankPos.above(3))) {
+                score += 50.0D;
+            }
+
+            // Bonus, jeśli kolejna kratka dalej w tym samym kierunku też jest suchym lądem
+            BlockPos inlandPos = bankPos.relative(dir);
+            if (isSolidDryBank(level, inlandPos) && isCollisionFree(level, inlandPos.above(1))) {
+                score += 35.0D;
+            }
+
+            // Lekka preferencja kierunku zbliżonego do aktualnego patrzenia gracza (szybszy obrót)
+            Vec3 eyePos = ctx.player().getEyePosition(1.0F);
+            Vec3 targetCenter = Vec3.atCenterOf(bankPos);
+            Rotation rotToBank = RotationUtils.calcRotationFromVec3d(eyePos, targetCenter, ctx.playerRotations());
+            float yawDiff = Math.abs(Mth.wrapDegrees(ctx.player().getYRot() - rotToBank.getYaw()));
+            score -= yawDiff * 0.15D;
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestBank = bankPos;
+            }
+        }
+
+        if (bestBank != null) {
+            return bestBank;
+        }
+
+        // 2. Fallback na istniejącą metodę tylko wtedy, gdy wszystkie 4 boki kardynalne są zamurowane
+        return findWaterEscapeTarget(waterPos);
+    }
+
+    private BlockPos findWaterEscapeTarget(BlockPos feet) {
         if (ctx.world() == null || feet == null) return null;
         BlockPos best = null;
         double bestDist = Double.MAX_VALUE;
@@ -2614,6 +2864,109 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             }
         }
         return best;
+    }
+
+    /**
+     * Główna maszyna stanów ewakuacji z wody (z obsługą niskiego sufitu/półpłytki z pochodniami).
+     * Crouch-Pop (1.8m -> 1.5m) dla LivingEntity.isFree(dx, +0.6, dz) + GrimAC GCD alignment.
+     */
+    private PathingCommand executeWaterEscapeTick() {
+        waterTicks++;
+        postWaterGraceTicks = 25;
+
+        Level level = ctx.world();
+        Vec3 playerPos = ctx.player().position();
+        BlockPos waterBlockPos = BlockPos.containing(playerPos.x, playerPos.y + 0.2D, playerPos.z);
+
+        postWaterSafeAnchor = findDeepInlandDrySpot(playerPos, level);
+
+        // 1. Wyznacz idealny KARDYNALNY brzeg wyjścia (N, S, E, W)
+        BlockPos escapePos = findBestCardinalWaterExit(waterBlockPos);
+
+        // Wyczyść sprzeczne inputy z poprzedniego ticku
+        baritone.getInputOverrideHandler().clearAllKeys();
+
+        boolean hasCeiling = hasOverheadCeilingAboveWater(level, waterBlockPos);
+        // Wysokość stóp gracza względem dna kratki wody (0.0 = dno, ~0.45-0.55 = powierzchnia wody)
+        double relFeetY = playerPos.y - waterBlockPos.getY();
+        double velY = ctx.player().getDeltaMovement().y;
+
+        float yawError = 0.0F;
+        if (escapePos != null) {
+            Vec3 eyePos = ctx.player().getEyePosition(1.0F);
+            // Celujemy w kardynalny brzeg na wysokości krawędzi Farmland
+            Vec3 targetVec = new Vec3(
+                    escapePos.getX() + 0.5D,
+                    escapePos.getY() + 0.9375D,
+                    escapePos.getZ() + 0.5D
+            );
+            Rotation currentRot = (baritone.getLookBehavior().getServerRotation() != null)
+                    ? baritone.getLookBehavior().getServerRotation()
+                    : ctx.playerRotations();
+            Rotation rawEscapeRot = RotationUtils.calcRotationFromVec3d(eyePos, targetVec, currentRot);
+
+            // Przy wychodzeniu spod slaba lekko pochylamy wzrok (8.0F), nigdy ostro w górę ani w dół
+            Rotation finalEscapeRot = new Rotation(rawEscapeRot.getYaw(), 8.0F);
+            baritone.getLookBehavior().updateTarget(finalEscapeRot, true);
+
+            // Wyrównanie kamery zgodne ze ścisłą siatką GrimAC GCD
+            Rotation gcdEscapeRot = RotationEngine.snapToGcd(ctx.playerRotations(), finalEscapeRot);
+            ctx.player().setYRot(gcdEscapeRot.getYaw());
+            ctx.player().setXRot(gcdEscapeRot.getPitch());
+
+            yawError = Math.abs(Mth.wrapDegrees(ctx.player().getYRot() - rawEscapeRot.getYaw()));
+        }
+
+        // Failsafe po 140 tickach (7 sekund)
+        if (waterTicks > 140) {
+            triggerFailsafeHomeReturn("Utknięcie w wodzie pod sufitem (>7s)");
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // 2. CYKL ANTI-STUCK (Micro-Backoff):
+        // Jeśli bot tkwi w wodzie dłużej niż 12 ticków i uderzył głową w slab na Y+2,
+        // przez 2 ticki lekko odkleja się od ściany do środka wody,
+        // aby w kolejnym ticku uderzyć w krawędź Farmland na idealnej wysokości wybicia!
+        int cycleTick = waterTicks % 18;
+        boolean isMicroBackoffPhase = (waterTicks > 12) && (cycleTick == 15 || cycleTick == 16);
+
+        if (isMicroBackoffPhase) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+            baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, relFeetY < 0.35D);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // 3. FAZA WYPŁYWANIA I WYBICIA (CROUCH-POP POD PÓŁPŁYTKĄ / SŁUPKIEM):
+        // JUMP ciągły, by osiągnąć próg relFeetY >= 0.38
+        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+
+        // Wyłączamy SPRINT wewnątrz dziury 1x1, aby uniknąć odbić od ścian i pływania
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+
+        // Idziemy do przodu tylko wtedy, gdy celownik patrzy w wybrany brzeg kardynalny (< 30 stopni błędu)
+        if (yawError <= 30.0F) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        }
+
+        // 4. MECHANIKA SKRÓCENIA HITBOXA (1.8m -> 1.5m) POD SUFITEM / SLABEM:
+        // Gdy nad wodą wisi slab/słupek z pochodniami:
+        // - Poniżej relFeetY < 0.38: SNEAK = false (maksymalna prędkość wznoszenia +0.04/tick).
+        // - W oknie wybicia (relFeetY >= 0.38 i horizontalCollision lub relFeetY >= 0.52):
+        //   Włączamy impulsowo SNEAK = true! Zmniejsza to wysokość gracza z 1.8m na 1.5m,
+        //   dzięki czemu test LivingEntity.isFree(dx, +0.6, dz) mieści się pod slabem na Y+2.5 / Y+3.0
+        //   i odpala natychmiastowe wybicie z wody (deltaMovement.y = 0.3F) na Farmland (0.9375)!
+        if (hasCeiling) {
+            boolean atLedgePopWindow = (relFeetY >= 0.38D && ctx.player().horizontalCollision && (waterTicks % 3 != 0))
+                                    || (relFeetY >= 0.52D)
+                                    || (velY > 0.18D);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, atLedgePopWindow);
+        } else {
+            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
+        }
+
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -3119,38 +3472,13 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         // 5. BEZPIECZNA UCIECZKA Z WODY ORAZ POST-WATER GRACE (Argon 4)
         // ─────────────────────────────────────────────────────────────────
         if (ctx.player().isInWater() || ctx.player().isUnderWater()) {
-            waterTicks++;
-            postWaterGraceTicks = 25;
-            postWaterSafeAnchor = findDeepInlandDrySpot(ctx.player().position(), ctx.world());
-            // Pulsacyjny skok: gdy pod wodą, trzymaj JUMP by wypłynąć.
-            // Gdy na powierzchni, skacz co 2 ticki by wyskoczyć na brzeg (wypornościowy swim-hop bez flag GrimAC Jesus/Simulation)
-            boolean jumpPulse = ctx.player().isUnderWater() || (waterTicks % 2 == 0);
-            baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, jumpPulse);
-            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
-
-            BlockPos escapePos = findWaterEscapeTarget(playerPos);
-            if (escapePos != null) {
-                Vec3 eyePos = ctx.player().getEyePosition(1.0F);
-                Vec3 targetVec = Vec3.atCenterOf(escapePos).add(0, 0.45D, 0);
-                Rotation currentRot = (baritone.getLookBehavior().getServerRotation() != null)
-                        ? baritone.getLookBehavior().getServerRotation()
-                        : ctx.playerRotations();
-                Rotation escapeRot = RotationUtils.calcRotationFromVec3d(eyePos, targetVec, currentRot);
-                // Pitch lekko w dół (+12.0F) żeby wektor parł w wierzch bloku grządki
-                baritone.getLookBehavior().updateTarget(new Rotation(escapeRot.getYaw(), 12.0F), true);
-            }
-
-            if (waterTicks > 120) {
-                triggerFailsafeHomeReturn("Utknięcie w wodzie (>6s)");
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-            }
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            return executeWaterEscapeTick();
         } else {
             waterTicks = 0;
         }
 
-        // Post-water grace period: dopóki bot nie oddali się na bezpieczną odległość od wody (>= 1.35m),
+        // Post-water grace period: dopóki bot nie oddali się na bezpieczną odległość od wody (>= 1.35m)
+        // lub nie wyjdzie spod niskiego sufitu (półpłytka z pochodniami),
         // idzie WYŁĄCZNIE w głąb pola i nie pozwala kamerze celować w kłosy przy krawędzi kanału!
         if (postWaterGraceTicks > 0) {
             postWaterGraceTicks--;
@@ -3158,7 +3486,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 postWaterSafeAnchor = findDeepInlandDrySpot(ctx.player().position(), ctx.world());
             }
             double distToWater = computeMinDistanceToWater(ctx.player().position(), ctx.world(), 2);
-            if (distToWater < 1.35D && postWaterSafeAnchor != null) {
+            boolean underLowCeiling = !isCollisionFree(ctx.world(), ctx.playerFeet().above(2));
+            if ((distToWater < 1.35D || underLowCeiling) && postWaterSafeAnchor != null) {
                 Vec3 eye = ctx.player().getEyePosition(1.0F);
                 Rotation escapeRot = RotationUtils.calcRotationFromVec3d(eye, postWaterSafeAnchor, getSafeServerRotation());
                 baritone.getLookBehavior().updateTarget(new Rotation(escapeRot.getYaw(), 10.0F), true);
@@ -3166,8 +3495,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 input.clearAllKeys();
                 input.setInputForceState(Input.MOVE_FORWARD, true);
                 input.setInputForceState(Input.SPRINT, false);
+                input.setInputForceState(Input.SNEAK, underLowCeiling);
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-            } else if (distToWater >= 1.35D) {
+            } else if (distToWater >= 1.35D && !underLowCeiling) {
                 postWaterGraceTicks = 0;
                 postWaterSafeAnchor = null;
             }
@@ -4245,6 +4575,10 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             ctx.player().setSprinting(canSprint);
         }
         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
+
+        // Zabezpieczenie Swept-AABB + Sneak Edge Lock przed wpadnięciem do 1x1 wody w sprincie (Argon 4)
+        applyWaterHazardProtection(this.lockedTarget != null ? this.lockedTarget : (lookAheadTarget != null ? lookAheadTarget : currentTargetPos));
+
         if (goalz.isEmpty()) {
             cachedCompositeGoal = null;
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
