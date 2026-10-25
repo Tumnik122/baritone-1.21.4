@@ -387,8 +387,8 @@ public final class Settings {
 
     /** IMPROVEMENT 4: smooth, human-like rotation. */
     public final Setting<Boolean> smoothRotation = new Setting<>(true);
-    public final Setting<Integer> maxRotationStepDegrees = new Setting<>(45);
-    public final Setting<Double> rotationNoiseDegrees = new Setting<>(0.5);
+    public final Setting<Integer> maxRotationStepDegrees = new Setting<>(360);
+    public final Setting<Double> rotationNoiseDegrees = new Setting<>(0.0);
 
     /** Master switch for strict anti-cheat compat (GrimAC). Forces
      *  placementDelayTicks >= 2, smooth rotation and disables sprinting while a
@@ -1140,9 +1140,9 @@ public final class Settings {
 
     /**
      * Maximum rotation speed in degrees per tick when humanizedRotations is enabled.
-     * Realistic human turning speed is between 15° and 35° per tick.
+     * Ustawione na 720° (maksymalna prędkość natychmiastowego obrotu w 1 ticku / 50ms na siatce GCD).
      */
-    public final Setting<Float> maxRotationSpeedPerTick = new Setting<>(140.0F);
+    public final Setting<Float> maxRotationSpeedPerTick = new Setting<>(720.0F);
 
     /**
      * Subtle micro-noise amplitude added to smooth aim trajectories while strictly adhering to GCD.
@@ -1182,9 +1182,9 @@ public final class Settings {
 
     /**
      * Bezpieczny zasięg interakcji (kratki).
-     * Waniliowy to 4.5, ale Grim sprawdza powyżej 3.0 - 3.1 kratki od oczu.
+     * Waniliowy to 4.5, bezpieczny zasięg GrimAC to 3.65 kratki od oczu.
      */
-    public final Setting<Double> grimSafeReach = new Setting<>(3.0);
+    public final Setting<Double> grimSafeReach = new Setting<>(3.65);
 
     /**
      * Czy wymuszać sprint tylko zgodnie z logiką waniliową.
@@ -2092,6 +2092,13 @@ public final class Settings {
      * Render selection corners
      */
     public final Setting<Boolean> renderSelectionCorners = new Setting<>(true);
+
+    /**
+     * Whether full visual effects (GLSL holo boxes, shader fills, glowing beacons, dense builder meshes)
+     * are rendered for selections (#sel visual on/off).
+     * When false (off): only the target blocks and a clean, light bounding box outline of the selection are rendered.
+     */
+    public final Setting<Boolean> selectionVisuals = new Setting<>(true);
 
     /**
      * Włącza shaderowy block overlay w stylu Ventura Client (gładkie fale, animowany gradient Lilac-Cyan)

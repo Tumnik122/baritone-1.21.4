@@ -137,6 +137,26 @@ public class SelCommand extends Command {
                 setPos1(null);
                 logDirect("Selection added");
             }
+        } else if (action == Action.VISUAL) {
+            boolean newState;
+            if (args.hasAny()) {
+                String sub = args.getString().toLowerCase(Locale.ROOT);
+                if (sub.equals("on") || sub.equals("true") || sub.equals("1") || sub.equals("enable") || sub.equals("wlacz")) {
+                    newState = true;
+                } else if (sub.equals("off") || sub.equals("false") || sub.equals("0") || sub.equals("disable") || sub.equals("wylacz")) {
+                    newState = false;
+                } else if (sub.equals("toggle")) {
+                    newState = !Baritone.settings().selectionVisuals.value;
+                } else {
+                    throw new CommandInvalidStateException("Użycie: #sel visual on | off | toggle");
+                }
+            } else {
+                newState = !Baritone.settings().selectionVisuals.value;
+            }
+            args.requireMax(0);
+            Baritone.settings().selectionVisuals.value = newState;
+            logDirect("Selection visuals: " + (newState ? "ON (pełne efekty GLSL/shadery)" : "OFF (tylko bloki i lekka otoczka)"));
+            return;
         } else if (action == Action.CLEAR) {
             args.requireMax(0);
             setPos1(null);
@@ -501,6 +521,13 @@ public class SelCommand extends Command {
                                 .filterPrefix(args.getString())
                                 .stream();
                     }
+                } else if (action == Action.VISUAL) {
+                    if (args.hasExactlyOne()) {
+                        return new TabCompleteHelper()
+                                .append("on", "off", "toggle")
+                                .filterPrefix(args.getString())
+                                .stream();
+                    }
                 }
             }
         }
@@ -649,7 +676,9 @@ public class SelCommand extends Command {
                 "",
                 "> sel expand <target> <direction> <blocks> - Expand the targets.",
                 "> sel contract <target> <direction> <blocks> - Contract the targets.",
-                "> sel shift <target> <direction> <blocks> - Shift the targets (does not resize)."
+                "> sel shift <target> <direction> <blocks> - Shift the targets (does not resize).",
+                "",
+                "> sel visual/vis/v [on|off|toggle] - Przełącza zaawansowane efekty wizualne (off: tylko bloki i lekka otoczka)."
         );
     }
 
@@ -659,6 +688,7 @@ public class SelCommand extends Command {
         CLEAR("clear", "c"),
         UNDO("undo", "u"),
         BOX("box", "b", "front", "fr", "forward", "przod", "przed"),
+        VISUAL("visual", "visuals", "vis", "v"),
         SET("set", "fill", "s", "f"),
         WALLS("walls", "w"),
         SHELL("shell", "shl"),

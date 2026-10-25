@@ -47,8 +47,8 @@ public final class RotationEngine {
 
     public static final double ANGLE_TOLERANCE = 2.5D;
     public static final double BLOCK_INTERACT_TOLERANCE = 1.5D;
-    public static final double DEFAULT_MAX_SPEED = 140.0D;
-    public static final double MAX_ROTATION_SPEED = 720.0D; // legacy fallback
+    public static final double DEFAULT_MAX_SPEED = 360.0D;
+    public static final double MAX_ROTATION_SPEED = 720.0D;
     public static final long ROTATION_TIMEOUT_MS = 250L;
     public static final int MIN_PRE_ROTATION_TICKS = 1;
 
@@ -94,6 +94,53 @@ public final class RotationEngine {
         return Math.round(delta / gcd) * gcd;
     }
 
+    public static final float PITCH_LIMIT = 89.5F;
+
+    /**
+     * Zgodność z GrimAC GCD: Wyznacza nową rotację w 1 ticku (50ms) o ścisłą wielokrotność GCD,
+     * eliminując sztuczne opóźnienia, limity prędkości i zacięcia kątowe.
+     * KRYTYCZNE DLA ZERO FLAG GRIMAC (rekomendacja Argon 4):
+     * 1. Zawijamy wyłącznie deltaYaw, NIGDY wynikowy nextYaw (ochrona przed AimModulo360).
+     * 2. deltaPitch jest całkowitą wielokrotnością GCD korygowaną w pętli do [-89.5, 89.5].
+     * 3. Jeśli kYaw == 0 i kPitch == 0, zwracamy dokładnie current (ochrona przed AimDuplicateLook).
+     */
+    public static Rotation snapToGcd(Rotation current, Rotation target) {
+        if (current == null) return target;
+        if (target == null) return current;
+
+        double gcd = getGcd();
+        if (gcd <= 1.0E-6D) {
+            return new Rotation(target.getYaw(), Mth.clamp(target.getPitch(), -PITCH_LIMIT, PITCH_LIMIT));
+        }
+
+        float deltaYaw = Mth.wrapDegrees(target.getYaw() - current.getYaw());
+        float clampedTargetPitch = Mth.clamp(target.getPitch(), -PITCH_LIMIT, PITCH_LIMIT);
+        float deltaPitch = clampedTargetPitch - current.getPitch();
+
+        int kYaw = (int) Math.round(deltaYaw / gcd);
+        int kPitch = (int) Math.round(deltaPitch / gcd);
+
+        // Ochrona przed AimDuplicateLook: brak sztucznego wywoływania mikro-skoków poniżej progu GCD
+        if (kYaw == 0 && kPitch == 0) {
+            return current;
+        }
+
+        float nextYaw = (float) (current.getYaw() + (kYaw * gcd));
+        float nextPitch = (float) (current.getPitch() + (kPitch * gcd));
+
+        // Ścisła korekcja krawędziowa w krokach GCD (nigdy nie obcinamy nieliniowym clampem)
+        while (nextPitch > PITCH_LIMIT) {
+            kPitch--;
+            nextPitch = (float) (current.getPitch() + (kPitch * gcd));
+        }
+        while (nextPitch < -PITCH_LIMIT) {
+            kPitch++;
+            nextPitch = (float) (current.getPitch() + (kPitch * gcd));
+        }
+
+        return new Rotation(nextYaw, nextPitch);
+    }
+
     /**
      * Krzywa Smootherstep (Ken Perlin): S(t) = 6t^5 - 15t^4 + 10t^3.
      * C2 continuity: S'(0) = S'(1) = 0, S''(0) = S''(1) = 0.
@@ -119,21 +166,11 @@ public final class RotationEngine {
     }
 
     /**
-     * Niemal natychmiastowa liczba ticków na obrót (1-2 ticki, 50-100ms) z pełną kwantyzacją GCD:
-     * Daje natychmiastową reakcję i zwinność bez flag Raytrace, Aim czy InvalidSensitivity.
+     * Rekomendacja Argon 4: Maksymalna prędkość obrotu (zawsze 1 tick / 50ms)
+     * ze ścisłą kwantyzacją GCD pod GrimAC dla wszystkich kątów (w tym flick 180°).
      */
     public static int calculateTicksForAngle(double angleDelta, boolean blockInteract) {
-        if (blockInteract) {
-            // Maksymalna prędkość pod interakcje (zbiory, sadzenie, #farm) — zawsze 1 tick (50ms) z pełną siatką GCD
-            return 1;
-        } else {
-            // Błyskawiczna rotacja w biegu i rozglądaniu (100% GrimAC GCD safe)
-            if (angleDelta <= 135.0D) {
-                return 1; // 1 tick dla zakrętów do 135°
-            } else {
-                return 2; // Dokładnie 2 ticki dla pełnego zwrotu o 180°
-            }
-        }
+        return 1;
     }
 
     /**
@@ -204,9 +241,9 @@ public final class RotationEngine {
             currentInterpolationTick = 0;
             rotationStartTimeMs = System.currentTimeMillis();
 
-            // Biomechaniczny łuk (nadgarstek/łokieć) — zapobiega wykryciu liniowości ruchu (Linear Aim)
+            // Biomechaniczny łuk wyłączony przy maksymalnej prędkości 1-tickowej (pełna precyzja i natychmiastowy flick)
             arcDirection = rng.nextBoolean() ? 1.0D : -1.0D;
-            arcAmplitude = blockInteract ? 0.0D : Math.min(1.6D, totalAngle * 0.035D);
+            arcAmplitude = 0.0D;
         }
 
         // Warunek dotarcia do celu (w obrębie tolerancji kątowej):
@@ -230,7 +267,7 @@ public final class RotationEngine {
             return;
         }
 
-        // Obliczanie postępu na krzywej Smootherstep (C2 zero jerk)
+        // Obliczanie postępu na krzywej Smootherstep (C2 zero jerk, 1 tick = 100% obrotu)
         currentInterpolationTick++;
         double t = (double) currentInterpolationTick / (double) Math.max(totalInterpolationTicks, 1);
         double easedT = smootherstep(t);
@@ -254,15 +291,10 @@ public final class RotationEngine {
         double stepYaw = Mth.wrapDegrees((float) (expectedYaw - curYaw));
         double stepPitch = expectedPitch - curPitch;
 
-        // Ograniczenie maksymalnej prędkości obrotu na tick (pobrane z ustawień)
-        double maxSpeed = DEFAULT_MAX_SPEED;
+        // Maksymalna prędkość obrotu na tick — 720° (błyskawiczny flick w 1 tick, 100% GrimAC GCD)
+        double maxSpeed = MAX_ROTATION_SPEED;
         if (settings != null && settings.maxRotationSpeedPerTick != null) {
-            maxSpeed = Math.max(settings.maxRotationSpeedPerTick.value, 180.0D);
-        }
-        if (blockInteract) {
-            maxSpeed = Math.max(maxSpeed, 360.0D);
-        } else {
-            maxSpeed = Math.max(maxSpeed, 180.0D);
+            maxSpeed = Math.max(settings.maxRotationSpeedPerTick.value, 720.0D);
         }
 
         stepYaw = Mth.clamp(stepYaw, -maxSpeed, maxSpeed);
@@ -306,8 +338,13 @@ public final class RotationEngine {
 
     /**
      * Aplikuje rotację z gwarancją zachowania siatki GCD oraz zakresu pitch [-89.5°, 89.5°].
+     * Pomija zapis, jeśli zmiana kąta wynosi 0 (ochrona przed AimDuplicateLook).
      */
-    private static void applyQuantizedRotation(LocalPlayer player, float curYaw, float curPitch, double deltaYaw, double deltaPitch, double gcd) {
+     private static void applyQuantizedRotation(LocalPlayer player, float curYaw, float curPitch, double deltaYaw, double deltaPitch, double gcd) {
+        if (Math.abs(deltaYaw) < 1.0E-5D && Math.abs(deltaPitch) < 1.0E-5D) {
+            return;
+        }
+
         if (curPitch + deltaPitch > 89.5D) {
             int maxAllowedSteps = (int) Math.floor((89.5D - curPitch) / gcd);
             deltaPitch = maxAllowedSteps * gcd;
@@ -321,6 +358,7 @@ public final class RotationEngine {
 
         player.setYRot(newYaw);
         player.setXRot(newPitch);
+        player.yHeadRot = newYaw;
     }
 
     /**

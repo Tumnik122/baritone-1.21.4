@@ -904,9 +904,10 @@ public final class PathRenderer implements IRenderer {
 
             List<PlacementScheduler.Target> pending = builder.getPendingTargets();
             PlacementScheduler.Target current = builder.getCurrentTarget();
+            boolean fullVisuals = BaritoneAPI.getSettings().selectionVisuals.value;
 
             // ---- pass 1: color-coded wireframes for all pending targets (no depth test) ----
-            if (!pending.isEmpty()) {
+            if (fullVisuals && !pending.isEmpty()) {
                 // Color constants
                 Color colorGreen  = new Color(0x00, 0xFF, 0x64, 100);
                 Color colorAmber  = new Color(0xFF, 0xC8, 0x00, 76);
@@ -950,18 +951,20 @@ public final class PathRenderer implements IRenderer {
             // ---- pass 2: current target — bright white pulsing wireframe + holo fill ----
             if (current != null) {
                 float pulse = 0.5f + 0.5f * Mth.sin(time * 6.0f);
-                Color curColor = new Color(1.0f, 1.0f, 1.0f, 0.5f + 0.5f * pulse);
+                float lineW = fullVisuals ? 2.5f : 1.2f;
+                float lineA = fullVisuals ? (0.5f + 0.5f * pulse) : 0.45f;
+                Color curColor = new Color(1.0f, 1.0f, 1.0f, lineA);
 
-                BufferBuilder bbCur = IRenderer.startLines(curColor, 0.5f + 0.5f * pulse, 2.5f, true);
+                BufferBuilder bbCur = IRenderer.startLines(curColor, lineA, lineW, true);
                 try {
-                    IRenderer.glColor(curColor, 0.5f + 0.5f * pulse);
+                    IRenderer.glColor(curColor, lineA);
                     IRenderer.emitAABB(bbCur, stack, new AABB(current.pos));
                 } finally {
                     IRenderer.endLines(bbCur, true);
                 }
 
                 // Holographic fill (uses existing holo shader if available)
-                if (BaritoneAPI.getSettings().builderHologramCurrentTarget.value) {
+                if (fullVisuals && BaritoneAPI.getSettings().builderHologramCurrentTarget.value) {
                     Color holoColor = new Color(0x9A, 0xE8, 0xFF, (int)(255 * 0.25f * (0.6f + 0.4f * pulse)));
                     if (WorldFxShaders.isUsable()) {
                         WorldFxShaders.begin(stack, currentProjection, WorldFxShaders.MODE_HOLO, true, false);
@@ -980,7 +983,7 @@ public final class PathRenderer implements IRenderer {
             }
 
             // ---- pass 3: placement FX (orbiting orbs on success) ----
-            if (BaritoneAPI.getSettings().builderPlacementFx.value && WorldFxShaders.isUsable()) {
+            if (fullVisuals && BaritoneAPI.getSettings().builderPlacementFx.value && WorldFxShaders.isUsable()) {
                 renderPlacementFxOrbs(stack, builder, time, partialTicks);
             }
         } catch (Throwable ignored) {

@@ -29,6 +29,10 @@ public final class SmoothLookHelper {
         apply(player, target, settings, false);
     }
 
+    public static Rotation applySmoothLook(Rotation current, Rotation target) {
+        return baritone.bypass.RotationEngine.snapToGcd(current, target);
+    }
+
     public static void apply(LocalPlayer player, Rotation target, Settings settings, boolean blockInteract) {
         if (settings == null || settings.antiCheatCompat.value || settings.smoothRotation.value) {
             baritone.bypass.RotationEngine.apply(player, target, settings, blockInteract);
@@ -37,7 +41,7 @@ public final class SmoothLookHelper {
 
         ThreadLocalRandom rng = ThreadLocalRandom.current();
 
-        float maxStep = blockInteract ? Math.max(settings.maxRotationStepDegrees.value, 60.0f) : settings.maxRotationStepDegrees.value;
+        float maxStep = blockInteract ? Math.max(settings.maxRotationStepDegrees.value, 360.0f) : Math.max(settings.maxRotationStepDegrees.value, 360.0f);
         float noise = blockInteract ? 0f : settings.rotationNoiseDegrees.value.floatValue();
         float curYaw = player.getYRot();
         float curPitch = player.getXRot();

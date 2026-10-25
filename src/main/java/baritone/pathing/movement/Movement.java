@@ -190,6 +190,15 @@ public abstract class Movement implements IMovement, MovementHelper {
         return false;
     }
 
+    protected boolean isBuilderBreakingActive() {
+        if (baritone.getBuilderProcess() != null && baritone.getBuilderProcess().isActive()) {
+            if (baritone.getBuilderProcess() instanceof baritone.process.BuilderProcess bp && bp.isActivelyBreaking()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public boolean hasUnbrokenPositionsToBreak() {
         if (isFarmOrTillActive()) {
             return false;
@@ -246,7 +255,9 @@ public abstract class Movement implements IMovement, MovementHelper {
                         }
                     }
 
-                    MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, breakTarget));
+                    if (!isBuilderBreakingActive()) {
+                        MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, breakTarget));
+                    }
                     boolean hitsBlock = hitBlock != null && (hitBlock.equals(currentMiningPos) || hitBlock.equals(breakTarget));
                     boolean isLooking = ctx.isLookingAt(currentMiningPos) || ctx.isLookingAt(breakTarget);
 
@@ -279,7 +290,9 @@ public abstract class Movement implements IMovement, MovementHelper {
             if (!MovementHelper.canWalkThrough(ctx, blockPos) && (ctx.isLookingAt(blockPos) || lookingAtObstr)) {
                 currentMiningPos = blockPos;
                 BlockPos targetToBreak = lookingAtObstr ? hitBlock : blockPos;
-                MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, targetToBreak));
+                if (!isBuilderBreakingActive()) {
+                    MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, targetToBreak));
+                }
                 Optional<Rotation> reachable = RotationUtils.reachable(ctx, blockPos, ctx.playerController().getBlockReachDistance());
                 Rotation rot = reachable.orElseGet(() -> ctx.playerRotations());
                 state.setTarget(new MovementState.MovementTarget(rot, true));
@@ -323,7 +336,9 @@ public abstract class Movement implements IMovement, MovementHelper {
                         }
                     }
 
-                    MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, breakTarget));
+                    if (!isBuilderBreakingActive()) {
+                        MovementHelper.switchToBestToolFor(ctx, BlockStateInterface.get(ctx, breakTarget));
+                    }
                     boolean hitsBlock = hitBlock != null && (hitBlock.equals(blockPos) || hitBlock.equals(breakTarget));
                     boolean isLooking = ctx.isLookingAt(blockPos) || ctx.isLookingAt(breakTarget);
 
@@ -345,7 +360,9 @@ public abstract class Movement implements IMovement, MovementHelper {
                     BlockPos hitPos = bhr.getBlockPos();
                     BlockState hitState = ctx.world().getBlockState(hitPos);
                     if (ObstructionHelper.isClearableObstruction(hitState) && ObstructionHelper.isCoveringOrAdjacent(hitPos, blockPos)) {
-                        MovementHelper.switchToBestToolFor(ctx, hitState);
+                        if (!isBuilderBreakingActive()) {
+                            MovementHelper.switchToBestToolFor(ctx, hitState);
+                        }
                         state.setInput(Input.CLICK_LEFT, true);
                         ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(hitPos));
                         return false;

@@ -2,6 +2,7 @@ package baritone.bypass;
 
 import baritone.api.utils.RayTraceUtils;
 import baritone.api.utils.Rotation;
+import baritone.api.utils.RotationUtils;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -15,6 +16,8 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
+import java.util.Optional;
+
 /**
  * Ultra-Fast GrimAC-Safe Snap Rotation & Shared Ray Alignment Utility.
  * Opracowane we współpracy z modelem ARGON 4 dla trybów #praca oraz #sel cleararea.
@@ -23,7 +26,7 @@ public final class GrimSnapRotationUtil {
 
     public record VerifiedBlockAim(Rotation rotation, Direction hitFace, Vec3 hitVec) {}
 
-    private static final double[] CROP_Y_OFFSETS = {0.50D, 0.65D, 0.35D, 0.80D, 0.20D};
+    private static final double[] CROP_Y_OFFSETS = {0.72D, 0.60D, 0.82D, 0.50D, 0.38D};
     private static final double[] XZ_OFFSETS = {0.50D, 0.35D, 0.65D, 0.25D, 0.75D};
     private static final double[] FACE_GRID = {0.50D, 0.25D, 0.75D, 0.15D, 0.85D};
 
@@ -216,22 +219,33 @@ public final class GrimSnapRotationUtil {
 
         float gcd = getGcd();
         float deltaYaw = Mth.wrapDegrees(rawYaw - currentYaw);
-        float deltaPitch = rawPitch - currentPitch;
+        float deltaPitch = Mth.clamp(rawPitch, -89.5F, 89.5F) - currentPitch;
 
-        // Błyskawiczny obrót do 125° yaw i 85° pitch w 1 ticku (pełna prędkość interakcji GrimAC)
-        float clampedYaw = Mth.clamp(deltaYaw, -125.0f, 125.0f);
-        float clampedPitch = Mth.clamp(deltaPitch, -85.0f, 85.0f);
+        // Błyskawiczny obrót do pełnego kąta w 1 ticku (pełna prędkość interakcji GrimAC GCD)
+        int mouseX = Math.round(deltaYaw / gcd);
+        int mouseY = Math.round(deltaPitch / gcd);
 
-        int mouseX = Math.round(clampedYaw / gcd);
-        int mouseY = Math.round(clampedPitch / gcd);
+        if (mouseX == 0 && mouseY == 0) {
+            return new float[]{currentYaw, currentPitch};
+        }
 
         // GrimAC AimDuplicateLook guard: wymuś min. 1 krok GCD na osi X przy zmianie pitch, jeśli myszka się rusza
         if (mouseX == 0 && mouseY != 0 && Math.abs(deltaYaw) > 1e-4f) {
             mouseX = deltaYaw > 0 ? 1 : -1;
         }
 
-        float nextYaw = currentYaw + mouseX * gcd;
-        float nextPitch = Mth.clamp(currentPitch + mouseY * gcd, -89.5f, 89.5f);
+        float nextYaw = currentYaw + (mouseX * gcd);
+        float nextPitch = currentPitch + (mouseY * gcd);
+
+        while (nextPitch > 89.5F) {
+            mouseY--;
+            nextPitch = currentPitch + (mouseY * gcd);
+        }
+        while (nextPitch < -89.5F) {
+            mouseY++;
+            nextPitch = currentPitch + (mouseY * gcd);
+        }
+
         return new float[]{nextYaw, nextPitch};
     }
 
@@ -304,10 +318,75 @@ public final class GrimSnapRotationUtil {
      * Pozwala to na ścięcie i zasadzenie z minimalną zmianą kąta pitch (<= 2 * gcd).
      */
     public static Vec3 computeSharedHarvestReplantVec(Vec3 predictedEye, BlockPos cropPos, boolean isHarvest) {
-        double targetY = isHarvest ? (cropPos.getY() + 0.10D) : (cropPos.getY() - 0.0625D);
-        // Clamp XZ do [0.22, 0.78] gwarantuje trafienie w Direction.UP bloku Farmland
-        double targetX = Mth.clamp(predictedEye.x, cropPos.getX() + 0.22D, cropPos.getX() + 0.78D);
-        double targetZ = Mth.clamp(predictedEye.z, cropPos.getZ() + 0.22D, cropPos.getZ() + 0.78D);
+        double targetY = isHarvest ? (cropPos.getY() + 0.65D) : (cropPos.getY() - 0.0625D);
+        double targetX = cropPos.getX() + 0.5D;
+        double targetZ = cropPos.getZ() + 0.5D;
         return new Vec3(targetX, targetY, targetZ);
+    }
+
+    private static final int[][] GCD_SPIRAL_OFFSETS = {
+            {0, 0}, {1, 0}, {-1, 0}, {0, 1}, {0, -1},
+            {1, 1}, {-1, -1}, {1, -1}, {-1, 1},
+            {2, 0}, {-2, 0}, {0, 2}, {0, -2},
+            {2, 1}, {-2, 1}, {2, -1}, {-2, -1},
+            {1, 2}, {-1, 2}, {1, -2}, {-1, -2}
+    };
+
+    /**
+     * Znajduje 1-tickowy kąt na siatce GCD pod GrimAC, który jednocześnie:
+     * 1. Trafia w hitbox kłosa (cropPos = farmlandPos.above()) przed zniszczeniem.
+     * 2. Po zniszczeniu kłosa natychmiast trafia w górną ścianę (Direction.UP) Farmlandu (farmlandPos).
+     * Umożliwia zbiór i zasianie (Harvest + Instant Replant) w JEDNYM TICKU (50 ms) pod GrimAC!
+     */
+    public static Rotation findSharedCropAndFarmlandSnap(
+            LocalPlayer player,
+            BlockPos farmlandPos,
+            double reach) {
+
+        if (player == null || farmlandPos == null || player.level() == null) {
+            return player != null ? new Rotation(player.getYRot(), player.getXRot()) : new Rotation(0.0F, 0.0F);
+        }
+
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        // Celujemy w środek górnej powierzchni Farmland (Y + 0.9375), przez nasadę kłosa
+        Vec3 sharedSweetSpot = new Vec3(
+                farmlandPos.getX() + 0.5D,
+                farmlandPos.getY() + 0.9375D,
+                farmlandPos.getZ() + 0.5D
+        );
+
+        float currentYaw = player.getYRot();
+        float currentPitch = player.getXRot();
+        float[] baseSnap = snapGcd(currentYaw, currentPitch, eyePos, sharedSweetSpot);
+        Rotation baseRot = new Rotation(baseSnap[0], baseSnap[1]);
+
+        AABB farmlandTopBox = new AABB(
+                farmlandPos.getX(), farmlandPos.getY(), farmlandPos.getZ(),
+                farmlandPos.getX() + 1.0D, farmlandPos.getY() + 0.9375D, farmlandPos.getZ() + 1.0D
+        );
+
+        float gcd = getGcd();
+        for (int[] offset : GCD_SPIRAL_OFFSETS) {
+            float candYaw = baseRot.getYaw() + (offset[0] * gcd);
+            float candPitch = Mth.clamp(baseRot.getPitch() + (offset[1] * gcd), -89.5F, 89.5F);
+
+            Rotation candRot = new Rotation(candYaw, candPitch);
+            Vec3 lookVec = RotationUtils.calcLookDirectionFromRotation(candRot);
+            Vec3 endPos = eyePos.add(lookVec.scale(reach));
+
+            Optional<Vec3> hitVec = farmlandTopBox.clip(eyePos, endPos);
+            if (hitVec.isPresent() && Math.abs(hitVec.get().y - (farmlandPos.getY() + 0.9375D)) < 1.0E-3D) {
+                // Zweryfikuj czy promień przecina kłos lub sam farmland
+                HitResult hit = RayTraceUtils.rayTraceTowards(player, candRot, reach, player.isCrouching());
+                if (hit instanceof BlockHitResult bhr) {
+                    BlockPos bp = bhr.getBlockPos();
+                    if (bp.equals(farmlandPos.above()) || (bp.equals(farmlandPos) && bhr.getDirection() == Direction.UP)) {
+                        return candRot;
+                    }
+                }
+            }
+        }
+
+        return baseRot;
     }
 }

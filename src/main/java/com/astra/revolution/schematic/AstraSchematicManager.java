@@ -8,6 +8,7 @@ import baritone.api.pathing.goals.GoalComposite;
 import baritone.api.pathing.goals.GoalNear;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
+import baritone.bypass.RotationEngine;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
 import net.minecraft.client.player.LocalPlayer;
@@ -2987,52 +2988,19 @@ public final class AstraSchematicManager {
                 float currentPitch,
                 float targetYaw,
                 float targetPitch) {
-            float rawDeltaYaw = Mth.wrapDegrees(targetYaw - currentYaw);
-            float rawDeltaPitch = Mth.clamp(targetPitch, -90.0F, 90.0F) - currentPitch;
-
-            float angularDistance = Mth.sqrt(rawDeltaYaw * rawDeltaYaw + rawDeltaPitch * rawDeltaPitch);
-            if (angularDistance < MIN_STEP_THRESHOLD) {
-                return new Rotation(currentYaw, Mth.clamp(currentPitch, -90.0F, 90.0F));
-            }
-
-            float t = Mth.clamp(angularDistance / 45.0F, 0.58F, 1.0F);
-            float c2Factor = t * t * t * (t * (t * 6.0F - 15.0F) + 10.0F);
-
-            float maxYawStep = Math.max(24.0F, MAX_YAW_SPEED_PER_TICK * c2Factor);
-            float maxPitchStep = Math.max(20.0F, MAX_PITCH_SPEED_PER_TICK * c2Factor);
-
-            float steppedDeltaYaw = Mth.clamp(rawDeltaYaw, -maxYawStep, maxYawStep);
-            float steppedDeltaPitch = Mth.clamp(rawDeltaPitch, -maxPitchStep, maxPitchStep);
-
-            float gcd = computeMouseSensitivityGcd();
-
-            float quantizedDeltaYaw = quantizeAngleDelta(steppedDeltaYaw, gcd);
-            float quantizedDeltaPitch = quantizeAngleDelta(steppedDeltaPitch, gcd);
-
-            if (Math.abs(quantizedDeltaYaw) < MIN_STEP_THRESHOLD && Math.abs(rawDeltaYaw) >= gcd * 0.5F) {
-                quantizedDeltaYaw = Math.copySign(gcd, rawDeltaYaw);
-            }
-            if (Math.abs(quantizedDeltaPitch) < MIN_STEP_THRESHOLD && Math.abs(rawDeltaPitch) >= gcd * 0.5F) {
-                quantizedDeltaPitch = Math.copySign(gcd, rawDeltaPitch);
-            }
-
-            float finalYaw = currentYaw + quantizedDeltaYaw;
-            float finalPitch = Mth.clamp(currentPitch + quantizedDeltaPitch, -90.0F, 90.0F);
-
-            return new Rotation(finalYaw, finalPitch);
+            return RotationEngine.snapToGcd(
+                    new Rotation(currentYaw, currentPitch),
+                    new Rotation(targetYaw, targetPitch)
+            );
         }
 
         public Rotation quantizeToPlayerGrid(LocalPlayer player, float candidateYaw, float candidatePitch) {
             float baseYaw = player.getYRot();
             float basePitch = player.getXRot();
-            float gcd = computeMouseSensitivityGcd();
-
-            float deltaYaw = Mth.wrapDegrees(candidateYaw - baseYaw);
-            float deltaPitch = candidatePitch - basePitch;
-
-            float qYaw = baseYaw + quantizeAngleDelta(deltaYaw, gcd);
-            float qPitch = Mth.clamp(basePitch + quantizeAngleDelta(deltaPitch, gcd), -90.0F, 90.0F);
-            return new Rotation(qYaw, qPitch);
+            return RotationEngine.snapToGcd(
+                    new Rotation(baseYaw, basePitch),
+                    new Rotation(candidateYaw, candidatePitch)
+            );
         }
 
         public float computeMouseSensitivityGcd() {

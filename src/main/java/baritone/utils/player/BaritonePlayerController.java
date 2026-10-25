@@ -60,9 +60,46 @@ public final class BaritonePlayerController implements IPlayerController {
         this.mc = mc;
     }
 
+    private static int lastSentSelectedSlot = -1;
+    private static long lastSentSlotTick = -1L;
+
+    public static void setCarriedItemSafe(LocalPlayer player, int targetSlot) {
+        if (player == null || targetSlot < 0 || targetSlot > 8) {
+            return;
+        }
+        Minecraft client = Minecraft.getInstance();
+        long currentTick = player.tickCount;
+
+        // Jeśli slot w ekwipunku i ostatnio wysłany pakiet to ten sam slot - nic nie rób
+        if (player.getInventory().selected == targetSlot && lastSentSelectedSlot == targetSlot) {
+            return;
+        }
+
+        // Zabezpieczenie przed GrimAC BadPacketsA:
+        // GrimAC rzuca flagę, jeśli w TYM SAMYM TICKU gracz wyśle zmianę na slot A, a potem na slot B
+        if (lastSentSlotTick == currentTick && lastSentSelectedSlot != -1 && lastSentSelectedSlot != targetSlot) {
+            player.getInventory().selected = targetSlot;
+            return;
+        }
+
+        player.getInventory().selected = targetSlot;
+        lastSentSelectedSlot = targetSlot;
+        lastSentSlotTick = currentTick;
+
+        if (client.gameMode != null) {
+            ((IPlayerControllerMP) client.gameMode).callSyncCurrentPlayItem();
+        } else if (player.connection != null) {
+            player.connection.send(new net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket(targetSlot));
+        }
+    }
+
     @Override
     public void syncHeldItem() {
-        ((IPlayerControllerMP) mc.gameMode).callSyncCurrentPlayItem();
+        if (mc.player != null) {
+            setCarriedItemSafe(mc.player, mc.player.getInventory().selected);
+        } else if (mc.gameMode != null) {
+            ((IPlayerControllerMP) mc.gameMode).callSyncCurrentPlayItem();
+        }
     }
 
     @Override
@@ -288,16 +325,16 @@ public final class BaritonePlayerController implements IPlayerController {
         // GrimAC Protection: RotationBreak & PositionBreakA
         IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(mc.player);
         if (baritone != null && isGrim) {
-            Rotation serverRot = baritone.getLookBehavior().getServerRotation();
-            if (serverRot == null) {
-                return false;
+            Rotation activeRot = baritone.getLookBehavior().getEffectiveRotation()
+                    .orElseGet(() -> baritone.getLookBehavior().getServerRotation());
+            if (activeRot == null) {
+                activeRot = new Rotation(mc.player.getYRot(), mc.player.getXRot());
             }
-            double reach = Math.min(3.0D, Math.min(Baritone.settings().grimSafeReach.value, getBlockReachDistance()));
-            HitResult serverHit = RayTraceUtils.rayTraceTowards(mc.player, serverRot, reach, mc.player.isCrouching());
+            double reach = Math.min(4.25D, Math.min(Baritone.settings().grimSafeReach.value, getBlockReachDistance()));
+            HitResult serverHit = RayTraceUtils.rayTraceTowards(mc.player, activeRot, reach, mc.player.isCrouching());
             if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(loc)) {
                 face = sbhr.getDirection();
             } else {
-                // serverRotation nie przecina jeszcze bloku na serwerze! Czekamy aż rotacja zostanie zsynchronizowana przez naturalne sendPosition().
                 return false;
             }
         }

@@ -26,12 +26,13 @@ public class SelectionRenderer implements IRenderer, AbstractGameEventListener {
         float opacity = settings.selectionOpacity.value;
         boolean ignoreDepth = settings.renderSelectionIgnoreDepth.value;
         float lineWidth = settings.selectionLineWidth.value;
+        boolean fullVisuals = settings.selectionVisuals.value;
 
         if (!settings.renderSelection.value || selections.length == 0) {
             return;
         }
 
-        if (settings.renderFilledBoxes.value) {
+        if (fullVisuals && settings.renderFilledBoxes.value) {
             BufferBuilder filled = IRenderer.startFilled(settings.colorSelection.value, opacity * 0.35F, ignoreDepth);
             for (ISelection selection : selections) {
                 IRenderer.emitFilledAABB(filled, stack, selection.aabb().inflate(SELECTION_BOX_EXPANSION));
@@ -39,13 +40,16 @@ public class SelectionRenderer implements IRenderer, AbstractGameEventListener {
             IRenderer.endFilled(filled, ignoreDepth);
         }
 
-        BufferBuilder bufferBuilder = IRenderer.startLines(settings.colorSelection.value, opacity, lineWidth, ignoreDepth);
+        // Czysta, lekka otoczka obszaru
+        float effectiveLineWidth = fullVisuals ? lineWidth : Math.min(lineWidth, 1.2f);
+        float effectiveOpacity = fullVisuals ? opacity : Math.min(opacity, 0.40f);
+        BufferBuilder bufferBuilder = IRenderer.startLines(settings.colorSelection.value, effectiveOpacity, effectiveLineWidth, ignoreDepth);
 
         for (ISelection selection : selections) {
             IRenderer.emitAABB(bufferBuilder, stack, selection.aabb(), SELECTION_BOX_EXPANSION);
         }
 
-        if (settings.renderSelectionCorners.value) {
+        if (fullVisuals && settings.renderSelectionCorners.value) {
             IRenderer.glColor(settings.colorSelectionPos1.value, opacity);
 
             for (ISelection selection : selections) {
@@ -61,7 +65,7 @@ public class SelectionRenderer implements IRenderer, AbstractGameEventListener {
 
         IRenderer.endLines(bufferBuilder, ignoreDepth);
 
-        if (WorldFxShaders.isUsable()) {
+        if (fullVisuals && WorldFxShaders.isUsable()) {
             double vx = IRenderer.renderManager.renderPosX();
             double vy = IRenderer.renderManager.renderPosY();
             double vz = IRenderer.renderManager.renderPosZ();

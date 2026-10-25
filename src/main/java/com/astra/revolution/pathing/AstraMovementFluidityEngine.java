@@ -25,22 +25,20 @@ public final class AstraMovementFluidityEngine {
 
     public static final AstraMovementFluidityEngine INSTANCE = new AstraMovementFluidityEngine();
 
-    // 8-kierunkowa legalna siatka klawiszy GrimAC: {forward (W/S), strafe (A/D), kąt względny w stopniach}
+    // 5-kierunkowa legalna siatka klawiszy Forward-Only GrimAC (całkowity zakaz cofania S / MOVE_BACK)
     private static final int[][] KEY_GRID = {
         { 1,  0,    0}, // W
         { 1, -1,   45}, // W + D (w prawo)
-        { 0, -1,   90}, // D
-        {-1, -1,  135}, // S + D
-        {-1,  0,  180}, // S
-        {-1,  1, -135}, // S + A
-        { 0,  1,  -90}, // A
-        { 1,  1,  -45}  // W + A
+        { 0, -1,   90}, // D (w prawo)
+        { 0,  1,  -90}, // A (w lewo)
+        { 1,  1,  -45}  // W + A (w lewo)
     };
 
     private Vec3 lastPos = Vec3.ZERO;
     private int stallTicks = 0;
     private int unstuckStrafeDir = 0; // -1 = prawo, 1 = lewo
     private int unstuckPulseRemaining = 0;
+    private float lastValidWorldYaw = Float.NaN;
 
     private AstraMovementFluidityEngine() {}
 
@@ -88,9 +86,21 @@ public final class AstraMovementFluidityEngine {
         double dx = targetX - player.getX();
         double dz = targetZ - player.getZ();
         double horizDist = Math.hypot(dx, dz);
-        if (horizDist < 0.05) return;
 
-        float desiredWorldYaw = (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0F;
+        // Zabezpieczenie przed oscylacją przód-tył w promieniu 0.15m (0.0225 distSq) od węzła
+        float desiredWorldYaw;
+        if (horizDist < 0.15) {
+            if (!Float.isNaN(lastValidWorldYaw)) {
+                desiredWorldYaw = lastValidWorldYaw;
+            } else {
+                desiredWorldYaw = (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0F;
+                lastValidWorldYaw = desiredWorldYaw;
+            }
+        } else {
+            desiredWorldYaw = (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0F;
+            lastValidWorldYaw = desiredWorldYaw;
+        }
+
         float currentServerYaw = player.getYRot();
 
         // 2. Detekcja Mikro-Zacięcia (3-Tick Predictive Stall Detector)
@@ -104,34 +114,51 @@ public final class AstraMovementFluidityEngine {
             stallTicks = Math.max(0, stallTicks - 1);
         }
 
-        // 3. Corner Feeler & Micro-Unstuck Injection
+        // 3. Corner Feeler & Micro-Unstuck Injection with Micro-Step (Farmland/Dirt) Clearance
         if ((stallTicks >= 2 || player.horizontalCollision) && !isActivelyMiningOrPlacing) {
-            double normDx = dx / horizDist;
-            double normDz = dz / horizDist;
+            double normDx = dx / Math.max(horizDist, 0.001);
+            double normDz = dz / Math.max(horizDist, 0.001);
 
-            if (unstuckPulseRemaining <= 0) {
-                unstuckStrafeDir = computeCornerEscapeStrafe(player, normDx, normDz);
-                unstuckPulseRemaining = 3; // 150ms mikro-korekty omijającej narożnik
-            }
+            AABB box = player.getBoundingBox();
 
-            // A) Early Ascend Assist: jeśli docelowy węzeł jest wyżej o 1 blok, skaczemy zanim pęd spadnie do 0
-            boolean targetIsAbove = currentTarget.y > Mth.floor(player.getY() + 0.05);
+            // Sonda powyżej mikro-schodków (0.16 bloku nad stopami gracza zamiast 0.05).
+            // Całkowicie ignoruje uskok Farmland (0.9375) -> Dirt (1.0) wynoszący 0.0625 bloku
+            // oraz Soul Sand (0.875) -> Dirt (1.0) wynoszący 0.125 bloku,
+            // które silnik fizyki Minecrafta pokonuje automatycznie i płynnie przez auto-step (maxUpStep = 0.6).
+            boolean lowBlocked = !player.level().noCollision(player, box.move(normDx * 0.32, 0.16, normDz * 0.32));
+            boolean autoStepClear = player.level().noCollision(player, box.move(normDx * 0.32, 0.62, normDz * 0.32));
+            boolean highClear = player.level().noCollision(player, box.move(normDx * 0.32, 1.05, normDz * 0.32));
 
-            // B) Step-Up Obstacle Assist: przed graczem jest schodek/krawędź, ale nad nią jest puste miejsce
-            boolean stepUpClear = false;
-            if (player.onGround()) {
-                AABB box = player.getBoundingBox();
-                boolean highClear = player.level().noCollision(player, box.move(normDx * 0.32, 1.05, normDz * 0.32));
-                boolean lowBlocked = !player.level().noCollision(player, box.move(normDx * 0.32, 0.05, normDz * 0.32));
-                stepUpClear = highClear && lowBlocked;
-            }
+            if (!lowBlocked) {
+                // Brak przeszkody powyżej 0.16m (np. mikro-próg podłoża Farmland -> Dirt):
+                // Zerujemy stallTicks i wyłączamy odchylenie 38°
+                stallTicks = 0;
+                unstuckPulseRemaining = 0;
+            } else if (autoStepClear) {
+                // Przeszkoda mieści się w vanilla auto-step (0.16 < h <= 0.6) - wchodzimy płynnie bez skoku i bez strafe
+                stallTicks = 0;
+                unstuckPulseRemaining = 0;
+                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
+            } else {
+                // Przeszkoda powyżej 0.6 bloku:
+                if (unstuckPulseRemaining <= 0 && (stallTicks >= 3 || player.horizontalCollision)) {
+                    unstuckStrafeDir = computeCornerEscapeStrafe(player, normDx, normDz);
+                    unstuckPulseRemaining = 3; // 150ms mikro-korekty omijającej narożnik
+                }
 
-            if ((targetIsAbove || stepUpClear || stallTicks >= 4) && player.onGround()) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+                // A) Early Ascend Assist: jeśli docelowy węzeł jest wyżej o 1 blok, skaczemy zanim pęd spadnie do 0
+                boolean targetIsAbove = currentTarget.y > Mth.floor(player.getY() + 0.05);
+
+                // B) Step-Up Obstacle Assist: przed graczem jest schodek/krawędź, ale nad nią jest puste miejsce
+                boolean stepUpClear = highClear && lowBlocked;
+
+                if ((targetIsAbove || stepUpClear || stallTicks >= 4) && player.onGround()) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+                }
             }
         }
 
-        // 4. GrimAC Silent Move Quantizer: dobierz optymalną kombinację W/A/S/D dla aktualnego Yaw
+        // 4. GrimAC Silent Move Quantizer: dobierz optymalną kombinację W/A/S/D dla aktualnego Yaw (Forward-Only)
         float effectiveTargetYaw = desiredWorldYaw;
         if (unstuckPulseRemaining > 0) {
             unstuckPulseRemaining--;
@@ -144,11 +171,26 @@ public final class AstraMovementFluidityEngine {
     }
 
     /**
-     * Dobiera z 8 legalnych kierunków ten, który idealnie koryguje ruch w stronę celu
-     * nawet gdy SmoothAim jest w trakcie obracania kamery.
+     * Forward-Only kwantyzator WASD (Argon 4).
+     * Całkowicie wyklucza bieg wsteczny (MOVE_BACK = false).
+     * Gdy kąt do celu przekracza 112.5°, stosuje czysty strafe (A/D) w stronę krótszego zwrotu,
+     * eliminując nagłe cofanie i oscylacje przód-tył.
      */
     private void applyQuantizedMovementInputs(IBaritone baritone, float currentYaw, float targetWorldYaw) {
+        var ioh = baritone.getInputOverrideHandler();
+        ioh.setInputForceState(Input.MOVE_BACK, false);
+
         float deltaYaw = Mth.wrapDegrees(targetWorldYaw - currentYaw);
+
+        // Gdy kąt przekracza 112.5° (np. w ułamku ticka przed obrotem kamery):
+        // NIGDY nie wciskamy S — wymuszamy strafe w stronę krótszego obrotu
+        if (Math.abs(deltaYaw) > 112.5f) {
+            ioh.setInputForceState(Input.MOVE_FORWARD, false);
+            ioh.setInputForceState(Input.MOVE_LEFT, deltaYaw < 0.0f);
+            ioh.setInputForceState(Input.MOVE_RIGHT, deltaYaw > 0.0f);
+            ioh.setInputForceState(Input.SPRINT, false);
+            return;
+        }
 
         int bestIdx = 0;
         float minError = Float.MAX_VALUE;
@@ -160,12 +202,10 @@ public final class AstraMovementFluidityEngine {
             }
         }
 
-        var ioh = baritone.getInputOverrideHandler();
         int fwd = KEY_GRID[bestIdx][0];
         int str = KEY_GRID[bestIdx][1];
 
         ioh.setInputForceState(Input.MOVE_FORWARD, fwd > 0);
-        ioh.setInputForceState(Input.MOVE_BACK, fwd < 0);
         ioh.setInputForceState(Input.MOVE_LEFT, str > 0);
         ioh.setInputForceState(Input.MOVE_RIGHT, str < 0);
 
@@ -242,6 +282,7 @@ public final class AstraMovementFluidityEngine {
         stallTicks = 0;
         unstuckPulseRemaining = 0;
         lastPos = Vec3.ZERO;
+        lastValidWorldYaw = Float.NaN;
     }
 
     private static double sq(double v) {

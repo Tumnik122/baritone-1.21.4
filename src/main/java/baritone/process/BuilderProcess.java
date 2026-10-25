@@ -355,6 +355,61 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         return voxelshape.isEmpty() || ctx.world().isUnobstructed(null, voxelshape.move(pos.getX(), pos.getY(), pos.getZ()));
     }
 
+    public static class GoalMiningReach implements Goal, baritone.api.utils.interfaces.IGoalRenderPos {
+        private final int x;
+        private final int y;
+        private final int z;
+        private final double maxReach;
+
+        public GoalMiningReach(BlockPos pos, double reach) {
+            this.x = pos.getX();
+            this.y = pos.getY();
+            this.z = pos.getZ();
+            this.maxReach = reach;
+        }
+
+        @Override
+        public BlockPos getGoalPos() {
+            return new BlockPos(x, y, z);
+        }
+
+        @Override
+        public boolean isInGoal(int x, int y, int z) {
+            double dx = (this.x + 0.5) - (x + 0.5);
+            double dy = (this.y + 0.5) - (y + 1.62);
+            double dz = (this.z + 0.5) - (z + 0.5);
+            double distSq = dx * dx + dy * dy + dz * dz;
+            if (distSq > maxReach * maxReach) {
+                return false;
+            }
+            if (x == this.x && (y == this.y || y == this.y - 1) && z == this.z) {
+                return false;
+            }
+            return true;
+        }
+
+        @Override
+        public double heuristic(int x, int y, int z) {
+            double dx = (this.x + 0.5) - (x + 0.5);
+            double dy = (this.y + 0.5) - (y + 1.62);
+            double dz = (this.z + 0.5) - (z + 0.5);
+            double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            return Math.max(0.0, dist - (maxReach - 1.0));
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof GoalMiningReach that)) return false;
+            return x == that.x && y == that.y && z == that.z && Double.compare(that.maxReach, maxReach) == 0;
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(x, y, z, maxReach);
+        }
+    }
+
     public class GoalBreak extends baritone.api.pathing.goals.GoalGetToBlock {
         public GoalBreak(BlockPos pos) {
             super(pos);
@@ -391,6 +446,10 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     @Override
     public boolean isActive() {
         return active;
+    }
+
+    public boolean isActivelyBreaking() {
+        return active && breaking != null;
     }
 
     @Override
@@ -972,10 +1031,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         plan.slot = slot;
 
         if (player.getInventory().selected != slot) {
-            player.getInventory().selected = slot;
-            if (player.connection != null) {
-                player.connection.send(new ServerboundSetCarriedItemPacket(slot));
-            }
+            BaritonePlayerController.setCarriedItemSafe(player, slot);
         }
 
         // Burst placement optimization for ultra-fast #sel fill & singleplayer
@@ -1027,10 +1083,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 break;
             }
             if (player.getInventory().selected != nextSlot) {
-                player.getInventory().selected = nextSlot;
-                if (player.connection != null) {
-                    player.connection.send(new ServerboundSetCarriedItemPacket(nextSlot));
-                }
+                BaritonePlayerController.setCarriedItemSafe(player, nextSlot);
             }
             curPlan = nextCandidate;
             currentBhr = nextCandidate.toHitResult();
@@ -1184,9 +1237,6 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         if (baritone.getBypassProcess() != null && baritone.getBypassProcess().isActive()) {
             boolean selected = AutoToolManager.selectBestTool(ctx, pos, baritone.getBypassProcess().getConfig());
             if (selected) {
-                if (player.connection != null) {
-                    player.connection.send(new ServerboundSetCarriedItemPacket(player.getInventory().selected));
-                }
                 return;
             }
         }
@@ -1240,11 +1290,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         }
 
         if (bestSlot >= 0 && player.getInventory().selected != bestSlot) {
-            player.getInventory().selected = bestSlot;
-            if (player.connection != null) {
-                player.connection.send(new ServerboundSetCarriedItemPacket(bestSlot));
-            }
-            ctx.playerController().syncHeldItem();
+            BaritonePlayerController.setCarriedItemSafe(player, bestSlot);
         }
     }
 
@@ -1433,10 +1479,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             breakBudget = (int) Math.min(20 * 60 * 5, Math.ceil(1.0F / perTick) * 2 + 40);
             mc.gameMode.startDestroyBlock(t.pos, face);
         } else {
-            equipBestTool(player, cur, t.pos);
-            if (!antiCheat || breakTicks >= minGrimTicks) {
-                mc.gameMode.continueDestroyBlock(t.pos, face);
-            }
+            mc.gameMode.continueDestroyBlock(t.pos, face);
         }
         player.swing(InteractionHand.MAIN_HAND);
 
@@ -1471,7 +1514,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 || Baritone.settings().grimCompat.value
                 || Baritone.settings().antiCheatCompat.value;
         if (wasMultiTick) {
-            interBlockCooldown = antiCheat ? 1 : 0;
+            interBlockCooldown = antiCheat ? 5 : 0;
         }
 
         // God-tier visual feedback (neon amber shockwave na rozbitym bloku)
@@ -1514,11 +1557,14 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     // =====================================================================
 
     private Goal breakGoalFor(Level world, BlockPos pos) {
+        if (clearMin != null) {
+            return new GoalMiningReach(pos, 3.4);
+        }
         boolean airAbove = isCleared(world.getBlockState(pos.above()))
                 && isCleared(world.getBlockState(pos.above(2)));
         if (airAbove) {
             return new GoalComposite(
-                    new GoalBreak(pos),
+                    new GoalMiningReach(pos, 3.4),
                     new GoalGetToBlock(pos.above()) {
                         @Override
                         public boolean isInGoal(int x, int y, int z) {
@@ -1528,7 +1574,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                         }
                     });
         }
-        return new GoalBreak(pos);
+        return new GoalMiningReach(pos, 3.4);
     }
 
     private PathingCommand pathToNextWork(LocalPlayer player, Level world) {

@@ -490,7 +490,7 @@ function Start-DirectBotProcess([int]$num) {
         "-Dastra.botNum=$num",
         "-Dastra.httpPort=$port",
         "-Dastra.headless=$isHeadless",
-        "-Dastra.guardPrimaryStop=true",
+        "-Dastra.guardPrimaryStop=false",
         "-Dastra.allowStop=false",
         "-Dastra.redirectStdStreams=true",
         "`"-Dfabric.gameDir=$targetDir`""

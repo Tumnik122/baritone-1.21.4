@@ -5,7 +5,9 @@ import baritone.api.pathing.goals.GoalNear;
 import baritone.api.process.IBaritoneProcess;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
+import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
+import baritone.bypass.RotationEngine;
 import com.astra.revolution.pathing.FarmPathOptimizer;
 import com.astra.revolution.pathing.FarmPathOptimizer.HarvestTarget;
 import com.astra.revolution.pathing.FarmPathOptimizer.OptimizedFarmRoute;
@@ -61,7 +63,7 @@ public final class FarmProcess implements IBaritoneProcess {
 
     private static final double WAYPOINT_ADVANCE_RADIUS = 1.65;
     private static final int FIELD_RESCAN_INTERVAL_TICKS = 60;
-    private static final long BLOCK_COOLDOWN_MS = 280L;
+    private static final long BLOCK_COOLDOWN_MS = 50L;
 
     private final IBaritone baritone;
     private final Minecraft mc;
@@ -219,8 +221,8 @@ public final class FarmProcess implements IBaritoneProcess {
             BlockHitResult realHit = raycastTargetBlock(player, level, target);
             if (realHit != null) {
                 ticksSyncedOnTarget++;
-                // Wykonaj akcję DOPIERO gdy serwer otrzymał rotację (min. 1 tick) i minął cooldown
-                if (ticksSyncedOnTarget >= 1 && actionCooldownTicks == 0) {
+                // Natychmiastowe wykonanie akcji (0-tick delay, rotacja GCD jest już aktywna)
+                if (actionCooldownTicks == 0) {
                     executeVerifiedAction(player, level, target, realHit);
                     ticksSyncedOnTarget = 0;
                 }
@@ -264,10 +266,21 @@ public final class FarmProcess implements IBaritoneProcess {
             recentBlockInteractions.put(target.pos(), now);
             sellProcess.recordHarvestedItem(1);
 
-            // Natychmiastowy replant w kolejnym kroku na bloku gleby poniżej
+            // Natychmiastowy replant w TYM SAMYM TICKU na bloku gleby poniżej (Argon 4)
             BlockPos soilBelow = target.pos().below();
-            recentBlockInteractions.remove(soilBelow);
-            actionCooldownTicks = 2;
+            BlockState soilState = level.getBlockState(soilBelow);
+            if (soilState.getBlock() instanceof FarmBlock || soilState.is(Blocks.SOUL_SAND)) {
+                InteractionHand seedHand = resolveSeedHand(player, soilState.is(Blocks.SOUL_SAND));
+                if (seedHand != null) {
+                    BlockHitResult soilHit = new BlockHitResult(
+                            new Vec3(soilBelow.getX() + 0.5D, soilBelow.getY() + 0.9375D, soilBelow.getZ() + 0.5D),
+                            Direction.UP, soilBelow, false);
+                    mc.gameMode.useItemOn(player, seedHand, soilHit);
+                    player.swing(seedHand);
+                    recentBlockInteractions.put(soilBelow, now);
+                }
+            }
+            actionCooldownTicks = 0;
             return;
         }
 
@@ -284,7 +297,7 @@ public final class FarmProcess implements IBaritoneProcess {
             mc.gameMode.useItemOn(player, seedHand, verifiedHit);
             player.swing(seedHand);
             recentBlockInteractions.put(verifiedHit.getBlockPos(), now);
-            actionCooldownTicks = 2;
+            actionCooldownTicks = 0;
         }
     }
 
@@ -368,36 +381,18 @@ public final class FarmProcess implements IBaritoneProcess {
     }
 
     /**
-     * Kwantyzacja rotacji zgodna z GrimAC (Aim Checks + Vanilla Mouse GCD).
+     * Błyskawiczna 1-tick rotacja zgodna z GrimAC GCD (rekomendacja Argon 4).
      */
     private void applyGrimGcdRotation(LocalPlayer player, float targetYaw, float targetPitch, float speedFactor) {
-        float currentYaw = player.getYRot();
-        float currentPitch = player.getXRot();
+        if (player == null) return;
+        Rotation cur = new Rotation(player.getYRot(), player.getXRot());
+        Rotation next = RotationEngine.snapToGcd(cur, new Rotation(targetYaw, targetPitch));
 
-        float deltaYaw = Mth.wrapDegrees(targetYaw - currentYaw);
-        float deltaPitch = targetPitch - currentPitch;
-
-        float stepFactor = (Math.abs(deltaYaw) < 2.5F && Math.abs(deltaPitch) < 2.5F) ? 1.0F : speedFactor;
-
-        float maxYawStep = 42.0F;
-        float maxPitchStep = 28.0F;
-
-        float moveYaw = Mth.clamp(deltaYaw * stepFactor, -maxYawStep, maxYawStep);
-        float movePitch = Mth.clamp(deltaPitch * stepFactor, -maxPitchStep, maxPitchStep);
-
-        // Kwantyzacja do siatki czułości myszy Vanilla (GCD)
-        float gcd = computeMouseSensitivityGcd();
-        if (gcd > 1e-5F) {
-            moveYaw = Math.round(moveYaw / gcd) * gcd;
-            movePitch = Math.round(movePitch / gcd) * gcd;
+        if (Math.abs(next.getYaw() - cur.getYaw()) > 1.0E-5F || Math.abs(next.getPitch() - cur.getPitch()) > 1.0E-5F) {
+            player.setYRot(next.getYaw());
+            player.setXRot(next.getPitch());
+            player.setYHeadRot(next.getYaw());
         }
-
-        float nextYaw = currentYaw + moveYaw;
-        float nextPitch = Mth.clamp(currentPitch + movePitch, -89.9F, 89.9F);
-
-        player.setYRot(nextYaw);
-        player.setXRot(nextPitch);
-        player.setYHeadRot(nextYaw);
     }
 
     private BlockHitResult raycastTargetBlock(LocalPlayer player, ClientLevel level, HarvestTarget target) {

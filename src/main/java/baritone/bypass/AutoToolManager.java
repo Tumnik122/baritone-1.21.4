@@ -76,13 +76,12 @@ public final class AutoToolManager {
                 // Przenieś sprawne narzędzie z ekwipunku na aktywny slot hotbara
                 int targetHotbarSlot = inv.selected;
                 ctx.playerController().windowClick(player.containerMenu.containerId, bestInvSlot, targetHotbarSlot, net.minecraft.world.inventory.ClickType.SWAP, player);
-                ctx.playerController().syncHeldItem();
+                baritone.utils.player.BaritonePlayerController.setCarriedItemSafe(player, targetHotbarSlot);
                 return true;
             }
             return false;
         }
-        inv.selected = bestSlot;
-        ctx.playerController().syncHeldItem();
+        baritone.utils.player.BaritonePlayerController.setCarriedItemSafe(player, bestSlot);
         return true;
     }
 

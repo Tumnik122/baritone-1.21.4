@@ -468,11 +468,28 @@ public abstract class MixinMinecraft {
      */
     @Inject(method = "stop", at = @At("HEAD"), cancellable = true)
     private void astra$guardBotUnexpectedStop(CallbackInfo ci) {
-        boolean allowStop = Boolean.getBoolean("astra.allowStop");
-        boolean guardPrimary = Boolean.parseBoolean(System.getProperty("astra.guardPrimaryStop", "true"));
-        boolean isPrimary = AstraPerformanceConfig.isPrimaryClient();
-        int botNum = AstraPerformanceConfig.getBotNum();
+        Minecraft self = (Minecraft) (Object) this;
 
+        // 1. Zamknięcie okna systemowego ([X] / Alt+F4) - zawsze dozwolone bez blokowania
+        if (self.getWindow() != null && self.getWindow().getWindow() != 0L
+                && GLFW.glfwWindowShouldClose(self.getWindow().getWindow())) {
+            return;
+        }
+
+        // 2. Poza światem gry (menu główne, ekrany wyboru) lub gdy ustawiono flagę allowStop
+        boolean allowStop = Boolean.getBoolean("astra.allowStop");
+        if (allowStop || self.level == null) {
+            return;
+        }
+
+        // 3. Główny gracz (isPrimaryClient) może zawsze swobodnie zamknąć grę
+        boolean isPrimary = AstraPerformanceConfig.isPrimaryClient();
+        boolean guardPrimary = Boolean.parseBoolean(System.getProperty("astra.guardPrimaryStop", "false"));
+        if (isPrimary && !guardPrimary) {
+            return;
+        }
+
+        int botNum = AstraPerformanceConfig.getBotNum();
         org.slf4j.LoggerFactory.getLogger("AstraGuard").warn(
                 "[AstraGuard] Wykryto wywołanie Minecraft.stop()! (isPrimary="
                         + isPrimary
@@ -482,18 +499,17 @@ public abstract class MixinMinecraft {
                 new Throwable("Stacktrace wywołania Minecraft.stop()")
         );
 
-        if (!allowStop && (!isPrimary || guardPrimary) && !astra$isCrashStop()) {
+        if (!astra$isCrashStop()) {
             long now = System.currentTimeMillis();
             if (now - astra$lastStopWarnMs > 2000L) {
                 astra$lastStopWarnMs = now;
                 org.slf4j.LoggerFactory.getLogger("AstraGuard").warn(
-                        "[AstraGuard] ZABLOKOWANO przypadkowe zamknięcie bota #{}! Resetuję windowShouldClose.",
+                        "[AstraGuard] ZABLOKOWANO przypadkowe zamknięcie bota pomocniczego #{}! Resetuję windowShouldClose.",
                         botNum
                 );
             }
-            Minecraft mc = (Minecraft) (Object) this;
-            if (mc.getWindow() != null && mc.getWindow().getWindow() != 0L) {
-                GLFW.glfwSetWindowShouldClose(mc.getWindow().getWindow(), false);
+            if (self.getWindow() != null && self.getWindow().getWindow() != 0L) {
+                GLFW.glfwSetWindowShouldClose(self.getWindow().getWindow(), false);
             }
             ci.cancel();
         }

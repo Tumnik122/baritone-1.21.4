@@ -359,7 +359,8 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
             AstraGodTierVisuals.renderActiveShockwaves(poseStack, camPos);
 
             // Pass 7: Volumetric Cyber-Beacon & Double-Helix DNA Beacon for Path Goal (All goal types)
-            if (baritone != null && baritone.getPathingBehavior() != null && baritone.getPathingBehavior().getGoal() != null) {
+            boolean selVis = baritone != null && Baritone.settings().selectionVisuals.value;
+            if (selVis && baritone.getPathingBehavior() != null && baritone.getPathingBehavior().getGoal() != null) {
                 var goal = baritone.getPathingBehavior().getGoal();
                 BlockPos targetGoalPos = null;
                 if (goal instanceof baritone.api.pathing.goals.GoalBlock gb) {
@@ -390,7 +391,7 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
             }
 
             // Pass 8: God-Tier 3D Catmull-Rom Spline Path Ribbon with Animated Chevrons (> > >)
-            if (baritone != null && baritone.getPathingBehavior() != null && baritone.getPathingBehavior().hasPath()) {
+            if (selVis && baritone.getPathingBehavior() != null && baritone.getPathingBehavior().hasPath()) {
                 var current = baritone.getPathingBehavior().getCurrent();
                 if (current != null && current.getPath() != null) {
                     var positions = current.getPath().positions();
