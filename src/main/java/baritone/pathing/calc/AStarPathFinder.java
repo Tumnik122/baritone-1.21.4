@@ -73,17 +73,8 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         if (slowPath) {
             logDebug("slowPath is on, path timeout will be " + Baritone.settings().slowPathTimeoutMS.value + "ms instead of " + primaryTimeout + "ms");
         }
-        long effectivePrimary = primaryTimeout;
-        long effectiveFailure = failureTimeout;
-        if (startNode != null && !Double.isNaN(startNode.estimatedCostToGoal)) {
-            if (startNode.estimatedCostToGoal <= 6.0) {
-                effectivePrimary = Math.min(effectivePrimary, 500L);
-                effectiveFailure = Math.min(effectiveFailure, 2000L);
-            } else if (startNode.estimatedCostToGoal <= 15.0) {
-                effectivePrimary = Math.min(effectivePrimary, 800L);
-                effectiveFailure = Math.min(effectiveFailure, 2500L);
-            }
-        }
+        long effectivePrimary = Math.max(primaryTimeout, 1500L);
+        long effectiveFailure = Math.max(failureTimeout, 3500L);
         long primaryTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : effectivePrimary);
         long failureTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : effectiveFailure);
         boolean failing = true;
@@ -197,11 +188,6 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                         actionCost = Math.max(0.1, actionCost - 0.004);
                     } else {
                         actionCost += 0.004;
-                    }
-                    // Planarna stabilność: kara za niepotrzebne schodzenie/wchodzenie (currDy != 0),
-                    // gdy można iść prosto po tym samym poziomie Y
-                    if (currDy != 0) {
-                        actionCost += 0.05;
                     }
                 }
                 PathNode neighbor = getNodeAtPosition(res.x, res.y, res.z, hashCode);

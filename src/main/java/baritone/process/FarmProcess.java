@@ -120,6 +120,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     // ── Stałe zasięgu i prędkości Mouse-First Sweep (Argon 4) ──
     public static final double SWEEP_REACH = 3.65D;
     public static final double SWEEP_REACH_SQ = SWEEP_REACH * SWEEP_REACH;
+    public static final double MICRO_PULL_MAX_DIST = 4.25D;
+    private int manualPullStallTicks = 0;
 
     // ── Zakotwiczony wektor kierunku aktualnego rzędu (eliminacja oscylacji przód-tył o 180° — Argon 4) ──
     private float lockedLaneYaw = Float.NaN;
@@ -1097,13 +1099,22 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
      * Nie przerywa chodu, gdy w zasięgu znajdują się plony — zatrzymuje W wyłącznie wtedy,
      * gdy flaga brakeForTarget sygnalizuje ryzyko pominięcia kłosa za plecami. (Argon 4)
      */
-    private void applyForwardOnlyCorridorSteering(
+    private boolean applyForwardOnlyCorridorSteering(
             float currentCamYaw,
             float targetMoveYaw,
             boolean brakeForTarget
     ) {
         var input = baritone.getInputOverrideHandler();
-        if (ctx.player() == null) return;
+        if (ctx.player() == null) return false;
+
+        if (brakeForTarget) {
+            input.setInputForceState(Input.MOVE_FORWARD, false);
+            input.setInputForceState(Input.MOVE_BACK, false);
+            input.setInputForceState(Input.MOVE_LEFT, false);
+            input.setInputForceState(Input.MOVE_RIGHT, false);
+            input.setInputForceState(Input.SPRINT, false);
+            return false;
+        }
 
         // Ochrona przed wejściem w rów z wodą w korytarzu Boustrophedon
         if (ctx.world() != null && wouldMoveIntoWater(ctx.player().position(), ctx.world(), targetMoveYaw, 0.65D)) {
@@ -1171,6 +1182,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         if (ctx.player() != null) {
             ctx.player().setSprinting(canSprintSafely);
         }
+        return pressW || pressA || pressD;
     }
 
     /**
@@ -1578,9 +1590,15 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         }
 
         // 1. COMMITMENT LOCK (Argon 4: Eliminacja skakania Północ-Południe)
-        // Jeśli bot idzie w kierunku kotwicy sektora, nie zmieniaj celu przez 400 ticków (20s)
+        // Jeśli bot idzie w kierunku kotwicy sektora, utrzymuj cel do 80 ticków (4s)
         // dopóki w pobliżu kotwicy (w promieniu 18m) znajdują się jakiekolwiek zadania do wykonania!
-        if (stableRowAnchorPos != null && stableRowGoal != null && stableRowGoalTicks < 400) {
+        boolean isStalled = ctx.player() != null && ctx.player().getDeltaMovement().horizontalDistanceSqr() < 0.0009D;
+        if (isStalled && stableRowGoalTicks > 15) {
+            stableRowAnchorPos = null;
+            stableRowGoal = null;
+            committedWalkDir = null;
+            stableRowGoalTicks = 0;
+        } else if (stableRowAnchorPos != null && stableRowGoal != null && stableRowGoalTicks < 80) {
             double distSq = playerPos.distSqr(stableRowAnchorPos.above());
             boolean anchorReached = distSq <= 4.0D;
             boolean hasTasksNear = hasValidTasksNearAnchor(stableRowAnchorPos, matureCrops, emptyFarmland);
@@ -2146,7 +2164,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             double dx = center.x - playerPos.x;
             double dz = center.z - playerPos.z;
             double distSq = dx * dx + dz * dz;
-            if (distSq > (32.0D * 32.0D)) {
+            if (distSq > (64.0D * 64.0D)) {
                 continue;
             }
 
@@ -2156,9 +2174,12 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             double dotForward = (dx * forwardX + dz * forwardZ) / dist;
             double lateralDist = Math.abs(dx * forwardZ - dz * forwardX);
 
-            // Cele za plecami bota otrzymują potężną karę +35.0m, eliminując zawracanie i oscylacje przód-tył!
-            double backwardPenalty = (dotForward < -0.15D) ? 35.0D : (1.0D - dotForward) * 3.5D;
-            double laneDeviationPenalty = (lateralDist > 2.25D) ? lateralDist * 2.5D : lateralDist * 0.4D;
+            // Cele za plecami bota: łagodny tie-breaker dla bliskich kłosów (<= 4m), 0 kary dla dalszych (pełne 360° widzenia)
+            double backwardPenalty = 0.0D;
+            if (dist <= 4.0D) {
+                backwardPenalty = (dotForward < -0.15D) ? 2.5D : (1.0D - dotForward) * 0.8D;
+            }
+            double laneDeviationPenalty = (dist <= 6.0D) ? ((lateralDist > 2.25D) ? lateralDist * 1.5D : lateralDist * 0.3D) : 0.0D;
 
             double score = dist + backwardPenalty + laneDeviationPenalty;
             if (score < bestScore) {
@@ -2171,7 +2192,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             double dx = (bestPos.getX() + 0.5D) - playerPos.x;
             double dz = (bestPos.getZ() + 0.5D) - playerPos.z;
             float newTargetYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0F);
-            if (Float.isNaN(lockedLaneYaw)) {
+            if (Float.isNaN(lockedLaneYaw) || Math.hypot(dx, dz) > 6.0D) {
                 lockedLaneYaw = newTargetYaw;
             } else {
                 float diff = Math.abs(Mth.wrapDegrees(newTargetYaw - lockedLaneYaw));
@@ -2253,6 +2274,40 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 if (floorState.isAir() && world.getBlockState(twoBelowPos).isAir()) {
                     return false;
                 }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Sprawdza cały odcinek od gracza do punktu docelowego (co 0.40m), a nie tylko pierwsze 2.2m.
+     * Wykrywa rowy wodne, lawę, płotki i ściany.
+     */
+    private boolean isEntireSegmentSafeAndDry(Vec3 start, Vec3 end, Level world) {
+        if (world == null || start == null || end == null) return false;
+        Vec3 diff = end.subtract(start);
+        double horizDist = Math.hypot(diff.x, diff.z);
+        if (horizDist < 0.2D) return true;
+
+        int steps = Mth.ceil(horizDist / 0.40D);
+        for (int i = 1; i <= steps; i++) {
+            double t = (double) i / (double) steps;
+            double cx = start.x + diff.x * t;
+            double cz = start.z + diff.z * t;
+            BlockPos checkFeet = new BlockPos(Mth.floor(cx), Mth.floor(start.y + 0.07D), Mth.floor(cz));
+            BlockPos checkGround = checkFeet.below();
+
+            if (!world.getFluidState(checkFeet).isEmpty() || !world.getFluidState(checkGround).isEmpty()) {
+                return false; // Woda na trasie -> użyj A*, aby ominąć rów!
+            }
+            if (isHazardBlock(world, checkFeet) || isHazardBlock(world, checkGround)) {
+                return false;
+            }
+            if (!world.getBlockState(checkFeet).getCollisionShape(world, checkFeet).isEmpty()) {
+                return false; // Przeszkoda na wysokości nóg -> użyj A*!
+            }
+            if (world.getBlockState(checkGround).getCollisionShape(world, checkGround).isEmpty()) {
+                return false; // Przepaść / brak podłoża -> użyj A*!
             }
         }
         return true;
@@ -3970,6 +4025,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
         // 3. ACTIVE HARVEST PULL: Gdy w zasięgu ręki (2.95m) są tylko niedojrzałe sadzonki (!hasInReachAction),
         // płynnie obracaj kamerę w stronę docelowego kłosa (max 55° na tick) i prowadź bota WASD!
+        // 3. ACTIVE HARVEST PULL: Gdy w zasięgu ręki (SWEEP_REACH) są tylko niedojrzałe sadzonki (!hasInReachAction)
         if (activePullVec != null) {
             Vec3 eye = player.getEyePosition(1.0f);
             BlockPos targetBlock = pullBlockPos != null ? pullBlockPos : pracaActiveSpineWaypoint;
@@ -3982,64 +4038,49 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                 }
             } else {
-                boolean baritonePathing = baritone.getPathingBehavior().hasPath() && baritone.getPathingBehavior().isPathing();
-                if (!baritonePathing || stallTicks >= 8) {
-                    if (isImmediateStepSafe(playerVecPos, activePullVec, world)) {
-                        if (!hasInReachAction) {
-                            Rotation clientRot = ctx.playerRotations();
-                            Rotation desiredRot = RotationUtils.calcRotationFromVec3d(eye, pullAimVec, clientRot);
-                            Rotation steppedRot = smoothStepRotation(
-                                    clientRot,
-                                    new Rotation(desiredRot.getYaw(), Mth.clamp(desiredRot.getPitch(), -35.0F, 35.0F)),
-                                    55.0F,
-                                    30.0F
-                            );
-                            applyAimRotation(steppedRot, true);
-                            currentRot = steppedRot;
-                        }
+                double distToPull = playerVecPos.distanceTo(activePullVec);
+                boolean canUseMicroPull = distToPull <= MICRO_PULL_MAX_DIST
+                        && isEntireSegmentSafeAndDry(playerVecPos, activePullVec, ctx.world());
 
-                        float targetMoveYaw = (float) (Math.toDegrees(Math.atan2(
-                                activePullVec.z - playerVecPos.z,
-                                activePullVec.x - playerVecPos.x)) - 90.0D);
-
-                        boolean brakeMagnet = shouldBrakeForTarget(eye, currentRot.getYaw(), targetBlock, reach2, acted);
-                        applyForwardOnlyCorridorSteering(currentRot.getYaw(), targetMoveYaw, brakeMagnet);
-
-                        // Impuls anty-stallowy: pełny W (skok tylko gdy brak farmlandu w pobliżu, by nie niszczyć grządek)
-                        if (stallTicks >= 8) {
-                            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
-                            if (player.horizontalCollision && !isNearOrOnFarmland(player, world)) {
-                                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
-                            }
-                        }
-
-                        // KRYTYCZNE: Zwracamy REQUEST_PAUSE, aby Baritone A* nie walczył z nami o kamerę i nie flickował 180°!
-                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                    } else {
-                        // Wykryto wodę / przeszkodę na linii prostej -> próba bezpośredniego opływu wody (sidestep ±45°/±75° po suchym lądzie):
-                        Vec3 sidestepVec = findSafeWaterSidestepTarget(playerVecPos, activePullVec, world);
-                        if (sidestepVec != null) {
-                            float sidestepMoveYaw = (float) (Math.toDegrees(Math.atan2(
-                                    sidestepVec.z - playerVecPos.z,
-                                    sidestepVec.x - playerVecPos.x)) - 90.0D);
-                            applyForwardOnlyCorridorSteering(currentRot.getYaw(), sidestepMoveYaw, false);
-                            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                        }
-
-                        // Wykryto lawę / klif / wodę i brak możliwości bezpośredniego sidestepu ->
-                        // natychmiast odetnij klawisze manualnego ruchu WASD, aby bot nie wszedł w zagrożenie!
-                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-
-                        if (!hasInReachAction && pullBlockPos != null) {
-                            // Krok zablokowany przeszkodą -> oddajemy nawigację i kamerę algorytmowi A* (GoalGetToBlock) bez konfliktów obrotu!
-                            // GoalGetToBlock zamiast GoalNear zapobiega deadlockowi "isInGoal() == true" przez 1-kratkową wodę!
-                            return new PathingCommand(new GoalGetToBlock(pullBlockPos), PathingCommandType.SET_GOAL_AND_PATH);
-                        }
+                if (canUseMicroPull) {
+                    if (!hasInReachAction) {
+                        Rotation clientRot = ctx.playerRotations();
+                        Rotation desiredRot = RotationUtils.calcRotationFromVec3d(eye, pullAimVec, clientRot);
+                        Rotation steppedRot = smoothStepRotation(
+                                clientRot,
+                                new Rotation(desiredRot.getYaw(), Mth.clamp(desiredRot.getPitch(), -35.0F, 35.0F)),
+                                55.0F,
+                                30.0F
+                        );
+                        applyAimRotation(steppedRot, true);
+                        currentRot = steppedRot;
                     }
+
+                    float targetMoveYaw = (float) (Math.toDegrees(Math.atan2(
+                            activePullVec.z - playerVecPos.z,
+                            activePullVec.x - playerVecPos.x)) - 90.0D);
+
+                    boolean brakeMagnet = shouldBrakeForTarget(eye, currentRot.getYaw(), targetBlock, reach2, acted);
+                    boolean moved = applyForwardOnlyCorridorSteering(currentRot.getYaw(), targetMoveYaw, brakeMagnet);
+
+                    if (!moved || player.getDeltaMovement().horizontalDistanceSqr() < 0.0004D) {
+                        this.manualPullStallTicks++;
+                    } else {
+                        this.manualPullStallTicks = 0;
+                    }
+
+                    if (this.manualPullStallTicks <= 4) {
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+                    baritone.getInputOverrideHandler().clearAllKeys();
+                } else {
+                    this.manualPullStallTicks = 0;
+                }
+
+                // DLA WSZYSTKICH CELÓW > MICRO_PULL_MAX_DIST (np. 10 kratek) LUB GDY PO DRODZE JEST WODA / PRZESZKODA:
+                // Uruchom pełny algorytm A* Baritone (GoalGetToBlock), aby wyznaczył ścieżkę omijającą rowy wodne!
+                if (!hasInReachAction && targetBlock != null) {
+                    return new PathingCommand(new GoalGetToBlock(targetBlock), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
                 }
             }
         }
@@ -4212,6 +4253,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         lockedWalkTicks = 0;
         lockedWalkLastDistSq = Double.MAX_VALUE;
         stallTicks = 0;
+        manualPullStallTicks = 0;
         stalledTargetCooldowns.clear();
         failedPlantClicks.clear();
         unplantableBlacklist.clear();

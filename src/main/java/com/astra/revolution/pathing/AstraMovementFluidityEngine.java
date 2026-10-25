@@ -2,11 +2,14 @@ package com.astra.revolution.pathing;
 
 import baritone.api.IBaritone;
 import baritone.api.pathing.calc.IPath;
+import baritone.api.pathing.movement.IMovement;
 import baritone.api.pathing.path.IPathExecutor;
 import baritone.api.utils.BetterBlockPos;
+import baritone.api.utils.IInputOverrideHandler;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
+import baritone.pathing.movement.movements.MovementTraverse;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.AABB;
@@ -70,6 +73,10 @@ public final class AstraMovementFluidityEngine {
         LocalPlayer player = ctx.player();
         if (player == null || ctx.world() == null) return;
 
+        if (this.externalAimLockTicks > 0) {
+            this.externalAimLockTicks--;
+        }
+
         IPathExecutor exec = baritone.getPathingBehavior() != null ? baritone.getPathingBehavior().getCurrent() : null;
         if (exec == null || exec.getPath() == null) {
             resetState();
@@ -77,143 +84,142 @@ public final class AstraMovementFluidityEngine {
         }
 
         IPath path = exec.getPath();
-        List<BetterBlockPos> positions = path.positions();
+        List<IMovement> movements = path.movements();
         int pathPos = exec.getPosition();
-        if (pathPos < 0 || pathPos >= positions.size()) return;
+        if (pathPos < 0 || pathPos >= movements.size()) return;
 
-        // 1. Lookahead Target Vector: miksujemy węzeł N_i oraz N_{i+1}, gdy zbliżamy się do środka węzła
-        BetterBlockPos currentTarget = positions.get(Math.min(pathPos + 1, positions.size() - 1));
-        double targetX = currentTarget.x + 0.5;
-        double targetZ = currentTarget.z + 0.5;
+        IMovement currentMovement = movements.get(pathPos);
+        IInputOverrideHandler ioh = baritone.getInputOverrideHandler();
 
-        double distToCurrentSq = sq(player.getX() - targetX) + sq(player.getZ() - targetZ);
-        if (distToCurrentSq < 0.32 && pathPos + 2 < positions.size()) {
-            BetterBlockPos nextNode = positions.get(pathPos + 2);
-            double blend = 1.0 - (Math.sqrt(distToCurrentSq) / 0.565);
-            double candidateX = Mth.lerp(blend * 0.55, targetX, nextNode.x + 0.5);
-            double candidateZ = Mth.lerp(blend * 0.55, targetZ, nextNode.z + 0.5);
+        // 1. Ruchy precyzyjne (schody, skoki, diagonale, cofanie na krawędzi)
+        // Dla nich NIGDY nie używamy lookahead N+1/N+2 ani feelerów -38°!
+        boolean isFlatTraverse = (currentMovement instanceof MovementTraverse)
+                && currentMovement.getSrc().y == currentMovement.getDest().y;
+        boolean baritoneWantsBackOrSneak = ioh.isInputForcedDown(Input.MOVE_BACK)
+                || ioh.isInputForcedDown(Input.SNEAK);
+        boolean allowLookaheadSmoothing = isFlatTraverse && !baritoneWantsBackOrSneak && !player.isInWater() && !player.isInLava();
 
-            // Weryfikacja AABB: pre-rounding dozwolony TYLKO wtedy, gdy linia nie przecina narożnika ściany!
-            AABB pbox = player.getBoundingBox();
-            if (player.level().noCollision(player, pbox.move(candidateX - player.getX(), 0.05, candidateZ - player.getZ()))) {
-                targetX = candidateX;
-                targetZ = candidateZ;
+        // Wyzeruj sztuczny impuls -38° podczas aktywnej ścieżki A*, aby nie zrzucać bota z bloków
+        this.unstuckPulseRemaining = 0;
+
+        // 2. Oblicz docelowy kąt ścieżki (pathYaw):
+        float desiredPathYaw = computeBaseMovementYaw(player, currentMovement);
+        if (allowLookaheadSmoothing && pathPos + 1 < movements.size()) {
+            IMovement nextMovement = movements.get(pathPos + 1);
+            if (nextMovement instanceof MovementTraverse && nextMovement.getSrc().y == nextMovement.getDest().y) {
+                desiredPathYaw = blendLookaheadYaw(player, currentMovement, nextMovement, 0.25f);
             }
-        }
-
-        double dx = targetX - player.getX();
-        double dz = targetZ - player.getZ();
-        double horizDist = Math.hypot(dx, dz);
-
-        // Zabezpieczenie przed oscylacją przód-tył w promieniu 0.15m (0.0225 distSq) od węzła
-        float desiredWorldYaw;
-        if (horizDist < 0.15) {
-            if (!Float.isNaN(lastValidWorldYaw)) {
-                desiredWorldYaw = lastValidWorldYaw;
-            } else {
-                desiredWorldYaw = (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0F;
-                lastValidWorldYaw = desiredWorldYaw;
-            }
-        } else {
-            desiredWorldYaw = (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0F;
-            lastValidWorldYaw = desiredWorldYaw;
-        }
-
-        float currentServerYaw = player.getYRot();
-
-        // 2. Detekcja Mikro-Zacięcia (3-Tick Predictive Stall Detector)
-        double movedHoriz = Math.hypot(player.getX() - lastPos.x, player.getZ() - lastPos.z);
-        lastPos = player.position();
-
-        boolean wantsToMove = baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD);
-        if (wantsToMove && !isActivelyMiningOrPlacing && movedHoriz < 0.024 && horizDist > 0.25) {
-            stallTicks++;
-        } else {
-            stallTicks = Math.max(0, stallTicks - 1);
-        }
-
-        // 3. Corner Feeler & Micro-Unstuck Injection with Micro-Step (Farmland/Dirt) Clearance
-        if ((stallTicks >= 2 || player.horizontalCollision) && !isActivelyMiningOrPlacing) {
-            double normDx = dx / Math.max(horizDist, 0.001);
-            double normDz = dz / Math.max(horizDist, 0.001);
-
-            AABB box = player.getBoundingBox();
-
-            // Sonda powyżej mikro-schodków (0.16 bloku nad stopami gracza zamiast 0.05).
-            // Całkowicie ignoruje uskok Farmland (0.9375) -> Dirt (1.0) wynoszący 0.0625 bloku
-            // oraz Soul Sand (0.875) -> Dirt (1.0) wynoszący 0.125 bloku,
-            // które silnik fizyki Minecrafta pokonuje automatycznie i płynnie przez auto-step (maxUpStep = 0.6).
-            boolean lowBlocked = !player.level().noCollision(player, box.move(normDx * 0.32, 0.16, normDz * 0.32));
-            boolean autoStepClear = player.level().noCollision(player, box.move(normDx * 0.32, 0.62, normDz * 0.32));
-            boolean highClear = player.level().noCollision(player, box.move(normDx * 0.32, 1.05, normDz * 0.32));
-
-            if (!lowBlocked) {
-                // Brak przeszkody powyżej 0.16m (np. mikro-próg podłoża Farmland -> Dirt):
-                // Zerujemy stallTicks i wyłączamy odchylenie 38°
-                stallTicks = 0;
-                unstuckPulseRemaining = 0;
-            } else if (autoStepClear) {
-                // Przeszkoda mieści się w vanilla auto-step (0.16 < h <= 0.6) - wchodzimy płynnie bez skoku i bez strafe
-                stallTicks = 0;
-                unstuckPulseRemaining = 0;
-                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
-            } else {
-                // Przeszkoda powyżej 0.6 bloku:
-                if (unstuckPulseRemaining <= 0 && (stallTicks >= 3 || player.horizontalCollision)) {
-                    unstuckStrafeDir = computeCornerEscapeStrafe(player, normDx, normDz);
-                    unstuckPulseRemaining = 3; // 150ms mikro-korekty omijającej narożnik
-                }
-
-                // A) Early Ascend Assist: jeśli docelowy węzeł jest wyżej o 1 blok, skaczemy zanim pęd spadnie do 0
-                boolean targetIsAbove = currentTarget.y > Mth.floor(player.getY() + 0.05);
-
-                // B) Step-Up Obstacle Assist: przed graczem jest schodek/krawędź, ale nad nią jest puste miejsce
-                boolean stepUpClear = highClear && lowBlocked;
-
-                if ((targetIsAbove || stepUpClear || stallTicks >= 4) && player.onGround()) {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
-                }
-            }
-        }
-
-        // 4. GrimAC Silent Move Quantizer: dobierz optymalną kombinację W/A/S/D dla aktualnego Yaw (Forward-Only)
-        float effectiveTargetYaw = desiredWorldYaw;
-        if (unstuckPulseRemaining > 0) {
-            unstuckPulseRemaining--;
-            effectiveTargetYaw += unstuckStrafeDir * (-38.0F);
-        }
-
-        if (this.externalAimLockTicks > 0) {
-            this.externalAimLockTicks--;
         }
 
         boolean holdExternalAim = isActivelyMiningOrPlacing || this.externalAimLockTicks > 0;
 
-        // Płynna orientacja wzroku wzdłuż aktywnego wektora ścieżki (GrimAC GCD Safe)
-        // Jeśli proces nadrzędny (FarmProcess) celuje w plon, NIE nadpisuj jego rotacji!
+        // 3. Aktualizuj kamerę TYLKO gdy proces (np. FarmProcess) nie celuje w blok
+        // i gdy ruch to płaski traverse (dla MovementAscend/Descend/Diagonal Baritone sam ustawia optymalną rotację!)
         if (!holdExternalAim && baritone.getLookBehavior() != null) {
-            double dy = (currentTarget.y + 0.5) - player.getEyeY();
-            double hDist = Math.max(horizDist, 0.4);
-            float pitchToNode = (float) -Math.toDegrees(Math.atan2(dy, hDist));
-            float targetPitch = Mth.clamp(pitchToNode, -22.0f, 22.0f);
-
-            baritone.getLookBehavior().updateTarget(new Rotation(effectiveTargetYaw, targetPitch), true);
+            if (allowLookaheadSmoothing) {
+                BetterBlockPos dest = currentMovement.getDest();
+                double dy = (dest.y + 0.5) - player.getEyeY();
+                double dx = (dest.x + 0.5) - player.getX();
+                double dz = (dest.z + 0.5) - player.getZ();
+                double hDist = Math.max(Math.hypot(dx, dz), 0.4);
+                float pitchToNode = (float) -Math.toDegrees(Math.atan2(dy, hDist));
+                float targetPitch = Mth.clamp(pitchToNode, -22.0f, 22.0f);
+                baritone.getLookBehavior().updateTarget(new Rotation(desiredPathYaw, targetPitch), true);
+            }
         } else if (this.externalAimLockTicks > 0 && this.lastExternalRotation != null && baritone.getLookBehavior() != null) {
             baritone.getLookBehavior().updateTarget(this.lastExternalRotation, true);
         }
 
-        if (wantsToMove && !player.isInWater() && !player.isInLava()) {
-            float actualYaw = baritone.getPlayerContext().playerRotations().getYaw();
-            applyQuantizedMovementInputs(baritone, actualYaw, effectiveTargetYaw);
+        // 4. GrimAC 8-Octant MoveFix: przelicz wektor ruchu względem serwerowego Yaw kamery
+        if (!player.isInWater() && !player.isInLava()) {
+            float serverYaw = ctx.playerRotations().getYaw();
+            applyGrimCompliantMoveFix(ioh, desiredPathYaw, serverYaw, baritoneWantsBackOrSneak);
+        }
+
+        // 5. Ochrona przed fałszywym skakaniem na krawędzi Farmland (0.9375 -> 1.0)
+        suppressFarmlandMicroJump(baritone, player);
+    }
+
+    private float computeBaseMovementYaw(LocalPlayer player, IMovement currentMovement) {
+        BetterBlockPos dest = currentMovement.getDest();
+        double dx = (dest.x + 0.5) - player.getX();
+        double dz = (dest.z + 0.5) - player.getZ();
+        if (Math.hypot(dx, dz) < 0.15 && !Float.isNaN(lastValidWorldYaw)) {
+            return lastValidWorldYaw;
+        }
+        float yaw = (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0F;
+        lastValidWorldYaw = yaw;
+        return yaw;
+    }
+
+    private float blendLookaheadYaw(LocalPlayer player, IMovement current, IMovement next, float weightNext) {
+        BetterBlockPos curDest = current.getDest();
+        BetterBlockPos nextDest = next.getDest();
+        double curX = curDest.x + 0.5;
+        double curZ = curDest.z + 0.5;
+        double nextX = nextDest.x + 0.5;
+        double nextZ = nextDest.z + 0.5;
+        double targetX = Mth.lerp(weightNext, curX, nextX);
+        double targetZ = Mth.lerp(weightNext, curZ, nextZ);
+
+        AABB pbox = player.getBoundingBox();
+        if (player.level().noCollision(player, pbox.move(targetX - player.getX(), 0.05, targetZ - player.getZ()))) {
+            double dx = targetX - player.getX();
+            double dz = targetZ - player.getZ();
+            return (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0F;
+        }
+        return computeBaseMovementYaw(player, current);
+    }
+
+    private void applyGrimCompliantMoveFix(
+            IInputOverrideHandler ioh,
+            float desiredMoveYaw,
+            float actualCameraYaw,
+            boolean preserveNativeBackOrSneak) {
+
+        if (preserveNativeBackOrSneak) {
+            if (!ioh.isInputForcedDown(Input.MOVE_FORWARD)) {
+                ioh.setInputForceState(Input.SPRINT, false);
+            }
+            return;
+        }
+
+        boolean wantsMove = ioh.isInputForcedDown(Input.MOVE_FORWARD)
+                || ioh.isInputForcedDown(Input.MOVE_LEFT)
+                || ioh.isInputForcedDown(Input.MOVE_RIGHT);
+        if (!wantsMove) return;
+
+        float delta = Mth.wrapDegrees(desiredMoveYaw - actualCameraYaw);
+
+        boolean w = delta >= -67.5f && delta <= 67.5f;
+        boolean s = delta > 112.5f || delta < -112.5f;
+        boolean d = delta >= -157.5f && delta <= -22.5f;
+        boolean a = delta >= 22.5f && delta <= 157.5f;
+
+        ioh.setInputForceState(Input.MOVE_FORWARD, w);
+        ioh.setInputForceState(Input.MOVE_BACK, s);
+        ioh.setInputForceState(Input.MOVE_LEFT, a);
+        ioh.setInputForceState(Input.MOVE_RIGHT, d);
+
+        if (!w) {
+            ioh.setInputForceState(Input.SPRINT, false);
         }
     }
 
-    /**
-     * Forward-Only kwantyzator WASD (Argon 4).
-     * Całkowicie wyklucza bieg wsteczny (MOVE_BACK = false).
-     * Gdy kąt do celu przekracza 112.5°, stosuje czysty strafe (A/D) w stronę krótszego zwrotu,
-     * eliminując nagłe cofanie i oscylacje przód-tył.
-     */
+    private void suppressFarmlandMicroJump(IBaritone baritone, LocalPlayer player) {
+        if (player == null || player.level() == null) return;
+        double frac = player.getY() - Math.floor(player.getY());
+        if (frac > 0.85 && frac < 0.99) {
+            AABB box = player.getBoundingBox();
+            Vec3 vel = player.getDeltaMovement();
+            double fwdX = vel.x * 2.0;
+            double fwdZ = vel.z * 2.0;
+            if (player.level().noCollision(player, box.move(fwdX, 0.62, fwdZ))) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
+            }
+        }
+    }
+
     private void applyQuantizedMovementInputs(IBaritone baritone, float currentYaw, float targetWorldYaw) {
         var ioh = baritone.getInputOverrideHandler();
         ioh.setInputForceState(Input.MOVE_BACK, false);
