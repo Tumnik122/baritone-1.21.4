@@ -1116,12 +1116,14 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         boolean pressD = false;
 
         // Delikatna korekta boczna (strafe) TYLKO gdy nie celujemy w żaden blok obok
-        // i idziemy prosto korytarzem (zapobiega szarpaniu A/D podczas obrotu głowy do plonów)
-        if (pressW && lockedTarget == null && absYawDiff > 18.0F && absYawDiff <= 55.0F) {
+        // W Minecraft: yaw rośnie w prawo (zgodnie z ruchem wskazówek zegara).
+        // Zatem yawDiff > 0 oznacza, że cel jest po PRAWEJ stronie (pressD = MOVE_RIGHT),
+        // a yawDiff < 0 oznacza, że cel jest po LEWEJ stronie (pressA = MOVE_LEFT).
+        if (pressW && lockedTarget == null && absYawDiff > 15.0F && absYawDiff <= 85.0F) {
             if (yawDiff > 0.0F) {
-                pressA = true;
-            } else {
                 pressD = true;
+            } else {
+                pressA = true;
             }
         }
 
@@ -1725,7 +1727,13 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
         @Override
         public boolean isInGoal(int x, int y, int z) {
-            return x == pos.getX() && z == pos.getZ() && (y == pos.getY() || y == pos.getY() - 1 || y == pos.getY() + 1);
+            int dx = Math.abs(x - pos.getX());
+            int dy = Math.abs(y - pos.getY());
+            int dz = Math.abs(z - pos.getZ());
+            // Zasięg podnoszenia w Minecraft to min. 1.25m od środka gracza.
+            // Tolerancja sąsiedniego bloku (dx<=1, dz<=1, dy<=1) gwarantuje, że bot
+            // natychmiast zrealizuje cel i wchłonie item nawet na krawędzi farmlandu lub wody.
+            return dx <= 1 && dz <= 1 && dy <= 1;
         }
 
         @Override
@@ -3458,8 +3466,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             //    oraz w bezpośrednim zasięgu ręki nie ma dojrzałych plonów (które po ścięciu same dają nasiona)
             boolean emergencySeedsNeeded = !haveSeedsInEq && !openFarmland.isEmpty() && !nearbyDrops.isEmpty()
                     && (!hasMatureCrops || playerPos.distSqr(nearbyDrops.get(0).blockPosition()) <= 4.0D);
-            // 2. Całe pole zostało skoszone: brak plonów na całym polu (toBreak puste ORAZ brak pustych grządek do obsiania)
-            boolean allCropsHarvested = !hasMatureCrops && openFarmland.isEmpty() && !nearbyDrops.isEmpty();
+            // 2. Całe pole zostało skoszone: brak dojrzałych plonów na całym polu ORAZ są leżące dropy
+            boolean allCropsHarvested = !hasMatureCrops && !nearbyDrops.isEmpty();
             executeGroundFirst = emergencySeedsNeeded || allCropsHarvested;
         } else {
             int threshold = Baritone.settings().farmLowCropThreshold.value;
@@ -3484,44 +3492,10 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         }
 
         if (executeGroundFirst && !nearbyDrops.isEmpty()) {
-            // Anti-stall dla najbliższego dropu (zapobiega blokowaniu bota na niepodnoszalnym itemie)
             ItemEntity closestDrop = nearbyDrops.get(0);
-            BlockPos closestStand = BlockPos.containing(closestDrop.getX(), closestDrop.getY() + 0.1D, closestDrop.getZ());
-            double distToDropSq = playerPos.distSqr(closestStand);
-            if (distToDropSq <= 3.5D) {
-                // Krok bezpośrednio w stronę upuszczonego itemu, by go natychmiast wchłonąć (anti-stall)
-                float yawToDrop = (float) (Math.toDegrees(Math.atan2(
-                        closestDrop.getZ() - ctx.player().position().z,
-                        closestDrop.getX() - ctx.player().position().x)) - 90.0D);
-                applyForwardOnlyCorridorSteering(getSafeServerRotation().getYaw(), yawToDrop, false);
+            Vec3 dropPos = closestDrop.position();
+            double distToDropSq = ctx.player().position().distanceToSqr(dropPos);
 
-                if (closestDrop.getId() == currentDropTargetId) {
-                    dropPickupWaitTicks++;
-                    if (dropPickupWaitTicks > 25) {
-                        itemBlacklist.put(closestDrop.getId(), farmTicks + 200);
-                        dropPickupWaitTicks = 0;
-                        currentDropTargetId = -1;
-                    }
-                } else {
-                    currentDropTargetId = closestDrop.getId();
-                    dropPickupWaitTicks = 0;
-                }
-            } else {
-                currentDropTargetId = closestDrop.getId();
-                dropPickupWaitTicks = 0;
-            }
-
-            // W trybie #praca z plonami poniżej progu: priorytet zbierania itemów leżących na ziemi.
-            // Max 3 cele na raz — bezpośrednio przechodzimy przez itemy!
-            int maxPickupGoals = Math.min(3, nearbyDrops.size());
-            for (int i = 0; i < maxPickupGoals; i++) {
-                ItemEntity ei = nearbyDrops.get(i);
-                if (i > 0 && playerPos.distSqr(ei.blockPosition()) > 35.0D * 35.0D && !toBreak.isEmpty()) {
-                    break;
-                }
-                BlockPos standPos = BlockPos.containing(ei.getX(), ei.getY() + 0.1D, ei.getZ());
-                goalz.add(new GoalPickupItem(standPos));
-            }
             if (farmTicks % 100 == 0) {
                 if (pracaWheatPriorityState) {
                     logDirect(String.format("§e[Praca] Tryb zbierania: priorytet PSZENICY (nasiona w EQ: %d). Zbieram: %d itemów pszenicy z ziemi",
@@ -3532,12 +3506,62 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 }
             }
 
-            // Fallback: pobliskie plony tylko gdy BRAK jakichkolwiek dropów
-            if (!plantOnly && !toBreak.isEmpty() && goalz.isEmpty()) {
-                List<BlockPos> fallbackGoals = selectOptimizedHarvestGoals(toBreak, playerPos);
-                for (BlockPos p : fallbackGoals) {
-                    goalz.add(new GoalFarmTarget(p));
+            // 1. Płynne bezpośrednie podejście (Direct Approach):
+            // Gdy item leży w promieniu do 8m (distToDropSq <= 64.0) i bezpośredni krok jest bezpieczny (brak wody/przepaści)
+            if (distToDropSq <= 64.0D && isImmediateStepSafe(ctx.player().position(), dropPos, ctx.world())) {
+                Vec3 eye = ctx.player().getEyePosition(1.0f);
+                Vec3 aimDropPos = dropPos.add(0, 0.15D, 0);
+                Rotation desiredRot = RotationUtils.calcRotationFromVec3d(eye, aimDropPos, ctx.playerRotations());
+                Rotation steppedRot = smoothStepRotation(
+                        ctx.playerRotations(),
+                        new Rotation(desiredRot.getYaw(), Mth.clamp(desiredRot.getPitch(), -20.0F, 35.0F)),
+                        60.0F,
+                        30.0F
+                );
+                applyAimRotation(steppedRot, true);
+
+                float yawToDrop = desiredRot.getYaw();
+                applyForwardOnlyCorridorSteering(steppedRot.getYaw(), yawToDrop, false);
+
+                // Anti-stall: jeśli przez 70 ticków (3.5 sekundy) bot nie podniósł tego samego itemu
+                if (closestDrop.getId() == currentDropTargetId) {
+                    dropPickupWaitTicks++;
+                    if (dropPickupWaitTicks > 70) {
+                        itemBlacklist.put(closestDrop.getId(), farmTicks + 300);
+                        dropPickupWaitTicks = 0;
+                        currentDropTargetId = -1;
+                    }
+                } else {
+                    currentDropTargetId = closestDrop.getId();
+                    dropPickupWaitTicks = 0;
                 }
+
+                if (baritone.getPathingBehavior().hasPath()) {
+                    baritone.getPathingBehavior().softCancelIfSafe();
+                }
+
+                // Natychmiastowy REQUEST_PAUSE – zapobiega walce Baritone A* oraz ACTIVE HARVEST PULL o sterowanie!
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+
+            // 2. Fallback na Baritone A* z celem GoalPickupItem (gdy drop jest daleko lub za rowem z wodą)
+            if (closestDrop.getId() == currentDropTargetId) {
+                dropPickupWaitTicks++;
+                if (dropPickupWaitTicks > 120) {
+                    itemBlacklist.put(closestDrop.getId(), farmTicks + 300);
+                    dropPickupWaitTicks = 0;
+                    currentDropTargetId = -1;
+                }
+            } else {
+                currentDropTargetId = closestDrop.getId();
+                dropPickupWaitTicks = 0;
+            }
+
+            int maxPickupGoals = Math.min(3, nearbyDrops.size());
+            for (int i = 0; i < maxPickupGoals; i++) {
+                ItemEntity ei = nearbyDrops.get(i);
+                BlockPos standPos = BlockPos.containing(ei.getX(), ei.getY() + 0.1D, ei.getZ());
+                goalz.add(new GoalPickupItem(standPos));
             }
         } else {
             currentDropTargetId = -1;
@@ -3850,18 +3874,23 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         updateStallWatchdog(player, acted);
 
         // 2. Wyznacz aktywny cel przyciągania (najbliższy dojrzały kłos / grządka w promieniu 32m)
+        // Gdy bot jest w dedykowanym trybie zbierania dropów z ziemi (executeGroundFirst),
+        // ACTIVE HARVEST PULL nie może odciągać bota na odległe kłosy ani stary spine waypoint!
         Rotation currentRot = getSafeServerRotation();
-        BlockPos rawPullBlockPos = findActiveMagnetTarget(playerVecPos, currentRot.getYaw(), toBreak, openFarmland, haveSeeds);
+        BlockPos rawPullBlockPos = (executeGroundFirst && !nearbyDrops.isEmpty()) ? null
+                : findActiveMagnetTarget(playerVecPos, currentRot.getYaw(), toBreak, openFarmland, haveSeeds);
         BlockPos pullBlockPos = resolveStableWalkTarget(playerVecPos, rawPullBlockPos, world);
 
         // Jeśli Boustrophedon ma ważny waypoint, ale bot stoi w miejscu (stallTicks >= 6) lub przed nim są tylko sadzonki,
         // bezwzględny priorytet przejmuje bezpośredni dojrzały kłos (pullBlockPos)!
         Vec3 activePullVec = null;
-        if (pullBlockPos != null && (stallTicks >= 6 || !isPracaModeActive() || pracaActiveSpineWaypoint == null
-                || playerVecPos.distanceToSqr(Vec3.atBottomCenterOf(pullBlockPos)) <= 64.0D)) {
-            activePullVec = Vec3.atBottomCenterOf(pullBlockPos);
-        } else if (isPracaModeActive() && pracaActiveSpineWaypoint != null) {
-            activePullVec = Vec3.atBottomCenterOf(pracaActiveSpineWaypoint);
+        if (!executeGroundFirst || nearbyDrops.isEmpty()) {
+            if (pullBlockPos != null && (stallTicks >= 6 || !isPracaModeActive() || pracaActiveSpineWaypoint == null
+                    || playerVecPos.distanceToSqr(Vec3.atBottomCenterOf(pullBlockPos)) <= 64.0D)) {
+                activePullVec = Vec3.atBottomCenterOf(pullBlockPos);
+            } else if (isPracaModeActive() && pracaActiveSpineWaypoint != null) {
+                activePullVec = Vec3.atBottomCenterOf(pracaActiveSpineWaypoint);
+            }
         }
 
         // 3. ACTIVE HARVEST PULL: Gdy w zasięgu ręki (2.95m) są tylko niedojrzałe sadzonki (!hasInReachAction),
