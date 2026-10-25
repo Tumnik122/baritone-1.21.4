@@ -1029,11 +1029,71 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     }
 
     /**
-     * Sterowanie Forward-Only dla trybu #praca (Argon 4).
-     * Całkowity zakaz cofania (MOVE_BACK zawsze false) eliminujący szarpanie W/S.
-     * Kompensuje kąt widzenia strafe'ami A/D, utrzymując pełny sprint w korytarzu.
+     * Oblicza, czy kontynuowanie ruchu do przodu (W) w bieżącym ticku spowoduje
+     * minięcie nieobsłużonego celu (oddalanie się na granicy zasięgu) lub ucieczkę celu za plecy.
+     * Nie hamuje, gdy gracz zbliża się do celu! (Argon 4)
      */
-    private void applyForwardOnlyCorridorSteering(float activeCameraYaw, float targetMoveYaw, boolean hasActiveTarget) {
+    private boolean shouldBrakeForTarget(
+            Vec3 eyePos,
+            float currentCamYaw,
+            BlockPos target,
+            double reachSq,
+            boolean actedThisTick
+    ) {
+        if (actedThisTick || target == null || ctx.player() == null) {
+            return false;
+        }
+
+        Vec3 targetCenter = Vec3.atCenterOf(target);
+        double distCurSqr = eyePos.distanceToSqr(targetCenter);
+
+        // Jeśli cel jest jeszcze poza zasięgiem ręki, musimy iść do przodu, aby do niego podejść
+        if (distCurSqr > reachSq) {
+            return false;
+        }
+
+        // Predykcja pozycji oczu w kolejnym ticku przy wciśniętym W (kierunek kamery + obecny pęd)
+        Vec3 forwardStep = Vec3.directionFromRotation(0.0F, currentCamYaw).scale(0.22D);
+        Vec3 motion = ctx.player().getDeltaMovement();
+        Vec3 predictedDelta = new Vec3(
+                forwardStep.x * 0.7D + motion.x * 0.3D,
+                0.0D,
+                forwardStep.z * 0.7D + motion.z * 0.3D
+        );
+        Vec3 nextEyePos = eyePos.add(predictedDelta);
+        double distNextSqr = nextEyePos.distanceToSqr(targetCenter);
+
+        // Sprawdzamy, czy dystans ROŚNIE (gracz oddala się od celu / mija go)
+        boolean isMovingAway = distNextSqr > (distCurSqr + 0.0025D);
+
+        // Margines bezpieczeństwa przed utratą zasięgu (ok. 0.30m przed końcem reach)
+        double safeBrakeLimitSq = Math.max(1.0D, reachSq - 0.65D);
+
+        // 1. Hamuj, jeśli mijamy cel i za chwilę wypadnie on poza zasięg ręki
+        if (isMovingAway && distNextSqr > safeBrakeLimitSq) {
+            return true;
+        }
+
+        // 2. Hamuj, jeśli cel jest blisko, ale znajduje się głęboko za plecami / z boku (> 105°),
+        // żeby RotationEngine zdążył obrócić głowę zanim odejdziemy za daleko
+        double dx = targetCenter.x - eyePos.x;
+        double dz = targetCenter.z - eyePos.z;
+        float yawToTarget = (float) (Mth.atan2(dz, dx) * (180.0D / Math.PI)) - 90.0F;
+        float yawError = Math.abs(Mth.wrapDegrees(yawToTarget - currentCamYaw));
+
+        return isMovingAway && yawError > 105.0F && distCurSqr > 2.25D;
+    }
+
+    /**
+     * Płynne prowadzenie wzdłuż korytarza (Hold-W Continuous Walk).
+     * Nie przerywa chodu, gdy w zasięgu znajdują się plony — zatrzymuje W wyłącznie wtedy,
+     * gdy flaga brakeForTarget sygnalizuje ryzyko pominięcia kłosa za plecami. (Argon 4)
+     */
+    private void applyForwardOnlyCorridorSteering(
+            float currentCamYaw,
+            float targetMoveYaw,
+            boolean brakeForTarget
+    ) {
         var input = baritone.getInputOverrideHandler();
         if (ctx.player() == null) return;
 
@@ -1046,56 +1106,60 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             }
         }
 
-        // USUNIĘTO podwójne applyAimRotation z targetMoveYaw! Rotację ustala wyłącznie główny silnik celowania,
-        // co eliminuje walkę dwóch wektorów obrotu w jednym ticku i flickowanie kamery o 180°.
+        float yawDiff = Mth.wrapDegrees(targetMoveYaw - currentCamYaw);
+        float absYawDiff = Math.abs(yawDiff);
 
-        // Rzutowanie wektora docelowego ruchu na lokalny układ kamery (Decoupled Sprint WASD)
-        float radDiff = (float) Math.toRadians(Mth.wrapDegrees(targetMoveYaw - activeCameraYaw));
-        float forwardComponent = Mth.cos(radDiff);
-        float leftComponent = -Mth.sin(radDiff); // W MC: ujemny kąt delta = cel po lewej (MOVE_LEFT)
+        // Domyślnie trzymamy W w sposób ciągły, chyba że musimy wyhamować przed minięciem celu
+        // lub kamera patrzy w stronę przeciwną do korytarza marszu (> 100°)
+        boolean pressW = !brakeForTarget && absYawDiff <= 100.0F;
+        boolean pressA = false;
+        boolean pressD = false;
 
-        boolean pressW = forwardComponent > -0.15f; // Ruch w przód + strafe; całkowity zakaz MOVE_BACK (Argon 4)
-        boolean pressS = false;
-        boolean pressA = leftComponent > 0.35f;
-        boolean pressD = leftComponent < -0.35f;
-
-        // Jeśli bot wykonuje akcję w zasięgu ręki lub wokół niego są cele do zbioru/siewu,
-        // bezwzględny priorytet ma czyszczenie MYSZKĄ (360° sweep) ze stania w miejscu!
-        if (hasActiveTarget || (candidates != null && !candidates.isEmpty())) {
-            pressW = false;
-            pressA = false;
-            pressD = false;
+        // Delikatna korekta boczna (strafe) TYLKO gdy nie celujemy w żaden blok obok
+        // i idziemy prosto korytarzem (zapobiega szarpaniu A/D podczas obrotu głowy do plonów)
+        if (pressW && lockedTarget == null && absYawDiff > 18.0F && absYawDiff <= 55.0F) {
+            if (yawDiff > 0.0F) {
+                pressA = true;
+            } else {
+                pressD = true;
+            }
         }
 
         // Blokuj klawisze, które pchnęłyby bota z krawędzi grządki do wody
         if (ctx.world() != null) {
             Vec3 pos = ctx.player().position();
-            if (pressW && wouldMoveIntoWater(pos, ctx.world(), activeCameraYaw, 0.50D)) {
+            if (pressW && wouldMoveIntoWater(pos, ctx.world(), currentCamYaw, 0.50D)) {
                 pressW = false;
             }
-            if (pressA && wouldMoveIntoWater(pos, ctx.world(), activeCameraYaw - 90.0F, 0.50D)) {
+            if (pressA && wouldMoveIntoWater(pos, ctx.world(), currentCamYaw - 90.0F, 0.50D)) {
                 pressA = false;
             }
-            if (pressD && wouldMoveIntoWater(pos, ctx.world(), activeCameraYaw + 90.0F, 0.50D)) {
+            if (pressD && wouldMoveIntoWater(pos, ctx.world(), currentCamYaw + 90.0F, 0.50D)) {
                 pressD = false;
             }
         }
 
         boolean onFarmland = isNearOrOnFarmland(ctx.player(), ctx.world());
-        // Wyłącz sprint na Farmlandzie lub przy bliskim podchodzeniu (< 4.5m) — spokojny chód (Argon 4)
-        boolean allowSprint = pressW
+        // GrimAC Sprint Check: sprint dozwolony wyłącznie przy czystym ruchu do przodu (pressW),
+        // bez jednoczesnego strafe'owania pod dużym kątem i bez kolizji ze ścianą
+        boolean canSprintSafely = pressW
+                && !pressA
+                && !pressD
                 && !onFarmland
-                && !hasActiveTarget
-                && Math.abs(Mth.wrapDegrees(targetMoveYaw - activeCameraYaw)) <= 35.0f
+                && absYawDiff <= 30.0F
+                && !ctx.player().horizontalCollision
+                && !ctx.player().isShiftKeyDown()
+                && ctx.player().getFoodData().getFoodLevel() > 6
                 && Baritone.settings().allowSprint.value;
 
         input.setInputForceState(Input.MOVE_FORWARD, pressW);
         input.setInputForceState(Input.MOVE_BACK, false);
         input.setInputForceState(Input.MOVE_LEFT, pressA);
         input.setInputForceState(Input.MOVE_RIGHT, pressD);
-        input.setInputForceState(Input.SPRINT, allowSprint);
+        input.setInputForceState(Input.SPRINT, canSprintSafely);
+        input.setInputForceState(Input.SNEAK, false);
         if (ctx.player() != null) {
-            ctx.player().setSprinting(allowSprint);
+            ctx.player().setSprinting(canSprintSafely);
         }
     }
 
@@ -2836,16 +2900,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     }
                 }
             }
-            if (valid) {
-                // Move-While-Act (Argon 4): Hamuj TYLKO wtedy, gdy pęd gracza wyrzuci go poza zasięg w kolejnym ticku!
-                Vec3 nextEyePos = eyePos.add(ctx.player().getDeltaMovement());
-                boolean wouldLeaveReach = nextEyePos.distanceToSqr(Vec3.atCenterOf(lockedTarget)) > (reach2 - 0.35D);
-                if (wouldLeaveReach) {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                    if (ctx.player() != null) ctx.player().setSprinting(false);
-                }
-            } else {
+            if (!valid) {
                 lockedTarget = (lookAheadTarget != null && !isBlacklisted(lookAheadTarget)) ? lookAheadTarget : null;
                 lookAheadTarget = null;
                 lockedPhase = ActionPhase.NONE;
@@ -2880,13 +2935,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     lookAheadTarget = (pair.lookAhead() != null && !pair.lookAhead().equals(lockedTarget)) ? pair.lookAhead().immutable() : null;
                     lockedPhase = ActionPhase.HARVEST;
                     lockedTargetTicks = 0;
-
-                    Vec3 nextEyePos = eyePos.add(velVec);
-                    if (nextEyePos.distanceToSqr(Vec3.atCenterOf(lockedTarget)) > (reach2 - 0.35D)) {
-                        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                        if (ctx.player() != null) ctx.player().setSprinting(false);
-                    }
                 }
             }
 
@@ -2914,13 +2962,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     lookAheadTarget = (pair.lookAhead() != null && !pair.lookAhead().equals(lockedTarget)) ? pair.lookAhead().immutable() : null;
                     lockedPhase = ActionPhase.REPLANT;
                     lockedTargetTicks = 0;
-
-                    Vec3 nextEyePos = eyePos.add(velVec);
-                    if (nextEyePos.distanceToSqr(Vec3.atCenterOf(lockedTarget)) > (reach2 - 0.35D)) {
-                        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                        if (ctx.player() != null) ctx.player().setSprinting(false);
-                    }
                 }
             }
 
@@ -3080,9 +3121,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     }
 
                     // Move-While-Act (Argon 4): Hamuj TYLKO wtedy, gdy gracz ucieka poza zasięg celu!
-                    Vec3 nextEyePos = eyePos.add(ctx.player().getDeltaMovement());
-                    boolean wouldLeaveReach = lockedTarget != null && nextEyePos.distanceToSqr(Vec3.atCenterOf(lockedTarget)) > (reach2 - 0.35D);
-                    if (!acted && wouldLeaveReach) {
+                    if (!acted && shouldBrakeForTarget(eyePos, currentRefRot.getYaw(), lockedTarget, reach2, acted)) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
                         if (ctx.player() != null) {
@@ -3183,9 +3222,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     }
 
                     // Move-While-Act (Argon 4): Hamuj TYLKO wtedy, gdy gracz ucieka poza zasięg celu!
-                    Vec3 nextEyePos = eyePos.add(ctx.player().getDeltaMovement());
-                    boolean wouldLeaveReach = lockedTarget != null && nextEyePos.distanceToSqr(Vec3.atCenterOf(lockedTarget)) > (reach2 - 0.35D);
-                    if (!acted && wouldLeaveReach) {
+                    if (!acted && shouldBrakeForTarget(eyePos, currentRefRot.getYaw(), lockedTarget, reach2, acted)) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
                         if (ctx.player() != null) {
@@ -3520,33 +3557,45 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         && ctx.player().position().distanceToSqr(moveTargetVec) <= 64.0D
                         && farmOptimizer.isCorridorClearForDirectWalk(ctx.player().position(), moveTargetBlock, ctx.world());
 
+                float currentCamYaw = getSafeServerRotation().getYaw();
+                float targetMoveYaw = (moveTargetVec != null)
+                        ? (float) (Math.toDegrees(Math.atan2(
+                                moveTargetVec.z - ctx.player().position().z,
+                                moveTargetVec.x - ctx.player().position().x)) - 90.0D)
+                        : currentCamYaw;
+
+                // 1. Sprawdzenie, czy musimy przyhamować W na ułamek sekundy, aby nie minąć celu (Anty-Miss)
+                boolean brakeForTarget = shouldBrakeForTarget(
+                        eyePos,
+                        currentCamYaw,
+                        lockedTarget,
+                        reach2,
+                        acted
+                );
+
+                // 2. Bezpośrednie prowadzenie w korytarzu (Continuous Walk-and-Sweep)
                 if (canDirectSprint) {
                     if (baritone.getPathingBehavior().hasPath()) {
                         baritone.getPathingBehavior().softCancelIfSafe();
                     }
-
-                    float targetMoveYaw = (float) (Math.toDegrees(Math.atan2(
-                            moveTargetVec.z - ctx.player().position().z,
-                            moveTargetVec.x - ctx.player().position().x)) - 90.0D);
-                    float currentCamYaw = getSafeServerRotation().getYaw();
-
-                    applyForwardOnlyCorridorSteering(
-                            currentCamYaw,
-                            targetMoveYaw,
-                            acted || lockedTarget != null
-                    );
-                    // Zwróć REQUEST_PAUSE tylko wtedy, gdy bot RZECZYWIŚCIE wykonuje ruch bezpośredni klawiszami.
-                    // Jeśli sterowanie bezpośrednie nie naciska żadnego klawisza (np. woda z przodu lub róg),
-                    // ODDAL sterowanie do Baritone A*, aby wyznaczyło ścieżkę dookoła przeszkody zamiast zamrażać bota!
-                    if (baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD)
-                            || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_LEFT)
-                            || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_RIGHT)
-                            || baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_BACK)) {
-                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                    }
+                    applyForwardOnlyCorridorSteering(currentCamYaw, targetMoveYaw, brakeForTarget);
+                    // ZAWSZE zwracamy REQUEST_PAUSE, gdy canDirectSprint jest aktywne (nawet w ticku hamowania),
+                    // aby nie spaść do clearAllKeys() i nie oddać sterowania pathfinderowi A* na 1 tick!
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
-                // Fallback na Baritone A* (np. zakręty, omijanie przeszkód):
+                // 3. Jeśli nie jesteśmy w korytarzu bezpośrednim, ale kończymy akcję na lokalnym celu w zasięgu
+                if (acted || (lockedTarget != null && eyePos.distanceToSqr(Vec3.atCenterOf(lockedTarget)) <= reach2)) {
+                    if (brakeForTarget) {
+                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+                        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+                    } else {
+                        applyForwardOnlyCorridorSteering(currentCamYaw, targetMoveYaw, false);
+                    }
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+
+                // 4. Fallback na daleki pathfinding Baritone A* TYLKO wtedy, gdy lokalnie nic nie robimy
                 baritone.getInputOverrideHandler().clearAllKeys();
                 if (directTaskPos != null) {
                     goalz.add(new GoalFarmTarget(directTaskPos));
@@ -3847,7 +3896,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                             activePullVec.z - playerVecPos.z,
                             activePullVec.x - playerVecPos.x)) - 90.0D);
 
-                    applyForwardOnlyCorridorSteering(currentRot.getYaw(), targetMoveYaw, hasInReachAction);
+                    boolean brakeMagnet = shouldBrakeForTarget(eye, currentRot.getYaw(), targetBlock, reach2, acted);
+                    applyForwardOnlyCorridorSteering(currentRot.getYaw(), targetMoveYaw, brakeMagnet);
 
                     // Impuls anty-stallowy: pełny W (skok tylko gdy brak farmlandu w pobliżu, by nie niszczyć grządek)
                     if (stallTicks >= 8) {
@@ -3866,7 +3916,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         float sidestepMoveYaw = (float) (Math.toDegrees(Math.atan2(
                                 sidestepVec.z - playerVecPos.z,
                                 sidestepVec.x - playerVecPos.x)) - 90.0D);
-                        applyForwardOnlyCorridorSteering(currentRot.getYaw(), sidestepMoveYaw, hasInReachAction);
+                        applyForwardOnlyCorridorSteering(currentRot.getYaw(), sidestepMoveYaw, false);
                         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                     }
 
