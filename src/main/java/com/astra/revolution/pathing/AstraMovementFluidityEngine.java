@@ -41,7 +41,24 @@ public final class AstraMovementFluidityEngine {
     private int unstuckPulseRemaining = 0;
     private float lastValidWorldYaw = Float.NaN;
 
+    // Rejestr dzierżawy celowania dla procesów nadrzędnych (np. FarmProcess)
+    private int externalAimLockTicks = 0;
+    private Rotation lastExternalRotation = null;
+
     private AstraMovementFluidityEngine() {}
+
+    /**
+     * Rezerwuje celowanie dla procesu nadrzędnego (np. FarmProcess), blokując
+     * nadpisywanie kamery przez wektor trasy w trakcie ścinania/sadzenia plonów.
+     */
+    public void lockAimForProcess(Rotation targetRotation, int ticks) {
+        this.lastExternalRotation = targetRotation;
+        this.externalAimLockTicks = Math.max(this.externalAimLockTicks, ticks);
+    }
+
+    public boolean isAimLockedByProcess() {
+        return this.externalAimLockTicks > 0;
+    }
 
     /**
      * Główna metoda wywoływana pod koniec ticku ruchu ścieżki.
@@ -166,19 +183,28 @@ public final class AstraMovementFluidityEngine {
             effectiveTargetYaw += unstuckStrafeDir * (-38.0F);
         }
 
+        if (this.externalAimLockTicks > 0) {
+            this.externalAimLockTicks--;
+        }
+
+        boolean holdExternalAim = isActivelyMiningOrPlacing || this.externalAimLockTicks > 0;
+
         // Płynna orientacja wzroku wzdłuż aktywnego wektora ścieżki (GrimAC GCD Safe)
-        // Eliminuje błąd, gdzie bot celuje w odległy koniec trasy zamiast w aktywny krok/zakręt (np. blok z lewej strony)
-        if (!isActivelyMiningOrPlacing && baritone.getLookBehavior() != null) {
+        // Jeśli proces nadrzędny (FarmProcess) celuje w plon, NIE nadpisuj jego rotacji!
+        if (!holdExternalAim && baritone.getLookBehavior() != null) {
             double dy = (currentTarget.y + 0.5) - player.getEyeY();
             double hDist = Math.max(horizDist, 0.4);
             float pitchToNode = (float) -Math.toDegrees(Math.atan2(dy, hDist));
             float targetPitch = Mth.clamp(pitchToNode, -22.0f, 22.0f);
 
             baritone.getLookBehavior().updateTarget(new Rotation(effectiveTargetYaw, targetPitch), true);
+        } else if (this.externalAimLockTicks > 0 && this.lastExternalRotation != null && baritone.getLookBehavior() != null) {
+            baritone.getLookBehavior().updateTarget(this.lastExternalRotation, true);
         }
 
         if (wantsToMove && !player.isInWater() && !player.isInLava()) {
-            applyQuantizedMovementInputs(baritone, currentServerYaw, effectiveTargetYaw);
+            float actualYaw = baritone.getPlayerContext().playerRotations().getYaw();
+            applyQuantizedMovementInputs(baritone, actualYaw, effectiveTargetYaw);
         }
     }
 
@@ -295,6 +321,22 @@ public final class AstraMovementFluidityEngine {
         unstuckPulseRemaining = 0;
         lastPos = Vec3.ZERO;
         lastValidWorldYaw = Float.NaN;
+        externalAimLockTicks = 0;
+        lastExternalRotation = null;
+    }
+
+    /**
+     * Normalizuje rzędną Y gracza na blokach 15/16 (Farmland 0.9375 / DirtPath),
+     * eliminując sztuczne błędy wysokości i fałszywe wykrywanie schodków.
+     */
+    public static double getEffectiveGroundY(net.minecraft.world.entity.player.Player player) {
+        if (player == null) return 0.0;
+        double y = player.getY();
+        double frac = y - Math.floor(y);
+        if (frac >= 0.93 && frac <= 0.95) {
+            return Math.ceil(y);
+        }
+        return y;
     }
 
     private static double sq(double v) {

@@ -296,7 +296,8 @@ public class PathExecutor implements IPathExecutor, Helper {
             // GrimAC Movement Fluidity & Predictive Anti-Stall Engine
             boolean isMiningOrPlacing = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT)
                     || behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_RIGHT)
-                    || (ctx.playerController() != null && !ctx.playerController().hasBrokenBlock());
+                    || (ctx.playerController() != null && !ctx.playerController().hasBrokenBlock())
+                    || AstraMovementFluidityEngine.INSTANCE.isAimLockedByProcess();
             AstraMovementFluidityEngine.INSTANCE.onTickMovement(behavior.baritone, isMiningOrPlacing);
             ticksOnCurrent++;
             if (ticksOnCurrent > currentMovementOriginalCostEstimate + Baritone.settings().movementTimeoutTicks.value) {

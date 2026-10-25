@@ -742,6 +742,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             ctx.player().setXRot(targetRot.getPitch());
             ctx.player().yHeadRot = targetRot.getYaw();
         }
+        com.astra.revolution.pathing.AstraMovementFluidityEngine.INSTANCE.lockAimForProcess(targetRot, 2);
     }
 
     private boolean canInteractGrimSafe(BlockPos targetPos, Rotation targetRot, double reach, boolean mustBeTopFace) {
@@ -3681,15 +3682,16 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
 
-                // 3. Jeśli nie jesteśmy w korytarzu bezpośrednim, ale kończymy akcję na lokalnym celu w zasięgu
-                if (acted || (lockedTarget != null && eyePos.distanceToSqr(Vec3.atCenterOf(lockedTarget)) <= reach2)) {
-                    if (brakeForTarget) {
-                        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-                    } else {
-                        applyForwardOnlyCorridorSteering(currentCamYaw, targetMoveYaw, false);
-                    }
+                // 3. Jeśli musimy przyhamować przed celem, aby nie minąć kłosa (Anty-Miss)
+                if (brakeForTarget && lockedTarget != null) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+
+                // Płynna kontynuacja marszu/sprintu podczas ścinania (Hold-W Continuous Sweep)
+                if (baritone.getPathingBehavior().hasPath() && baritone.getPathingBehavior().isPathing()) {
+                    return new PathingCommand(cachedCompositeGoal, PathingCommandType.DEFER);
                 }
 
                 // 4. Fallback na daleki pathfinding Baritone A* TYLKO wtedy, gdy lokalnie nic nie robimy
