@@ -3615,48 +3615,12 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 }
             }
 
-            // 1. Płynne bezpośrednie podejście (Direct Approach):
-            // Gdy item leży w promieniu do 8m (distToDropSq <= 64.0) i bezpośredni krok jest bezpieczny (brak wody/przepaści)
-            if (distToDropSq <= 64.0D && isImmediateStepSafe(ctx.player().position(), dropPos, ctx.world())) {
-                Vec3 eye = ctx.player().getEyePosition(1.0f);
-                Vec3 aimDropPos = dropPos.add(0, 0.15D, 0);
-                Rotation desiredRot = RotationUtils.calcRotationFromVec3d(eye, aimDropPos, ctx.playerRotations());
-                Rotation steppedRot = smoothStepRotation(
-                        ctx.playerRotations(),
-                        new Rotation(desiredRot.getYaw(), Mth.clamp(desiredRot.getPitch(), -20.0F, 35.0F)),
-                        60.0F,
-                        30.0F
-                );
-                applyAimRotation(steppedRot, true);
-
-                float yawToDrop = desiredRot.getYaw();
-                applyForwardOnlyCorridorSteering(steppedRot.getYaw(), yawToDrop, false);
-
-                // Anti-stall: jeśli przez 70 ticków (3.5 sekundy) bot nie podniósł tego samego itemu
-                if (closestDrop.getId() == currentDropTargetId) {
-                    dropPickupWaitTicks++;
-                    if (dropPickupWaitTicks > 70) {
-                        itemBlacklist.put(closestDrop.getId(), farmTicks + 300);
-                        dropPickupWaitTicks = 0;
-                        currentDropTargetId = -1;
-                    }
-                } else {
-                    currentDropTargetId = closestDrop.getId();
-                    dropPickupWaitTicks = 0;
-                }
-
-                if (baritone.getPathingBehavior().hasPath()) {
-                    baritone.getPathingBehavior().softCancelIfSafe();
-                }
-
-                // Natychmiastowy REQUEST_PAUSE – zapobiega walce Baritone A* oraz ACTIVE HARVEST PULL o sterowanie!
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-            }
-
-            // 2. Fallback na Baritone A* z celem GoalPickupItem (gdy drop jest daleko lub za rowem z wodą)
+            // Bezpieczne zbieranie itemów z ziemi przez Baritone A* (GoalPickupItem).
+            // Zero manipulacji klawiszami chodu, zero sztucznych canceli ścieżki i zero REQUEST_PAUSE.
+            // Baritone generuje w 100% zsynchronizowaną fizykę 1:1, zgodną z PredictionEngine GrimAC.
             if (closestDrop.getId() == currentDropTargetId) {
                 dropPickupWaitTicks++;
-                if (dropPickupWaitTicks > 120) {
+                if (dropPickupWaitTicks > 100) {
                     itemBlacklist.put(closestDrop.getId(), farmTicks + 300);
                     dropPickupWaitTicks = 0;
                     currentDropTargetId = -1;

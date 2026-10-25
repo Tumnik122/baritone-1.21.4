@@ -99,42 +99,20 @@ public abstract class MixinMinecraft {
     @Unique
     private Boolean baritone$savedPauseOnLostFocus = null;
 
-    // ═════════════════════════════════════════════════════════════════
-    // FIX TIMER / TIMERLIMIT (część 2) — GOVERNOR TICKÓW (gwarancja)
-    //
-    // Pakiety ruchu powstają wyłącznie 1:1 w Minecraft.tick()
-    // → LocalPlayer.tick() → sendPosition(). Twardy limit ticków
-    // względem zegara ściankowego = twardy limit 20 pakietów/s,
-    // NIEZALEŻNIE od tego, co robi pętla frame'ów (FpsOptimizer,
-    // vsync, redirecty innych modów itd.).
-    //
-    //  • allowed = elapsed/50ms + 2 — slack 2 przepuszcza legalny
-    //    vanilla catch-up (do 4 ticków/frame po hitchu, maks. clamp
-    //    vanilla = 200 ms), więc zachowanie vanilla nie jest dotykane;
-    //  • offset +2 jest stały → długoterminowo dokładnie 20.0 TPS;
-    //  • rebase epoki przy zaległości >2 s (np. ładowanie świata),
-    //    aby governor nigdy nie „wygasał";
-    //  • cancel ticka = dla gry to po prostu wolniejsza klatka.
-    // ═════════════════════════════════════════════════════════════════
-    @Unique
-    private long baritone$govEpoch = -1L;
-
     @Unique
     private static boolean baritone$rshiftWasDown = false;
 
     @Unique
     private static boolean astra$wasKeyRightCtrlPressed = false;
 
-    @Unique
-    private long baritone$govTicks = 0L;
-
-    @Inject(method = "tick", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "tick", at = @At("HEAD"))
     private void baritone$onTickHead(CallbackInfo ci) {
         Minecraft self = (Minecraft) (Object) this;
         AstraPerformanceConfig.syncWindowState(self);
         astra$pollSchematicHotkey(self);
 
-        // (1) Tryb tła przez NATYWNE ustawienie (zawsze wykonane):
+        // Tryb tła przez NATYWNE ustawienie vanilla:
+        // Vanilla utrzymuje dokładnie 20.0 TPS przy utracie fokusu bez sztucznych canceli ticków.
         boolean isSecondaryBot = AstraPerformanceConfig.getBotNum() > 1;
         if (isSecondaryBot || ((Baritone.settings().noPauseWhenPathing.value || Baritone.settings().runBackgroundWhenUnfocused.value)
                 && Baritone.isPrimaryActive())) {
@@ -146,32 +124,6 @@ public abstract class MixinMinecraft {
             // Restore oryginalnej wartości po zakończeniu pracy bota
             this.options.pauseOnLostFocus = this.baritone$savedPauseOnLostFocus;
             this.baritone$savedPauseOnLostFocus = null;
-        }
-
-        // (2) Governor — aktywny tylko gdy bot pracuje; idle = vanilla 1:1
-        if (!Baritone.isPrimaryActive()) {
-            this.baritone$govEpoch = -1L;
-            this.baritone$govTicks = 0L;
-            return;
-        }
-        long now = System.nanoTime();
-        if (this.baritone$govEpoch < 0L) {
-            this.baritone$govEpoch = now;
-            this.baritone$govTicks = 0L;
-            return; // pierwszy tick — przepuść i zainicjuj epokę
-        }
-        long allowed = (now - this.baritone$govEpoch) / 50_000_000L + 2L;
-        if (this.baritone$govTicks > allowed) {
-            // Powyżej zegarowego limitu 20 TPS — TEN tick nie odbywa
-            // się w ogóle → żaden pakiet ruchu nie zostaje wysłany.
-            ci.cancel();
-            return;
-        }
-        this.baritone$govTicks++;
-        // Rebase po długiej przerwie (world load / pauza) — bez tego
-        // zaległy „kredyt" wyłączyłby governor na stałe.
-        if (allowed - this.baritone$govTicks > 40L) {
-            this.baritone$govEpoch = now - this.baritone$govTicks * 50_000_000L;
         }
     }
 
