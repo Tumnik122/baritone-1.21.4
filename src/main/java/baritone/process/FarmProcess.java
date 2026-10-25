@@ -750,16 +750,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     }
 
     private void applyAimRotation(Rotation targetRot, boolean fastMode) {
-        boolean isPathing = baritone.getPathingBehavior().isPathing();
+        if (targetRot == null) return;
         baritone.getLookBehavior().updateTarget(targetRot, true);
-        // Bezpośrednią aktualizację kąta gracza (setYRot) wykonujemy TYLKO wtedy, gdy PathExecutor NIE idzie po ścieżce!
-        // Gdy bot pokonuje trasę wokół przeszkody, nie nadpisujemy setYRot, aby nie pchać gracza w ścianę.
-        if (!isPathing && ctx.player() != null) {
-            ctx.player().setYRot(targetRot.getYaw());
-            ctx.player().setXRot(targetRot.getPitch());
-            ctx.player().yHeadRot = targetRot.getYaw();
-            com.astra.revolution.pathing.AstraMovementFluidityEngine.INSTANCE.lockAimForProcess(targetRot, 2);
-        }
+        com.astra.revolution.pathing.AstraMovementFluidityEngine.INSTANCE.lockAimForProcess(targetRot, 2);
     }
 
     private boolean isSoilBlock(BlockState state) {
@@ -1523,9 +1516,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         input.setInputForceState(Input.MOVE_RIGHT, pressD);
         input.setInputForceState(Input.SPRINT, canSprintSafely && !imminentHazard);
         input.setInputForceState(Input.SNEAK, imminentHazard);
-        if (ctx.player() != null) {
-            ctx.player().setSprinting(canSprintSafely && !imminentHazard);
-        }
         return pressW || pressA || pressD;
     }
 
@@ -2423,37 +2413,42 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             return null;
         }
 
-        Level level = ctx.world();
         Vec3 pos = ctx.player().position();
         Vec3 vel = ctx.player().getDeltaMovement();
+        double horizSpeedSq = vel.x * vel.x + vel.z * vel.z;
+
+        // Jeśli gracz prawie stoi w miejscu (np. podczas sadzenia), nie wykonujemy awaryjnego hamowania!
+        if (horizSpeedSq < 0.004D && !baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD)) {
+            return null;
+        }
+
+        Level level = ctx.world();
         int feetY = Mth.floor(pos.y + 0.08D);
 
-        // Wektor kierunku, w którym bot zamierza iść (Yaw)
         float rad = targetYaw * ((float) Math.PI / 180F);
         double lookX = -Mth.sin(rad);
         double lookZ =  Mth.cos(rad);
 
-        // Łączymy aktualną bezwładność (vel) z kierunkiem marszu (look)
-        double stepX = vel.x * 1.35D + lookX * 0.28D;
-        double stepZ = vel.z * 1.35D + lookZ * 0.28D;
+        // Predykcja wyłącznie rzeczywistego kroku w następnych 1-2 tickach (bez sztucznego zawyżania promienia)
+        double nextX = pos.x + vel.x * 1.15D + lookX * 0.18D;
+        double nextZ = pos.z + vel.z * 1.15D + lookZ * 0.18D;
 
-        // Półszerokość hitboxa gracza (0.30) + margines hamowania (0.12) = 0.42
-        final double r = 0.42D;
-        final double[][] corners = {
-            { -r, -r }, { r, -r }, { -r, r }, { r, r }, { 0.0D, 0.0D }
+        // Sprawdzamy wyłącznie środek oraz dokładny obrys stóp (0.28m < 0.30m hitboxa)
+        final double r = 0.28D;
+        final double[][] checkOffsets = {
+            { 0.0D, 0.0D }, { -r, -r }, { r, -r }, { -r, r }, { r, r }
         };
 
-        // Predykcja w 3 krokach (od 0.35 do ~1.05 kratki przed graczem)
-        for (int step = 1; step <= 3; step++) {
-            double factor = step * 0.45D;
-            double predX = pos.x + stepX * factor;
-            double predZ = pos.z + stepZ * factor;
-
-            for (double[] c : corners) {
-                int bx = Mth.floor(predX + c[0]);
-                int bz = Mth.floor(predZ + c[1]);
-                if (isWaterHazardAt(level, bx, feetY, bz)) {
-                    return new BlockPos(bx, feetY, bz);
+        for (double[] off : checkOffsets) {
+            int bx = Mth.floor(nextX + off[0]);
+            int bz = Mth.floor(nextZ + off[1]);
+            if (isWaterHazardAt(level, bx, feetY, bz)) {
+                BlockPos waterPos = new BlockPos(bx, feetY, bz);
+                Vec3 toWater = new Vec3(bx + 0.5D - pos.x, 0.0D, bz + 0.5D - pos.z).normalize();
+                double dot = vel.x * toWater.x + vel.z * toWater.z;
+                double lookDot = lookX * toWater.x + lookZ * toWater.z;
+                if (dot > 0.02D || lookDot > 0.55D) {
+                    return waterPos;
                 }
             }
         }
@@ -2470,6 +2465,11 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             return;
         }
 
+        // Jeśli w tym ticku wykonujemy akcję REPLANT, nie mieszamy w inputach kucania!
+        if (this.lockedPhase == ActionPhase.REPLANT) {
+            return;
+        }
+
         Rotation serverRot = baritone.getLookBehavior().getServerRotation();
         float activeYaw = (serverRot != null) ? serverRot.getYaw() : ctx.player().getYRot();
 
@@ -2478,49 +2478,13 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             return;
         }
 
-        // 1. BEZWZGLĘDNA BLOKADA KRAWĘDZI: Input.SNEAK na Farmland włącza w silniku Minecrafta
-        //    metodę maybeBackOffFromEdge(), która fizycznie blokuje zsunięcie się do dziury z wodą!
-        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+        // KRYTYCZNE DLA GRIMAC: Używamy WYŁĄCZNIE InputOverrideHandler!
+        // NIGDY nie wywołujemy tutaj ctx.player().setSprinting(false) bezpośrednio!
         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-        if (ctx.player() != null) {
-            ctx.player().setSprinting(false);
-        }
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
 
-        Vec3 playerPos = ctx.player().position();
-        Vec3 hazardCenter = new Vec3(hazardPos.getX() + 0.5D, playerPos.y, hazardPos.getZ() + 0.5D);
-        Vec3 toHazard = hazardCenter.subtract(playerPos).normalize();
-        Vec3 vel = ctx.player().getDeltaMovement();
-
-        // Iloczyn skalarny prędkości i wektora do wody (jak szybko ślizgamy się w stronę dziury)
-        double closingSpeed = vel.x * toHazard.x + vel.z * toHazard.z;
-
-        // 2. Jeśli bot ma pęd w stronę wody, odcinamy W i dajemy 1 tick kontry (S), aby zbić ślizg po sprincie
-        if (closingSpeed > 0.06D || playerPos.distanceToSqr(hazardCenter) < 0.85D) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-            if (closingSpeed > 0.12D) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
-            }
-        }
-
-        // 3. Ominięcie styczne (Tangential Strafe): jeśli celujemy w plon za wodą, obchodzimy wodę bokiem (A lub D)
-        if (currentCropTarget != null) {
-            Vec3 toCrop = Vec3.atCenterOf(currentCropTarget).subtract(playerPos);
-            double cross = toHazard.x * toCrop.z - toHazard.z * toCrop.x;
-            int feetY = Mth.floor(playerPos.y + 0.08D);
-
-            float rad = activeYaw * ((float) Math.PI / 180F);
-            double leftX = Mth.cos(rad);
-            double leftZ = Mth.sin(rad);
-
-            boolean preferLeft = cross >= 0.0D;
-            int checkX = Mth.floor(playerPos.x + (preferLeft ? leftX : -leftX) * 0.85D);
-            int checkZ = Mth.floor(playerPos.z + (preferLeft ? leftZ : -leftZ) * 0.85D);
-
-            if (!isWaterHazardAt(ctx.world(), checkX, feetY, checkZ)) {
-                baritone.getInputOverrideHandler().setInputForceState(
-                        preferLeft ? Input.MOVE_LEFT : Input.MOVE_RIGHT, true
-                );
-            }
+        if (ctx.player().onGround()) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
         }
     }
 
@@ -4045,9 +4009,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     if (!acted && !isPracaModeActive() && shouldBrakeForTarget(eyePos, currentRefRot.getYaw(), lockedTarget, reach2, acted)) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                        if (ctx.player() != null) {
-                            ctx.player().setSprinting(false);
-                        }
                         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                     }
                 } else {
@@ -4065,6 +4026,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     cachedOpenFarmland.remove(pos);
                     pendingReplants.remove(pos);
                     pendingInstantReplantQueue.remove(pos);
+                    failedPlantClicks.remove(pos.asLong());
                     lockedTarget = null;
                     lockedPhase = ActionPhase.NONE;
                     lockedTargetTicks = 0;
@@ -4091,8 +4053,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     if (isPracaModeActive()) {
                         float[] verified = GrimSnapRotationUtil.findVerifiedSnapRotation(
                                 ctx.player(),
-                                ctx.player().getYRot(),
-                                ctx.player().getXRot(),
+                                currentRefRot.getYaw(),
+                                currentRefRot.getPitch(),
                                 pos, false, plantReach);
                         if (verified != null) {
                             smoothRot = new Rotation(verified[0], verified[1]);
@@ -4107,12 +4069,17 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     applyAimRotation(smoothRot, fastMode);
                     updateSweepState(smoothRot);
 
-                    // 3. Weryfikacja trafienia w górną ściankę Farmland (Direction.UP):
-                    //    Najpierw sprawdzamy getServerFarmlandHit, a następnie rayTraceFarmlandTopFace,
-                    //    który nie zatrzymuje się na pustych fizycznie hitboxach OUTLINE sąsiednich plonów!
+                    // 3. WERYFIKACJA ROTACJI SERWEROWEJ PRZED KLIKNIĘCIEM PPM (Argon 4):
+                    //    Ponieważ processRightClickBlock wysyła ServerboundUseItemOnPacket NATYCHMIAST
+                    //    (przed wysłaniem nowego PosRot na końcu LocalPlayer.tick()), serwer ocenia kliknięcie
+                    //    względem aktualnej rotacji serwerowej (actualServerRot)!
+                    Rotation actualServerRot = (baritone.getLookBehavior().getServerRotation() != null)
+                            ? baritone.getLookBehavior().getServerRotation()
+                            : ctx.playerRotations();
+
                     BlockHitResult sbhr = getServerFarmlandHit(pos);
                     if (sbhr == null || !isValidFarmlandHit(sbhr, pos)) {
-                        sbhr = rayTraceFarmlandTopFace(pos, smoothRot, plantReach);
+                        sbhr = rayTraceFarmlandTopFace(pos, actualServerRot, plantReach);
                     }
 
                     if (sbhr != null) {
@@ -4164,9 +4131,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         handledNearbyAction = true;
                     }
 
-                    // 4. Zwiększony limit ticków (z 3 na 8) zanim grządka trafi na krótką czarną listę (15 ticków zamiast 40),
+                    // 4. Zwiększony limit ticków (10 zamiast 8) zanim grządka trafi na krótką czarną listę (15 ticków zamiast 40),
                     //    co pozwala kamerze spokojnie obrócić się do grządki
-                    if (lockedTarget != null && lockedTargetTicks >= 8) {
+                    if (lockedTarget != null && lockedTargetTicks >= 10) {
                         blacklistFor(pos, 15);
                         pendingInstantReplantQueue.remove(pos);
                         lockedTarget = null;
@@ -4175,12 +4142,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     }
 
                     // Move-While-Act (Argon 4): Hamuj TYLKO wtedy, gdy gracz ucieka poza zasięg celu!
-                    if (!acted && !isPracaModeActive() && shouldBrakeForTarget(eyePos, currentRefRot.getYaw(), lockedTarget, reach2, acted)) {
+                    if (!acted && lockedTarget != null && !isPracaModeActive() && shouldBrakeForTarget(eyePos, actualServerRot.getYaw(), lockedTarget, reach2, acted)) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                        if (ctx.player() != null) {
-                            ctx.player().setSprinting(false);
-                        }
                         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                     }
                 } else {
@@ -4827,9 +4791,6 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 && baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD);
 
         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, canSprint);
-        if (ctx.player() != null) {
-            ctx.player().setSprinting(canSprint);
-        }
         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
 
         // Zabezpieczenie Swept-AABB + Sneak Edge Lock przed wpadnięciem do 1x1 wody w sprincie (Argon 4)

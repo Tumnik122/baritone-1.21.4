@@ -130,14 +130,24 @@ public final class AstraMovementFluidityEngine {
             baritone.getLookBehavior().updateTarget(this.lastExternalRotation, true);
         }
 
-        // 4. GrimAC 8-Octant MoveFix: przelicz wektor ruchu względem serwerowego Yaw kamery
+        // 4. GrimAC 8-Octant MoveFix: przelicz wektor ruchu względem serwerowego Yaw kamery na bieżący tick!
         if (!player.isInWater() && !player.isInLava()) {
-            float serverYaw = ctx.playerRotations().getYaw();
-            applyGrimCompliantMoveFix(ioh, desiredPathYaw, serverYaw, baritoneWantsBackOrSneak);
+            float effectiveTickYaw = getEffectiveCurrentTickYaw(baritone, player);
+            applyGrimCompliantMoveFix(ioh, desiredPathYaw, effectiveTickYaw, baritoneWantsBackOrSneak);
         }
 
-        // 5. Ochrona przed fałszywym skakaniem na krawędzi Farmland (0.9375 -> 1.0)
-        suppressFarmlandMicroJump(baritone, player);
+        // KRYTYCZNE DLA GRIMAC (Argon 4): Całkowicie wyłączono suppressFarmlandMicroJump!
+        // GrimAC wymaga, aby przejście 0.9375 (Farmland) <-> 1.000 (Dirt) odbywało się wyłącznie przez Vanilla Entity.collide()
+    }
+
+    private float getEffectiveCurrentTickYaw(IBaritone baritone, LocalPlayer player) {
+        if (this.lastExternalRotation != null && this.externalAimLockTicks > 0) {
+            return this.lastExternalRotation.getYaw();
+        }
+        if (baritone.getLookBehavior() != null && baritone.getLookBehavior().getServerRotation() != null) {
+            return baritone.getLookBehavior().getServerRotation().getYaw();
+        }
+        return player.getYRot();
     }
 
     private float computeBaseMovementYaw(LocalPlayer player, IMovement currentMovement) {
@@ -207,17 +217,7 @@ public final class AstraMovementFluidityEngine {
     }
 
     private void suppressFarmlandMicroJump(IBaritone baritone, LocalPlayer player) {
-        if (player == null || player.level() == null) return;
-        double frac = player.getY() - Math.floor(player.getY());
-        if (frac > 0.85 && frac < 0.99) {
-            AABB box = player.getBoundingBox();
-            Vec3 vel = player.getDeltaMovement();
-            double fwdX = vel.x * 2.0;
-            double fwdZ = vel.z * 2.0;
-            if (player.level().noCollision(player, box.move(fwdX, 0.62, fwdZ))) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
-            }
-        }
+        // Celowo puste: GrimAC wymaga czystej symulacji fizyki Vanilla Entity.collide() na styku 0.9375 i 1.000.
     }
 
     private void applyQuantizedMovementInputs(IBaritone baritone, float currentYaw, float targetWorldYaw) {
