@@ -1231,14 +1231,17 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     }
 
     private BlockPos findNextWalkTarget(Vec3 playerPos, List<BlockPos> toBreak, List<BlockPos> openFarmland) {
-        List<BlockPos> pool = (toBreak != null && !toBreak.isEmpty()) ? toBreak : openFarmland;
-        if (pool == null || pool.isEmpty()) {
-            return null;
-        }
+        boolean hasBreak = toBreak != null && !toBreak.isEmpty();
+        boolean hasPlant = openFarmland != null && !openFarmland.isEmpty();
+        if (!hasBreak && !hasPlant) return null;
 
         if (stableRowAnchorPos == null && ctx.player() != null) {
             stableRowAnchorPos = ctx.playerFeet();
         }
+
+        Vec3 eyePos = ctx.player() != null ? ctx.player().getEyePosition(1.0F) : playerPos.add(0, 1.62D, 0);
+        double safeEyeReach = Baritone.settings().grimSafeReach.value - 0.15D; // ~2.85m z oczu
+        double safeEyeReachSq = safeEyeReach * safeEyeReach;
 
         float referenceYaw = Float.isNaN(lockedLaneYaw) ? getSafeServerRotation().getYaw() : lockedLaneYaw;
         double forwardX = -Math.sin(Math.toRadians(referenceYaw));
@@ -1247,28 +1250,51 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         BlockPos best = null;
         double bestScore = Double.MAX_VALUE;
 
-        for (BlockPos pos : pool) {
-            if (isBlacklisted(pos)) continue;
-            Vec3 center = Vec3.atBottomCenterOf(pos);
-            double dx = center.x - playerPos.x;
-            double dz = center.z - playerPos.z;
-            double distSq = dx * dx + dz * dz;
-            double dist = Math.sqrt(distSq);
-            if (dist < 1.0E-3D) continue;
+        // 1. Oceń dojrzałe plony (toBreak) w pełnych 360 stopniach
+        if (hasBreak) {
+            for (BlockPos pos : toBreak) {
+                if (isBlacklisted(pos)) continue;
+                Vec3 center = Vec3.atCenterOf(pos);
 
-            double dotForward = (dx * forwardX + dz * forwardZ) / dist;
-            double lateralDist = Math.abs(dx * forwardZ - dz * forwardX);
+                boolean alreadyInEyeReach = eyePos.distanceToSqr(center) <= safeEyeReachSq;
 
-            // Bloki w zasięgu ręki (<= SWEEP_REACH) czyścimy obrotem myszki bez chodzenia
-            double reachPenalty = (dist <= SWEEP_REACH) ? 150.0D : 0.0D;
-            // Cele za plecami bota otrzymują karę +35.0m, uniemożliwiając zawracanie w rzędzie
-            double backwardPenalty = (dotForward < -0.15D) ? 35.0D : (1.0D - dotForward) * 3.5D;
-            double laneDeviationPenalty = (lateralDist > 2.25D) ? lateralDist * 2.5D : lateralDist * 0.4D;
+                double dx = center.x - playerPos.x;
+                double dz = center.z - playerPos.z;
+                double horizDist = Math.hypot(dx, dz);
+                if (horizDist < 1.0E-3D) continue;
 
-            double score = dist + reachPenalty + backwardPenalty + laneDeviationPenalty;
-            if (score < bestScore) {
-                bestScore = score;
-                best = pos;
+                double dotForward = (dx * forwardX + dz * forwardZ) / horizDist;
+                double lateralDist = Math.abs(dx * forwardZ - dz * forwardX);
+
+                // Łagodny tie-breaker tylko dla bliskich kłosów (<= 4.5m); dla dalszych (8-15m) brak kary kierunkowej!
+                double directionPenalty = (horizDist <= 4.5D)
+                        ? ((dotForward < -0.15D) ? 2.0D : (1.0D - dotForward) * 0.8D) + Math.min(lateralDist * 0.3D, 1.5D)
+                        : 0.0D;
+
+                double reachPenalty = alreadyInEyeReach ? 8.0D : 0.0D;
+                double score = horizDist + directionPenalty + reachPenalty;
+
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = pos;
+                }
+            }
+        }
+
+        // 2. Oceń puste grządki (openFarmland)
+        if (hasPlant) {
+            for (BlockPos pos : openFarmland) {
+                if (isBlacklisted(pos)) continue;
+                Vec3 topCenter = new Vec3(pos.getX() + 0.5D, pos.getY() + 0.9375D, pos.getZ() + 0.5D);
+                boolean alreadyInEyeReach = eyePos.distanceToSqr(topCenter) <= safeEyeReachSq;
+
+                double horizDist = Math.hypot(topCenter.x - playerPos.x, topCenter.z - playerPos.z);
+                double score = horizDist + 1.5D + (alreadyInEyeReach ? 8.0D : 0.0D);
+
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = pos;
+                }
             }
         }
 
@@ -1717,20 +1743,28 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
         @Override
         public boolean isInGoal(int x, int y, int z) {
-            return x == this.x && z == this.z && (y == this.y || y == this.y - 1 || y == this.y + 1);
+            int dx = x - this.x;
+            int dz = z - this.z;
+            int dy = y - this.y;
+            // Dystans poziomy <= √2 (~1.41m) gwarantuje pełne pokrycie przez grimSafeReach (3.0m z oczu)
+            // bez konieczności wchodzenia bezpośrednio w zablokowany słupek nad kłosem lub wodą
+            return (dx * dx + dz * dz) <= 2 && dy >= -1 && dy <= 1;
         }
 
         @Override
         public double heuristic(int x, int y, int z) {
+            if (isInGoal(x, y, z)) {
+                return 0.0D;
+            }
             int xDiff = x - this.x;
-            int yDiff = y - this.y;
+            int yDiff = Math.max(0, Math.abs(y - this.y) - 1);
             int zDiff = z - this.z;
             return GoalBlock.calculate(xDiff, yDiff, zDiff);
         }
 
         @Override
         public BlockPos getGoalPos() {
-            return new BlockPos(x, y, z);
+            return new BlockPos(this.x, this.y, this.z);
         }
 
         @Override
@@ -3606,13 +3640,19 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         pracaWheatPriorityState = haveSeedsInEq;
 
         // Sortowanie dropów z ziemi:
-        // Plony jadalne/handlowe (pszenica, marchew, ziemniaki, buraki, melony) mają wyższy priorytet nad samymi nasionami
+        // W sytuacji awaryjnej (0 nasion) priorytetyzujemy nasiona najbliżej gracza; w normalnym trybie plony najbliżej gracza
         if (isPracaActive) {
             nearbyDrops.sort((e1, e2) -> {
                 boolean isSeed1 = e1.getItem().is(Items.WHEAT_SEEDS) || e1.getItem().is(Items.BEETROOT_SEEDS);
                 boolean isSeed2 = e2.getItem().is(Items.WHEAT_SEEDS) || e2.getItem().is(Items.BEETROOT_SEEDS);
-                if (isSeed1 != isSeed2) {
-                    return isSeed1 ? 1 : -1; // Plony przed nasionami
+                if (!haveSeedsInEq) {
+                    if (isSeed1 != isSeed2) {
+                        return isSeed1 ? -1 : 1; // Nasiona przed plonami gdy brak nasion!
+                    }
+                } else {
+                    if (isSeed1 != isSeed2) {
+                        return isSeed1 ? 1 : -1; // Plony przed nasionami
+                    }
                 }
                 return Double.compare(playerPos.distSqr(e1.blockPosition()), playerPos.distSqr(e2.blockPosition()));
             });
@@ -3630,7 +3670,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             // 1. Awaryjny zbiór z ziemi TYLKO gdy bot ma 0 nasion w EQ i są wolne grządki do obsiania
             //    oraz w bezpośrednim zasięgu ręki nie ma dojrzałych plonów (które po ścięciu same dają nasiona)
             boolean emergencySeedsNeeded = !haveSeedsInEq && !openFarmland.isEmpty() && !nearbyDrops.isEmpty()
-                    && (!hasMatureCrops || playerPos.distSqr(nearbyDrops.get(0).blockPosition()) <= 4.0D);
+                    && (!hasMatureCrops || playerPos.distSqr(nearbyDrops.get(0).blockPosition()) <= 9.0D);
             // 2. Całe pole zostało skoszone: brak dojrzałych plonów na całym polu ORAZ są leżące dropy
             boolean allCropsHarvested = !hasMatureCrops && !nearbyDrops.isEmpty();
             executeGroundFirst = emergencySeedsNeeded || allCropsHarvested;
@@ -3702,68 +3742,67 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
             // ── STABILNY ROW ANCHOR / BOUSTROPHEDON SPINE GOAL (Argon 4) ──
             if (isPracaModeActive()) {
-                BlockPos directTaskPos = findNextWalkTarget(ctx.player().position(), toBreak, haveSeeds ? openFarmland : Collections.emptyList());
+                BlockPos directTaskPos = findNextWalkTarget(
+                        ctx.player().position(),
+                        toBreak,
+                        haveSeedsInEq ? openFarmland : Collections.emptyList()
+                );
                 BlockPos moveTargetBlock = (directTaskPos != null) ? directTaskPos : pracaActiveSpineWaypoint;
                 Vec3 moveTargetVec = (moveTargetBlock != null) ? Vec3.atBottomCenterOf(moveTargetBlock) : null;
 
+                float currentCamYaw = getSafeServerRotation().getYaw();
+                boolean brakeForTarget = shouldBrakeForTarget(eyePos, currentCamYaw, lockedTarget, reach2, acted);
+
+                if (brakeForTarget && lockedTarget != null) {
+                    baritone.getInputOverrideHandler().clearAllKeys();
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+
+                // Bezpośredni dociąg (bez A*) TYLKO na krótkim dystansie (<= 4.0m), gdy korytarz jest suchy i czysty
+                double distSqToMove = (moveTargetVec != null) ? ctx.player().position().distanceToSqr(moveTargetVec) : Double.MAX_VALUE;
                 boolean canDirectSprint = moveTargetVec != null
-                        && ctx.player().position().distanceToSqr(moveTargetVec) <= 64.0D
+                        && distSqToMove <= 16.0D
+                        && !baritone.getPathingBehavior().isPathing()
                         && farmOptimizer.isCorridorClearForDirectWalk(ctx.player().position(), moveTargetBlock, ctx.world());
 
-                float currentCamYaw = getSafeServerRotation().getYaw();
-                float targetMoveYaw = (moveTargetVec != null)
-                        ? (float) (Math.toDegrees(Math.atan2(
-                                moveTargetVec.z - ctx.player().position().z,
-                                moveTargetVec.x - ctx.player().position().x)) - 90.0D)
-                        : currentCamYaw;
-
-                // 1. Sprawdzenie, czy musimy przyhamować W na ułamek sekundy, aby nie minąć celu (Anty-Miss)
-                boolean brakeForTarget = shouldBrakeForTarget(
-                        eyePos,
-                        currentCamYaw,
-                        lockedTarget,
-                        reach2,
-                        acted
-                );
-
-                // 2. Bezpośrednie prowadzenie w korytarzu (Continuous Walk-and-Sweep)
                 if (canDirectSprint) {
-                    if (baritone.getPathingBehavior().hasPath() && baritone.getPathingBehavior().isPathing()) {
-                        return new PathingCommand(cachedCompositeGoal, PathingCommandType.DEFER);
+                    float targetMoveYaw = (float) (Math.toDegrees(Math.atan2(
+                            moveTargetVec.z - ctx.player().position().z,
+                            moveTargetVec.x - ctx.player().position().x)) - 90.0D);
+
+                    // KLUCZOWE: Jeśli nie celujemy w konkretny kłos w zasięgu ręki, obróć kamerę w stronę ruchu!
+                    if (lockedTarget == null) {
+                        applyAimRotation(new Rotation(targetMoveYaw, getSafeServerRotation().getPitch()), true);
                     }
-                    applyForwardOnlyCorridorSteering(currentCamYaw, targetMoveYaw, brakeForTarget);
-                    // ZAWSZE zwracamy REQUEST_PAUSE, gdy canDirectSprint jest aktywne (nawet w ticku hamowania),
-                    // aby nie spaść do clearAllKeys() i nie oddać sterowania pathfinderowi A* na 1 tick!
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+
+                    boolean anyKeyActive = applyForwardOnlyCorridorSteering(currentCamYaw, targetMoveYaw, false);
+                    boolean playerMoving = ctx.player().getDeltaMovement().horizontalDistanceSqr() > 0.0004D;
+
+                    if (anyKeyActive && (playerMoving || stallTicks < 4)) {
+                        if (!playerMoving) stallTicks++;
+                        else stallTicks = 0;
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+                    // Jeśli woda zablokowała WASD lub bot stoi > 4 ticki -> wyczyść klawisze i oddaj sterowanie do A*!
+                    baritone.getInputOverrideHandler().clearAllKeys();
                 }
 
-                // 3. Jeśli musimy przyhamować przed celem, aby nie minąć kłosa (Anty-Miss)
-                if (brakeForTarget && lockedTarget != null) {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                    baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                }
-
-                // Płynna kontynuacja marszu/sprintu podczas ścinania (Hold-W Continuous Sweep)
-                if (baritone.getPathingBehavior().hasPath() && baritone.getPathingBehavior().isPathing()) {
-                    return new PathingCommand(cachedCompositeGoal, PathingCommandType.DEFER);
-                }
-
-                // 4. Fallback na daleki pathfinding Baritone A* TYLKO wtedy, gdy lokalnie nic nie robimy
+                // Dla wszystkich celów > 4.0m (np. 8-15 kratek) lub przy przeszkodzie/wodzie: zawsze używaj A*!
                 baritone.getInputOverrideHandler().clearAllKeys();
                 if (directTaskPos != null) {
                     goalz.add(new GoalFarmTarget(directTaskPos));
                 } else if (moveTargetBlock != null) {
                     goalz.add(new GoalFarmTarget(moveTargetBlock));
-                } else if (!toBreak.isEmpty()) {
+                }
+                if (!toBreak.isEmpty()) {
                     List<BlockPos> fallback = selectOptimizedHarvestGoals(toBreak, playerPos);
                     for (BlockPos p : fallback) {
                         goalz.add(new GoalFarmTarget(p));
                     }
-                } else if (haveSeeds && !openFarmland.isEmpty()) {
-                    List<BlockPos> fallback = selectOptimizedHarvestGoals(openFarmland, playerPos);
-                    for (BlockPos p : fallback) {
-                        goalz.add(new GoalFarmTarget(p));
+                }
+                if (haveSeedsInEq && !openFarmland.isEmpty()) {
+                    for (int i = 0; i < Math.min(8, openFarmland.size()); i++) {
+                        goalz.add(new GoalFarmTarget(openFarmland.get(i)));
                     }
                 }
             } else if (!toBreak.isEmpty() || (haveSeeds && !openFarmland.isEmpty())) {
