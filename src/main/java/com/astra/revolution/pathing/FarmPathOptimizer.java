@@ -20,6 +20,7 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -64,6 +65,86 @@ public final class FarmPathOptimizer {
     public enum TargetAction {
         HARVEST_MATURE,
         PLANT_SEED
+    }
+
+    public record TargetPair(BlockPos primary, BlockPos lookAhead, long clusterHash) {}
+
+    /**
+     * Jednoprzebiegowy wybór celu głównego (w zasięgu lub najbliższego) oraz celu następnego (pipelining)
+     * w czasie O(K) bez alokacji list, bez Collections.sort() i bez Math.atan2(). (Argon 4)
+     */
+    public static TargetPair selectOptimalTargets(
+            Vec3 eyePos,
+            Vec3 lookVec,
+            Vec3 velocityVec,
+            BlockPos currentLocked,
+            Collection<BlockPos> candidates,
+            double maxReachSq) {
+
+        BlockPos bestReach = null;
+        double bestReachScore = Double.MAX_VALUE;
+
+        BlockPos secondReach = null;
+        double secondReachScore = Double.MAX_VALUE;
+
+        BlockPos bestMacro = null;
+        double bestMacroScore = Double.MAX_VALUE;
+
+        long hash = 1469598103934665603L; // FNV-1a 64-bit offset basis
+        int macroHashedCount = 0;
+
+        for (BlockPos pos : candidates) {
+            double dx = (pos.getX() + 0.5) - eyePos.x;
+            double dy = (pos.getY() + 0.25) - eyePos.y;
+            double dz = (pos.getZ() + 0.5) - eyePos.z;
+            double distSq = dx * dx + dy * dy + dz * dz;
+
+            // Szybka aproksymacja kosztu kątowego przez iloczyn skalarny (0.0 = idealnie na wprost, 2.0 = za plecami)
+            double invDist = distSq > 1e-4 ? 1.0 / Math.sqrt(distSq) : 1.0;
+            double dirX = dx * invDist;
+            double dirY = dy * invDist;
+            double dirZ = dz * invDist;
+
+            double dotLook = lookVec.x * dirX + lookVec.y * dirY + lookVec.z * dirZ;
+            double anglePenalty = (1.0 - dotLook); // Zakres [0.0, 2.0]
+
+            // Bonus za zgodność z bieżącym wektorem ruchu (brak wyhamowywania bota)
+            double dotVel = velocityVec.x * dirX + velocityVec.z * dirZ;
+
+            if (distSq <= maxReachSq) {
+                // Waga: kąt wzroku ma priorytet dla natychmiastowego snapu GrimAC, dystans drugorzędny
+                double score = (distSq * 0.18) + (anglePenalty * 2.4) - (dotVel * 0.8);
+                if (pos.equals(currentLocked)) {
+                    score -= 1.25; // Sticky-lock zapobiegający jitterowi między 2 sąsiednimi kłosami
+                }
+
+                if (score < bestReachScore) {
+                    secondReachScore = bestReachScore;
+                    secondReach = bestReach;
+                    bestReachScore = score;
+                    bestReach = pos;
+                } else if (score < secondReachScore && !pos.equals(bestReach)) {
+                    secondReachScore = score;
+                    secondReach = pos;
+                }
+            } else {
+                // Kandydat makro dla A*
+                double macroScore = distSq + (anglePenalty * 6.0);
+                if (macroScore < bestMacroScore) {
+                    bestMacroScore = macroScore;
+                    bestMacro = pos;
+                }
+                if (macroHashedCount < 24 && distSq < 1024.0) { // Hashujemy tylko lokalny klaster do 32 kratek
+                    hash ^= pos.asLong();
+                    hash *= 1099511628211L;
+                    macroHashedCount++;
+                }
+            }
+        }
+
+        BlockPos primary = bestReach != null ? bestReach : bestMacro;
+        BlockPos lookAhead = secondReach != null ? secondReach : bestMacro;
+        return new TargetPair(primary, lookAhead, hash);
     }
 
     public record OptimizedFarmRoute(
