@@ -196,10 +196,22 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     private int postWaterGraceTicks = 0;
     private Vec3 postWaterSafeAnchor = null;
     private long lastFailsafeTriggerTime = 0L;
-    // ── Anti-Stall & Active Harvest Pull (Argon 4) ──
     private BlockPos magnetPullTarget = null;
     private int stallTicks = 0;
     private final Map<BlockPos, Long> stalledTargetCooldowns = new HashMap<>();
+    private boolean lowLatencySettingsApplied = false;
+
+    private void ensureLowLatencyBaritoneSettings() {
+        if (lowLatencySettingsApplied) return;
+        lowLatencySettingsApplied = true;
+
+        Baritone.settings().primaryTimeoutMS.value = 85L;
+        Baritone.settings().failureTimeoutMS.value = 250L;
+        Baritone.settings().planAheadPrimaryTimeoutMS.value = 150L;
+        Baritone.settings().planAheadFailureTimeoutMS.value = 350L;
+        Baritone.settings().movementTimeoutTicks.value = 40;
+        Baritone.settings().costHeuristic.value = 3.65D;
+    }
 
     public static boolean isPracaModeActive() {
         return pracaMode || Baritone.settings().farmCollectDropsWhenLowCrops.value;
@@ -736,15 +748,122 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     }
 
     private void applyAimRotation(Rotation targetRot, boolean fastMode) {
-        // blockInteract = true gwarantuje najwyższy priorytet w LookBehavior (Movement.update go nie nadpisze)
-        // oraz obrót na siatce GCD w RotationEngine bez zakłócających łuków i szumów.
+        boolean isPathing = baritone.getPathingBehavior().isPathing();
         baritone.getLookBehavior().updateTarget(targetRot, true);
-        if (ctx.player() != null) {
+        // Bezpośrednią aktualizację kąta gracza (setYRot) wykonujemy TYLKO wtedy, gdy PathExecutor NIE idzie po ścieżce!
+        // Gdy bot pokonuje trasę wokół przeszkody, nie nadpisujemy setYRot, aby nie pchać gracza w ścianę.
+        if (!isPathing && ctx.player() != null) {
             ctx.player().setYRot(targetRot.getYaw());
             ctx.player().setXRot(targetRot.getPitch());
             ctx.player().yHeadRot = targetRot.getYaw();
+            com.astra.revolution.pathing.AstraMovementFluidityEngine.INSTANCE.lockAimForProcess(targetRot, 2);
         }
-        com.astra.revolution.pathing.AstraMovementFluidityEngine.INSTANCE.lockAimForProcess(targetRot, 2);
+    }
+
+    private boolean hasCleanColliderLineOfSight(Vec3 eyePos, BlockPos targetPos, Vec3 aimVec) {
+        if (ctx.world() == null || ctx.player() == null || aimVec == null || targetPos == null) return false;
+
+        BlockHitResult hit = ctx.world().clip(new ClipContext(
+                eyePos,
+                aimVec,
+                ClipContext.Block.COLLIDER,
+                ClipContext.Fluid.NONE,
+                ctx.player()
+        ));
+
+        if (hit.getType() == HitResult.Type.MISS) {
+            return true;
+        }
+
+        BlockPos hitPos = hit.getBlockPos();
+        return hitPos.equals(targetPos) || hitPos.equals(targetPos.below());
+    }
+
+    public Vec3 resolveVisibleAimPoint(Vec3 eyePos, BlockPos targetPos, boolean isPlanting) {
+        Level level = ctx.world();
+        if (level == null || targetPos == null || eyePos == null) return null;
+
+        if (isPlanting) {
+            BlockPos soilPos = level.getBlockState(targetPos).is(Blocks.FARMLAND) || level.getBlockState(targetPos).is(Blocks.SOUL_SAND)
+                    ? targetPos : targetPos.below();
+            double topY = soilPos.getY() + 0.9375D;
+
+            Vec3[] candidates = new Vec3[] {
+                new Vec3(soilPos.getX() + 0.5D, topY, soilPos.getZ() + 0.5D),
+                new Vec3(soilPos.getX() + 0.3D, topY, soilPos.getZ() + 0.3D),
+                new Vec3(soilPos.getX() + 0.7D, topY, soilPos.getZ() + 0.3D),
+                new Vec3(soilPos.getX() + 0.3D, topY, soilPos.getZ() + 0.7D),
+                new Vec3(soilPos.getX() + 0.7D, topY, soilPos.getZ() + 0.7D)
+            };
+
+            for (Vec3 pt : candidates) {
+                if (hasCleanColliderLineOfSight(eyePos, soilPos, pt)) {
+                    return pt;
+                }
+            }
+            return null;
+        }
+
+        Vec3[] harvestCandidates = new Vec3[] {
+            new Vec3(targetPos.getX() + 0.5D, targetPos.getY() + 0.65D, targetPos.getZ() + 0.5D),
+            new Vec3(targetPos.getX() + 0.5D, targetPos.getY() + 0.85D, targetPos.getZ() + 0.5D),
+            new Vec3(targetPos.getX() + 0.5D, targetPos.getY() + 0.25D, targetPos.getZ() + 0.5D),
+            new Vec3(targetPos.getX() + 0.35D, targetPos.getY() + 0.65D, targetPos.getZ() + 0.35D),
+            new Vec3(targetPos.getX() + 0.65D, targetPos.getY() + 0.65D, targetPos.getZ() + 0.65D)
+        };
+
+        for (Vec3 pt : harvestCandidates) {
+            if (hasCleanColliderLineOfSight(eyePos, targetPos, pt)) {
+                return pt;
+            }
+        }
+
+        return null;
+    }
+
+    private boolean shouldYieldRotationToPathing(Vec3 eyePos, BlockPos cropTarget, Vec3 cropAimVec, boolean inDirectReachAndVisible) {
+        if (!baritone.getPathingBehavior().isPathing()) {
+            return false;
+        }
+
+        var executor = baritone.getPathingBehavior().getCurrent();
+        if (executor == null) return false;
+
+        var path = executor.getPath();
+        int posIndex = executor.getPosition();
+        if (path == null || posIndex < 0 || posIndex >= path.length()) return false;
+
+        // 1. Jeśli cel NIE jest w bezpośrednim zasięgu ręki i widoczny (bez ściany):
+        if (!inDirectReachAndVisible) {
+            if (cropTarget == null || cropAimVec == null || !hasCleanColliderLineOfSight(eyePos, cropTarget, cropAimVec)) {
+                return true;
+            }
+        }
+
+        // 2. Jeśli bot pokonuje przeszkodę na ścieżce (skok, zmiana Y):
+        if (posIndex < path.movements().size()) {
+            var currentMovement = path.movements().get(posIndex);
+            var src = currentMovement.getSrc();
+            var dest = currentMovement.getDest();
+
+            if ((src.y != dest.y || (ctx.player() != null && !ctx.player().onGround())) && !inDirectReachAndVisible) {
+                return true;
+            }
+
+            // 3. Porównaj kąt marszu po ścieżce z kątem do celu
+            if (!inDirectReachAndVisible && cropAimVec != null) {
+                Vec3 destCenter = new Vec3(dest.x + 0.5D, eyePos.y, dest.z + 0.5D);
+                Rotation pathRot = RotationUtils.calcRotationFromVec3d(eyePos, destCenter, ctx.playerRotations());
+                Rotation cropRot = RotationUtils.calcRotationFromVec3d(eyePos, cropAimVec, ctx.playerRotations());
+
+                float yawDiff = Math.abs(Mth.wrapDegrees(pathRot.getYaw() - cropRot.getYaw()));
+                if (yawDiff > 22.0F) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private boolean canInteractGrimSafe(BlockPos targetPos, Rotation targetRot, double reach, boolean mustBeTopFace) {
@@ -929,8 +1048,13 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     }
 
     private boolean isTargetInHandReach(Vec3 eyePos, BlockPos pos, double maxReach, boolean isFarmland) {
-        Vec3 aimVec = getOptimalAimVec(eyePos, pos, isFarmland);
-        return eyePos.distanceToSqr(aimVec) <= (maxReach * maxReach);
+        if (pos == null || eyePos == null) return false;
+        double maxReachSq = maxReach * maxReach;
+        Vec3 aimVec = resolveVisibleAimPoint(eyePos, pos, isFarmland);
+        if (aimVec == null) {
+            return false;
+        }
+        return eyePos.distanceToSqr(aimVec) <= maxReachSq;
     }
 
     private double getAngularDistance(Rotation currentRot, Vec3 eyePos, Vec3 targetVec) {
@@ -1264,7 +1388,18 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         ? ((dotForward < -0.15D) ? 2.0D : (1.0D - dotForward) * 0.8D) + Math.min(lateralDist * 0.3D, 1.5D)
                         : 0.0D;
 
-                double score = horizDist + directionPenalty;
+                // Kara za ścianę/przeszkodę po drodze (Line of Sight):
+                // Jeśli kłos jest blisko (<= 8m), ale zasłonięty ścianą lub płotkiem, dodaj 35m kary,
+                // aby bot najpierw zbierał kłosy na otwartej przestrzeni, a nie lgnął do ściany!
+                double wallPenalty = 0.0D;
+                if (horizDist <= 8.0D && ctx.player() != null) {
+                    Vec3 ePos = ctx.player().getEyePosition(1.0F);
+                    if (!hasCleanColliderLineOfSight(ePos, pos, center)) {
+                        wallPenalty = 35.0D;
+                    }
+                }
+
+                double score = horizDist + directionPenalty + wallPenalty;
                 if (score < bestScore) {
                     bestScore = score;
                     best = pos;
@@ -1277,7 +1412,15 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             for (BlockPos pos : openFarmland) {
                 if (isBlacklisted(pos)) continue;
                 double horizDist = Math.hypot((pos.getX() + 0.5D) - playerPos.x, (pos.getZ() + 0.5D) - playerPos.z);
-                double score = horizDist + 1.5D;
+                double wallPenalty = 0.0D;
+                if (horizDist <= 8.0D && ctx.player() != null) {
+                    Vec3 ePos = ctx.player().getEyePosition(1.0F);
+                    Vec3 center = new Vec3(pos.getX() + 0.5D, pos.getY() + 0.9375D, pos.getZ() + 0.5D);
+                    if (!hasCleanColliderLineOfSight(ePos, pos, center)) {
+                        wallPenalty = 35.0D;
+                    }
+                }
+                double score = horizDist + 1.5D + wallPenalty;
 
                 if (score < bestScore) {
                     bestScore = score;
@@ -2492,6 +2635,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     private PathingCommand onTickInternal(boolean calcFailed, boolean isSafeToCancel) {
         farmTicks++;
         pendingCalcFailed |= calcFailed;
+        if (isPracaModeActive()) {
+            ensureLowLatencyBaritoneSettings();
+        }
 
         // Pkt 7: Cykliczny pruning blacklisty
         if (farmTicks % 200 == 0) {
@@ -3166,17 +3312,21 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
             // ==================== ETAP 3: LOOKAHEAD PRE-AIMING (Gdy brak celów w zasięgu ręki) ====================
             if (isPracaModeActive() && lockedTarget == null && ctx.player() != null) {
-                float spineYaw = farmOptimizer.computeCurrentTangentYaw(ctx.player().position(), ctx.player().getYRot());
-                Vec3 predictedEye = eyePos.add(ctx.player().getDeltaMovement());
-                Optional<FarmPathOptimizer.HarvestTarget> lookahead = farmOptimizer.findTargetInZone(
-                        ctx.player(), ctx.world(), predictedEye, spineYaw, Baritone.settings().replantCrops.value && haveSeeds, null, 1.5D, 6.50D, 65.0D);
-                if (lookahead.isPresent()) {
-                    FarmPathOptimizer.HarvestTarget lt = lookahead.get();
-                    Vec3 aimVec = lt.action() == FarmPathOptimizer.TargetAction.HARVEST_MATURE
-                            ? new Vec3(lt.pos().getX() + 0.5D, lt.pos().getY() + 0.65D, lt.pos().getZ() + 0.5D)
-                            : new Vec3(lt.pos().getX() + 0.5D, lt.pos().getY() + 0.9375D, lt.pos().getZ() + 0.5D);
-                    float[] snap = GrimSnapRotationUtil.snapGcd(ctx.player().getYRot(), ctx.player().getXRot(), predictedEye, aimVec);
-                    applyAimRotation(new Rotation(snap[0], snap[1]), true);
+                if (!shouldYieldRotationToPathing(eyePos, null, null, false)) {
+                    float spineYaw = farmOptimizer.computeCurrentTangentYaw(ctx.player().position(), ctx.player().getYRot());
+                    Vec3 predictedEye = eyePos.add(ctx.player().getDeltaMovement());
+                    Optional<FarmPathOptimizer.HarvestTarget> lookahead = farmOptimizer.findTargetInZone(
+                            ctx.player(), ctx.world(), predictedEye, spineYaw, Baritone.settings().replantCrops.value && haveSeeds, null, 1.5D, 6.50D, 65.0D);
+                    if (lookahead.isPresent()) {
+                        FarmPathOptimizer.HarvestTarget lt = lookahead.get();
+                        Vec3 aimVec = lt.action() == FarmPathOptimizer.TargetAction.HARVEST_MATURE
+                                ? new Vec3(lt.pos().getX() + 0.5D, lt.pos().getY() + 0.65D, lt.pos().getZ() + 0.5D)
+                                : new Vec3(lt.pos().getX() + 0.5D, lt.pos().getY() + 0.9375D, lt.pos().getZ() + 0.5D);
+                        if (hasCleanColliderLineOfSight(eyePos, lt.pos(), aimVec)) {
+                            float[] snap = GrimSnapRotationUtil.snapGcd(ctx.player().getYRot(), ctx.player().getXRot(), predictedEye, aimVec);
+                            applyAimRotation(new Rotation(snap[0], snap[1]), true);
+                        }
+                    }
                 }
             }
         }
@@ -3191,7 +3341,13 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 BlockState bState = ctx.world().getBlockState(pos);
                 final boolean isInstant = bState.getDestroySpeed(ctx.world(), pos) == 0.0F;
 
-                Vec3 cropAimVec = getOptimalAimVec(head, pos, false);
+                Vec3 cropAimVec = resolveVisibleAimPoint(head, pos, false);
+                if (cropAimVec == null) {
+                    lockedTarget = null;
+                    lockedPhase = ActionPhase.NONE;
+                    lockedTargetTicks = 0;
+                    return onTickInternal(calcFailed, isSafeToCancel);
+                }
                 Optional<Rotation> rot = RotationUtils.reachableOffset(ctx, pos, cropAimVec, blockReachDistance, false);
                 if (!rot.isPresent()) {
                     rot = RotationUtils.reachable(ctx, pos, blockReachDistance);
@@ -3338,6 +3494,13 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 }
             } else if (lockedPhase == ActionPhase.REPLANT) {
                 BlockPos pos = lockedTarget;
+                Vec3 plantAim = resolveVisibleAimPoint(head, pos, true);
+                if (plantAim == null) {
+                    lockedTarget = null;
+                    lockedPhase = ActionPhase.NONE;
+                    lockedTargetTicks = 0;
+                    return onTickInternal(calcFailed, isSafeToCancel);
+                }
                 double plantReach = blockReachDistance;
                 Optional<Rotation> visRot = getVisiblePlantRotation(pos, plantReach, currentRefRot);
 
@@ -4197,6 +4360,15 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         // nieaktywnym procesie
         // (cancelEverything()/#stop) — bez tej flagi allowBreak trafiałby na `false`
         // (domyślna wartość pola).
+        if (lowLatencySettingsApplied) {
+            lowLatencySettingsApplied = false;
+            Baritone.settings().primaryTimeoutMS.value = 1000L;
+            Baritone.settings().failureTimeoutMS.value = 2000L;
+            Baritone.settings().planAheadPrimaryTimeoutMS.value = 500L;
+            Baritone.settings().planAheadFailureTimeoutMS.value = 2000L;
+            Baritone.settings().movementTimeoutTicks.value = 100;
+            Baritone.settings().costHeuristic.value = 3.56D;
+        }
         if (settingsApplied) {
             settingsApplied = false;
             Baritone.settings().blocksToDisallowBreaking.value.removeAll(addedDisallowed);
