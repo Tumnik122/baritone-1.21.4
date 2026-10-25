@@ -3323,7 +3323,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     }
 
                     // Move-While-Act (Argon 4): Hamuj TYLKO wtedy, gdy gracz ucieka poza zasięg celu!
-                    if (!acted && shouldBrakeForTarget(eyePos, currentRefRot.getYaw(), lockedTarget, reach2, acted)) {
+                    if (!acted && !isPracaModeActive() && shouldBrakeForTarget(eyePos, currentRefRot.getYaw(), lockedTarget, reach2, acted)) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
                         if (ctx.player() != null) {
@@ -3426,7 +3426,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                     }
 
                     // Move-While-Act (Argon 4): Hamuj TYLKO wtedy, gdy gracz ucieka poza zasięg celu!
-                    if (!acted && shouldBrakeForTarget(eyePos, currentRefRot.getYaw(), lockedTarget, reach2, acted)) {
+                    if (!acted && !isPracaModeActive() && shouldBrakeForTarget(eyePos, currentRefRot.getYaw(), lockedTarget, reach2, acted)) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
                         if (ctx.player() != null) {
@@ -3739,38 +3739,29 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
             // ── STABILNY ROW ANCHOR / BOUSTROPHEDON SPINE GOAL (Argon 4) ──
             if (isPracaModeActive()) {
-                float currentCamYaw = getSafeServerRotation().getYaw();
-                boolean brakeForTarget = shouldBrakeForTarget(eyePos, currentCamYaw, lockedTarget, reach2, acted);
-
-                // Jedyny przypadek zatrzymania: kłos jest w zasięgu ręki, kamera jeszcze nie dojechała, a w kolejnym ticku go miniemy
-                if (brakeForTarget && lockedTarget != null) {
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                // 1. Sprawdź, czy dotychczasowy cel marszu (lockedWalkTarget) jest nadal aktualny i osiągalny.
+                // Histereza gwarantuje, że cel (i zielony box) NIE zmienia się co tick podczas biegu!
+                boolean currentTargetStillValid = false;
+                if (lockedWalkTarget != null && !isBlacklisted(lockedWalkTarget) && stallTicks < 40) {
+                    currentTargetStillValid = toBreak.contains(lockedWalkTarget)
+                            || (haveSeedsInEq && openFarmland.contains(lockedWalkTarget));
                 }
 
-                // Zbuduj stabilną listę celów dla A* — PathExecutor sam utrzyma ciągły klawisz W i Sprint bez zerowania klawiszy!
-                BlockPos directTaskPos = findNextWalkTarget(
-                        ctx.player().position(),
-                        toBreak,
-                        haveSeedsInEq ? openFarmland : Collections.emptyList()
-                );
+                // 2. Wyznacz nowy cel TYLKO wtedy, gdy poprzedni został już ścięty/zasadzony lub zablokowany
+                if (!currentTargetStillValid) {
+                    lockedWalkTarget = findNextWalkTarget(
+                            ctx.player().position(),
+                            toBreak,
+                            haveSeedsInEq ? openFarmland : Collections.emptyList()
+                    );
+                    stallTicks = 0;
+                }
 
-                if (directTaskPos != null) {
-                    goalz.add(new GoalFarmTarget(directTaskPos));
+                // 3. Dodaj DOKŁADNIE JEDEN stabilny cel do goalz (zero chmary mrugających boxów!)
+                if (lockedWalkTarget != null) {
+                    goalz.add(new GoalFarmTarget(lockedWalkTarget));
                 } else if (pracaActiveSpineWaypoint != null) {
                     goalz.add(new GoalFarmTarget(pracaActiveSpineWaypoint));
-                }
-
-                if (!toBreak.isEmpty()) {
-                    List<BlockPos> fallback = selectOptimizedHarvestGoals(toBreak, playerPos);
-                    for (BlockPos p : fallback) {
-                        goalz.add(new GoalFarmTarget(p));
-                    }
-                }
-
-                if (haveSeedsInEq && !openFarmland.isEmpty()) {
-                    for (int i = 0; i < Math.min(8, openFarmland.size()); i++) {
-                        goalz.add(new GoalFarmTarget(openFarmland.get(i)));
-                    }
                 }
             } else if (!toBreak.isEmpty() || (haveSeeds && !openFarmland.isEmpty())) {
                 Goal stableGoal = updateOrKeepStableRowGoal(toBreak, openFarmland, playerPos);
@@ -4017,7 +4008,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 : findActiveMagnetTarget(playerVecPos, currentRot.getYaw(), toBreak, openFarmland, haveSeeds);
         BlockPos pullBlockPos = resolveStableWalkTarget(playerVecPos, rawPullBlockPos, world);
 
-        if (pullBlockPos != null) {
+        if (pullBlockPos != null && goalz.isEmpty()) {
             goalz.add(new GoalFarmTarget(pullBlockPos));
         }
 
@@ -4091,27 +4082,30 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             ctx.player().setSprinting(canSprint);
         }
         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
-        ticksSinceGoalRebuild++;
-        Goal finalGoal = goalz.size() == 1 ? goalz.get(0) : new GoalComposite(goalz.toArray(new Goal[0]));
+        if (goalz.isEmpty()) {
+            cachedCompositeGoal = null;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        Goal candidateGoal = (goalz.size() == 1)
+                ? goalz.get(0)
+                : new GoalComposite(goalz.toArray(new Goal[0]));
+
+        // Porównuj przez equals(), a gdy cel się nie zmienił — użyj DOKŁADNIE tej samej referencji cachedCompositeGoal!
+        boolean goalChanged = (cachedCompositeGoal == null || !candidateGoal.equals(cachedCompositeGoal));
         isPathing = baritone.getPathingBehavior().isPathing();
-        boolean hasPath = baritone.getPathingBehavior().hasPath();
 
-        // Zero-Flapping: Jeśli bot aktywnie przemieszcza się po ścieżce, nie przerywaj ruchu co 8 ticków!
-        if (hasPath && isPathing && ticksSinceGoalRebuild < 60 && idleStuckTicks < 20 && stallTicks < 8) {
-            return new PathingCommand(cachedCompositeGoal != null ? cachedCompositeGoal : finalGoal, PathingCommandType.DEFER);
-        }
-
-        boolean goalChanged = cachedCompositeGoal == null || !finalGoal.toString().equals(cachedCompositeGoal.toString());
-
-        if (goalChanged || !isPathing || ticksSinceGoalRebuild >= 60 || stallTicks >= 8) {
-            cachedCompositeGoal = finalGoal;
+        if (goalChanged || stallTicks >= 8) {
+            cachedCompositeGoal = candidateGoal;
             ticksSinceGoalRebuild = 0;
-            return new PathingCommand(
-                    finalGoal,
-                    PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+            return new PathingCommand(cachedCompositeGoal, PathingCommandType.REVALIDATE_GOAL_AND_PATH);
         }
 
-        return new PathingCommand(cachedCompositeGoal, PathingCommandType.DEFER);
+        ticksSinceGoalRebuild++;
+        // NIGDY nie zwracaj tutaj PathingCommandType.DEFER!
+        // SET_GOAL_AND_PATH z niezmienionym obiektem cachedCompositeGoal utrzymuje ciągłą ścieżkę w PathExecutor
+        // (klawisz W i Sprint są wciśnięte bez ani jednego ticku przerwy i bez mrugania wizualizacji).
+        return new PathingCommand(cachedCompositeGoal, PathingCommandType.SET_GOAL_AND_PATH);
     }
 
     @Override
@@ -4131,6 +4125,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         lockedTarget = null;
         lookAheadTarget = null;
         cachedCompositeGoal = null;
+        lockedWalkTarget = null;
+        lockedWalkTicks = 0;
         lastGoalFingerprint = 0L;
         ticksSinceGoalRebuild = 0;
         lockedPhase = ActionPhase.NONE;
