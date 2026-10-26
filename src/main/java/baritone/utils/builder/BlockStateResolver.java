@@ -6,12 +6,15 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.*;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
@@ -122,8 +125,8 @@ public final class BlockStateResolver {
         public final BlockState wanted;   // schematic state
         public final BlockPos support;    // block we click on
         public final Direction face;      // clicked face of `support` (points at target)
-        public final Vec3 hit;            // exact click location
-        public final Rotation rotation;   // required look while clicking
+        public Vec3 hit;                  // exact click location
+        public Rotation rotation;         // required look while clicking
         public final boolean sneak;       // support is interactive -> hold shift
         public int slot = -1;             // hotbar slot with the item (set by BuilderProcess)
 
@@ -136,6 +139,12 @@ public final class BlockStateResolver {
             this.hit = hit;
             this.rotation = rotation;
             this.sneak = sneak;
+        }
+
+        public PlacementPlan withVerifiedAim(Rotation newRotation, Vec3 newHit) {
+            PlacementPlan plan = new PlacementPlan(target, wanted, support, face, newHit != null ? newHit : hit, newRotation, sneak);
+            plan.slot = this.slot;
+            return plan;
         }
 
         public BlockHitResult toHitResult() {
@@ -151,6 +160,48 @@ public final class BlockStateResolver {
                 return false; // occupied by grass/foliage or solid block
             }
             return isUsableSupport(world, support, world.getBlockState(support), face);
+        }
+    }
+
+    /**
+     * Weryfikuje, czy po skwantowaniu rotacji do siatki GCD blok kierunkowy (schody, pnie, skrzynie, płyty itp.)
+     * postawi się w orientacji w 100% zgodnej ze schematem (wanted).
+     */
+    public static boolean isPlacementStateCompatible(LocalPlayer player, PlacementPlan plan, Rotation rotation, BlockHitResult hit) {
+        if (plan == null || plan.wanted == null) {
+            return true;
+        }
+        BlockState want = plan.wanted;
+        Block block = want.getBlock();
+
+        // Jeśli blok nie posiada właściwości kierunkowych/orientacyjnych, dowolny kąt trafiający w ściankę jest poprawny
+        boolean hasOrientationProps = false;
+        for (Property<?> p : want.getProperties()) {
+            if (BlockStateProperties.FACING.equals(p)
+                    || BlockStateProperties.HORIZONTAL_FACING.equals(p)
+                    || BlockStateProperties.AXIS.equals(p)
+                    || BlockStateProperties.HORIZONTAL_AXIS.equals(p)
+                    || BlockStateProperties.SLAB_TYPE.equals(p)
+                    || BlockStateProperties.HALF.equals(p)
+                    || BlockStateProperties.STAIRS_SHAPE.equals(p)) {
+                hasOrientationProps = true;
+                break;
+            }
+        }
+        if (!hasOrientationProps) {
+            return true;
+        }
+
+        try {
+            Item item = getItemForState(want);
+            ItemStack stack = (item != null && item != Items.AIR) ? new ItemStack(item) : new ItemStack(block);
+            Direction look = nearestLook(rotation);
+            Direction horiz = nearestHorizontal(rotation.getYaw());
+            SimulatedPlaceContext sim = new SimulatedPlaceContext(player, stack, hit, look, horiz, plan.sneak);
+            BlockState predicted = block.getStateForPlacement(sim);
+            return predicted != null && statesMatch(want, predicted);
+        } catch (Throwable ignored) {
+            return true;
         }
     }
 

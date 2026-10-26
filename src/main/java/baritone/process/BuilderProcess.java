@@ -905,18 +905,33 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     }
 
     private PlacementPlan possibleToPlace(Level world, LocalPlayer player) {
+        boolean antiCheat = Baritone.settings().antiCheatCompatibility.value
+                || Baritone.settings().grimCompat.value
+                || Baritone.settings().antiCheatCompat.value;
+        double reach = ctx.playerController().getBlockReachDistance();
+        if (antiCheat) {
+            reach = Math.min(reach, Baritone.settings().grimSafeReach.value);
+            reach = Math.min(reach, Baritone.settings().builderPlacementReach.value);
+        } else {
+            reach = Baritone.settings().builderPlacementReach.value;
+        }
+
         if (!scheduler.canPlaceNow()) {
             if (pendingPlan != null) { // keep aiming while cooling down / verifying
-                baritone.getLookBehavior().updateTarget(pendingPlan.rotation, true);
-                if (Baritone.settings().antiCheatCompat.value) {
+                applySnapPlacementRotation(player, pendingPlan, reach);
+                if (antiCheat) {
                     player.setSprinting(false);
                     baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                 }
             } else {
                 PlacementPlan prePlan = findNextPlan(world, player);
                 if (prePlan != null) {
-                    this.pendingPlan = prePlan;
-                    baritone.getLookBehavior().updateTarget(prePlan.rotation, true);
+                    GrimSnapRotationUtil.VerifiedPlacementAim snapAim = applySnapPlacementRotation(player, prePlan, reach);
+                    if (snapAim != null) {
+                        this.pendingPlan = prePlan.withVerifiedAim(snapAim.rotation(), snapAim.hitVec());
+                    } else {
+                        this.pendingPlan = prePlan;
+                    }
                 }
             }
             return null;
@@ -947,76 +962,71 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     }
 
     private PathingCommand controlPlacement(Level world, LocalPlayer player, PlacementPlan plan) {
-        if (Baritone.settings().antiCheatCompat.value) {
+        boolean antiCheat = Baritone.settings().antiCheatCompatibility.value
+                || Baritone.settings().grimCompat.value
+                || Baritone.settings().antiCheatCompat.value;
+        if (antiCheat) {
             player.setSprinting(false); // GrimAC: no sprint while fine-aiming/placing
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
         }
         this.pendingPlan = plan;
         setSneakHeld(plan.sneak);
 
-        float dYaw = Math.abs(Mth.wrapDegrees(plan.rotation.getYaw() - player.getYRot()));
-        float dPitch = Math.abs(plan.rotation.getPitch() - player.getXRot());
-        float maxTolerance = Baritone.settings().antiCheatCompat.value ? 4.5f : ROTATION_TOLERANCE;
-        boolean aligned = dYaw <= maxTolerance && dPitch <= maxTolerance;
-
         if (plan.sneak && sneakTicks < MIN_SNEAK_TICKS) {
-            aligned = false;
-        }
-
-        if (!aligned) {
-            rotationSettleTicks = 0;
-            baritone.getLookBehavior().updateTarget(plan.rotation, true);
             return standStill();
         }
 
-        // Settle ticks — ensures the rotation packet is sent to the server in onPlayerUpdate before placing
-        rotationSettleTicks++;
-        int requiredSettle = Baritone.settings().antiCheatCompat.value
-                ? Math.max(2, Baritone.settings().builderRotationSettleTicks.value)
-                : 0;
-        if (rotationSettleTicks < requiredSettle) {
-            baritone.getLookBehavior().updateTarget(plan.rotation, true);
-            return standStill();
+        double reach = ctx.playerController().getBlockReachDistance();
+        if (antiCheat) {
+            reach = Math.min(reach, Baritone.settings().grimSafeReach.value);
+            reach = Math.min(reach, Baritone.settings().builderPlacementReach.value);
+        } else {
+            reach = Baritone.settings().builderPlacementReach.value;
         }
 
-        double reach = Baritone.settings().antiCheatCompat.value
-                ? Math.min(3.85D, Baritone.settings().builderPlacementReach.value)
-                : Baritone.settings().builderPlacementReach.value;
-
-        // Active raycast using player's actual look rotation
-        Rotation playerRot = new Rotation(player.getYRot(), player.getXRot());
-        HitResult activeHit = RayTraceUtils.rayTraceTowards(player, playerRot, reach, player.isCrouching());
+        // ULTRA-SMOOTH GRIMAC GCD ROTATION (dokładnie jak w #sel clear arena / breakBlock)
+        GrimSnapRotationUtil.VerifiedPlacementAim verifiedAim = applySnapPlacementRotation(player, plan, reach);
         BlockHitResult bhr = null;
-        if (activeHit instanceof BlockHitResult candidate && candidate.getType() == HitResult.Type.BLOCK) {
-            if (candidate.getBlockPos().equals(plan.support) && candidate.getDirection() == plan.face) {
-                bhr = candidate;
-            }
-        }
-        if (bhr == null) {
-            if (Baritone.settings().antiCheatCompat.value) {
-                aimWaitTicks++;
-                if (aimWaitTicks >= 6) {
-                    // Cannot acquire clean raycast hit — back off
-                    scheduler.markUnreachable(plan.target, scheduler.currentTick() + 40);
-                    pendingPlan = null;
-                    rotationSettleTicks = 0;
-                    aimWaitTicks = 0;
-                    setSneakHeld(false);
-                } else {
-                    baritone.getLookBehavior().updateTarget(plan.rotation, true);
+
+        if (verifiedAim != null) {
+            bhr = verifiedAim.hitResult();
+            plan = plan.withVerifiedAim(verifiedAim.rotation(), verifiedAim.hitVec());
+            this.pendingPlan = plan;
+            aimWaitTicks = 0;
+            rotationSettleTicks = 0;
+        } else {
+            // Fallback: sprawdź czy aktualny wzrok gracza trafia w zadaną ściankę
+            Rotation playerRot = new Rotation(player.getYRot(), player.getXRot());
+            HitResult activeHit = RayTraceUtils.rayTraceTowards(player, playerRot, reach, player.isCrouching());
+            if (activeHit instanceof BlockHitResult candidate && candidate.getType() == HitResult.Type.BLOCK) {
+                if (candidate.getBlockPos().equals(plan.support) && candidate.getDirection() == plan.face) {
+                    bhr = candidate;
                 }
-                return standStill();
-            } else {
-                bhr = plan.toHitResult();
             }
+            if (bhr == null) {
+                if (antiCheat) {
+                    aimWaitTicks++;
+                    if (aimWaitTicks >= 4) {
+                        scheduler.markUnreachable(plan.target, scheduler.currentTick() + 40);
+                        pendingPlan = null;
+                        rotationSettleTicks = 0;
+                        aimWaitTicks = 0;
+                        setSneakHeld(false);
+                    }
+                    return standStill();
+                } else {
+                    bhr = plan.toHitResult();
+                }
+            }
+            aimWaitTicks = 0;
         }
-        aimWaitTicks = 0;
 
         // ---- aligned, settled and raytrace-verified: execute the placement ----
-        BlockState cur = world.getBlockState(plan.target);
+        final BlockPos targetCell = plan.target;
+        BlockState cur = world.getBlockState(targetCell);
         if (!(cur.getBlock() instanceof AirBlock) && !BlockStateResolver.isReplaceable(cur) && cur.getFluidState().isEmpty()) {
             pendingPlan = null; // world changed while turning
-            pending.removeIf(t -> t.pos.equals(plan.target));
+            pending.removeIf(t -> t.pos.equals(targetCell));
             setSneakHeld(false);
             rotationSettleTicks = 0;
             return standStill();
@@ -1055,6 +1065,10 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 scheduler.notifyPlaced(placedTarget);
                 pending.removeIf(t -> t.pos.equals(placedTarget));
                 placedCount++;
+
+                // God-tier visual feedback (neon cyan shockwave na postawionym bloku)
+                com.astra.revolution.visuals.AstraGodTierVisuals.triggerShockwave(
+                        placedTarget.getX() + 0.5D, placedTarget.getY() + 0.5D, placedTarget.getZ() + 0.5D, 0x00E5FF, true);
             } else {
                 scheduler.notifyRejected(curPlan.target);
                 break;
@@ -1072,8 +1086,8 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             float nYaw = Math.abs(Mth.wrapDegrees(nextCandidate.rotation.getYaw() - player.getYRot()));
             float nPitch = Math.abs(nextCandidate.rotation.getPitch() - player.getXRot());
             if (nYaw > 35.0f || nPitch > 35.0f) {
+                applySnapPlacementRotation(player, nextCandidate, reach);
                 this.pendingPlan = nextCandidate;
-                baritone.getLookBehavior().updateTarget(nextCandidate.rotation, true);
                 setSneakHeld(nextCandidate.sneak);
                 return standStill();
             }
@@ -1091,17 +1105,11 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
 
         pendingPlan = null;
         rotationSettleTicks = 0;
+        aimWaitTicks = 0;
         baritone.getLookBehavior().updateTarget(null, false); // release look control
 
-        // Pre-aim immediately at the next candidate for the upcoming tick!
-        PlacementPlan nextPlan = findNextPlan(world, player);
-        if (nextPlan != null) {
-            this.pendingPlan = nextPlan;
-            baritone.getLookBehavior().updateTarget(nextPlan.rotation, true);
-            setSneakHeld(nextPlan.sneak);
-        } else {
-            setSneakHeld(false);
-        }
+        // Natychmiastowy Lookahead Pre-Aiming na siatce GCD na kolejny cel w kolejce!
+        preAimNextPlacementTarget(player, world);
 
         return standStill();
     }
@@ -1328,6 +1336,92 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             player.yHeadRot = rot.getYaw();
             player.yBodyRot = rot.getYaw();
         }
+    }
+
+    /**
+     * Błyskawiczny 1-Tick GCD snap dla stawiania bloków (#sel fill / placement).
+     * Działa identycznie jak w #sel clear arena / breakBlock z pełnym bypass GrimAC GCD.
+     */
+    private GrimSnapRotationUtil.VerifiedPlacementAim applySnapPlacementRotation(
+            LocalPlayer player,
+            PlacementPlan plan,
+            double reach
+    ) {
+        if (player == null || plan == null) {
+            return null;
+        }
+        Rotation currentRot = getSafeServerRotation();
+        GrimSnapRotationUtil.VerifiedPlacementAim verifiedAim =
+                GrimSnapRotationUtil.findVerifiedPlacementSnapRotation(
+                        player,
+                        currentRot.getYaw(),
+                        currentRot.getPitch(),
+                        plan.support,
+                        plan.face,
+                        reach
+                );
+
+        if (verifiedAim != null) {
+            if (BlockStateResolver.isPlacementStateCompatible(player, plan, verifiedAim.rotation(), verifiedAim.hitResult())) {
+                applyAimRotation(verifiedAim.rotation(), true);
+                return verifiedAim;
+            }
+        }
+
+        // Fallback (jak w breakBlock): predykcja pozycji oka + snapGcd w wyznaczony punkt planu lub środek ścianki
+        Vec3 predictedEye = player.getEyePosition(1.0f).add(player.getDeltaMovement());
+        Vec3 targetPoint = plan.hit != null ? plan.hit : Vec3.atCenterOf(plan.support).add(
+                plan.face.getStepX() * 0.5D,
+                plan.face.getStepY() * 0.5D,
+                plan.face.getStepZ() * 0.5D
+        );
+        float[] preRot = GrimSnapRotationUtil.snapGcd(
+                currentRot.getYaw(),
+                currentRot.getPitch(),
+                predictedEye,
+                targetPoint
+        );
+        Rotation fallbackRot = (Float.isFinite(preRot[0]) && Float.isFinite(preRot[1]))
+                ? new Rotation(preRot[0], Mth.clamp(preRot[1], -89.5F, 89.5F))
+                : plan.rotation;
+
+        if (fallbackRot != null) {
+            applyAimRotation(fallbackRot, true);
+        }
+        return null;
+    }
+
+    /**
+     * Natychmiastowy Lookahead Pre-Aiming na siatce GCD na kolejny blok do postawienia (#sel fill).
+     * Działa identycznie jak preAimNextTarget w breakBlock.
+     */
+    private void preAimNextPlacementTarget(LocalPlayer player, Level world) {
+        if (player == null || world == null) {
+            return;
+        }
+        PlacementPlan nextPlan = findNextPlan(world, player);
+        if (nextPlan == null) {
+            setSneakHeld(false);
+            return;
+        }
+        boolean antiCheat = Baritone.settings().antiCheatCompatibility.value
+                || Baritone.settings().grimCompat.value
+                || Baritone.settings().antiCheatCompat.value;
+        double reach = ctx.playerController().getBlockReachDistance();
+        if (antiCheat) {
+            reach = Math.min(reach, Baritone.settings().grimSafeReach.value);
+            reach = Math.min(reach, Baritone.settings().builderPlacementReach.value);
+        } else {
+            reach = Baritone.settings().builderPlacementReach.value;
+        }
+
+        GrimSnapRotationUtil.VerifiedPlacementAim nextVerified = applySnapPlacementRotation(player, nextPlan, reach);
+        if (nextVerified != null) {
+            this.pendingPlan = nextPlan.withVerifiedAim(nextVerified.rotation(), nextVerified.hitVec());
+        } else {
+            this.pendingPlan = nextPlan;
+        }
+        setSneakHeld(nextPlan.sneak);
     }
 
     /**

@@ -26,11 +26,91 @@ public final class GrimSnapRotationUtil {
 
     public record VerifiedBlockAim(Rotation rotation, Direction hitFace, Vec3 hitVec) {}
 
+    public record VerifiedPlacementAim(
+            Rotation rotation,
+            BlockPos supportPos,
+            Direction hitFace,
+            Vec3 hitVec,
+            BlockHitResult hitResult
+    ) {}
+
+    private static final double[][] PLACEMENT_FACE_UVS = {
+            {0.50D, 0.50D},
+            {0.32D, 0.50D}, {0.68D, 0.50D}, {0.50D, 0.32D}, {0.50D, 0.68D},
+            {0.32D, 0.32D}, {0.68D, 0.32D}, {0.32D, 0.68D}, {0.68D, 0.68D},
+            {0.20D, 0.50D}, {0.80D, 0.50D}, {0.50D, 0.20D}, {0.50D, 0.80D},
+            {0.20D, 0.20D}, {0.80D, 0.20D}, {0.20D, 0.80D}, {0.80D, 0.80D}
+    };
+
     private static final double[] CROP_Y_OFFSETS = {0.72D, 0.60D, 0.82D, 0.50D, 0.38D};
     private static final double[] XZ_OFFSETS = {0.50D, 0.35D, 0.65D, 0.25D, 0.75D};
     private static final double[] FACE_GRID = {0.50D, 0.25D, 0.75D, 0.15D, 0.85D};
 
     private GrimSnapRotationUtil() {}
+
+    /**
+     * Wyznacza skwantowaną pod GrimAC (GCD) rotację o minimalnej delcie kątowej,
+     * która gwarantuje trafienie promieniem dokładnie w ściankę supportFace bloku supportPos (dla #sel fill / placement).
+     */
+    public static VerifiedPlacementAim findVerifiedPlacementSnapRotation(
+            LocalPlayer player,
+            float currentYaw,
+            float currentPitch,
+            BlockPos supportPos,
+            Direction supportFace,
+            double maxReach) {
+
+        if (player == null || supportPos == null || supportFace == null || player.level() == null) {
+            return null;
+        }
+        Level world = player.level();
+        Vec3 eye = player.getEyePosition(1.0f);
+        double maxReachSq = maxReach * maxReach;
+
+        BlockState state = world.getBlockState(supportPos);
+        VoxelShape shape = state.getShape(world, supportPos);
+        AABB box = shape.isEmpty()
+                ? new AABB(supportPos)
+                : shape.bounds().move(supportPos);
+
+        if (!isFacePotentiallyVisible(eye, box, supportFace)) {
+            return null;
+        }
+
+        VerifiedPlacementAim bestAim = null;
+        float bestAngularCost = Float.MAX_VALUE;
+
+        for (double[] uv : PLACEMENT_FACE_UVS) {
+            Vec3 candidate = pointOnBoxFace(box, supportFace, uv[0], uv[1]);
+            if (eye.distanceToSqr(candidate) > maxReachSq) {
+                continue;
+            }
+            float[] snapped = snapGcd(currentYaw, currentPitch, eye, candidate);
+            Rotation rot = new Rotation(snapped[0], snapped[1]);
+            HitResult hit = RayTraceUtils.rayTraceTowards(player, rot, maxReach, player.isCrouching());
+            if (hit instanceof BlockHitResult bhr
+                    && bhr.getType() == HitResult.Type.BLOCK
+                    && bhr.getBlockPos().equals(supportPos)
+                    && bhr.getDirection() == supportFace) {
+
+                float dYaw = Mth.wrapDegrees(snapped[0] - currentYaw);
+                float dPitch = snapped[1] - currentPitch;
+                float cost = (dYaw * dYaw) + (dPitch * dPitch * 1.15f);
+
+                // Pierwszy punkt (środek ścianki 0.5, 0.5) trafia od razu lub delta jest minimalna -> zwróć natychmiast
+                if ((uv[0] == 0.50D && uv[1] == 0.50D) || cost < 16.0f) {
+                    return new VerifiedPlacementAim(rot, supportPos, supportFace, bhr.getLocation(), bhr);
+                }
+
+                if (cost < bestAngularCost) {
+                    bestAngularCost = cost;
+                    bestAim = new VerifiedPlacementAim(rot, supportPos, supportFace, bhr.getLocation(), bhr);
+                }
+            }
+        }
+
+        return bestAim;
+    }
 
     /**
      * Wyznacza skwantowaną pod GrimAC (GCD) rotację o minimalnej delcie kątowej,
