@@ -103,7 +103,7 @@ public class PracaCommand extends Command {
                 range > 0 ? (" w zasięgu " + range + " bloków") : " (cała dostępna farma bez limitu zasięgu)"));
         logDirect("§7  • Mózg nawigacji: §aBoustrophedon Serpentine Spine (korytarz 3.5m, 4 rzędy/przelot, 0 zatrzymań!)");
         logDirect("§7  • Rotacja: §aUltra-Fast 1-Tick GCD Snap §7(100% legalności GrimAC, brak flag BadSensitivity/AimInvalid)");
-        logDirect("§7  • Celowanie: §aLookahead Pre-Aiming (1.5-6.5m) §7(celownik z wyprzedzeniem trafia w kłos w ticku 0)");
+        logDirect("§7  • Celowanie: §aIn-Reach Snap Replant §7(celuje w glebę dopiero w zasięgu ręki - 0 wgapiania się w ziemię z dystansu!)");
         logDirect("§7  • Sadzenie: §a1-Tick Shared-Ray Replant §7(brak przestojów, idealne trafienie w Farmland Direction.UP)");
         logDirect("§7  • Nawroty: §aCatmull-Rom U-Turn Arc §7(płynne 180° z odpychaniem od wody, brak wpadania do kanałów)");
         logDirect("§7  • Sterowanie: §aDecoupled Sprint WASD (5.61 m/s) §7(bieg w przód niezależny od obrotów głowy)");

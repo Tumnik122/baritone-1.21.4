@@ -862,6 +862,35 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         return null;
     }
 
+    /**
+     * Sprawdza, czy grządka Farmland jest w bezpośrednim zasięgu ręki i posiada
+     * niezasłonięty punkt na górnej ściance (Direction.UP), w który można natychmiast wycelować i postawić nasiono.
+     * Zapobiega przedwczesnemu celowaniu w grządki na odległość.
+     */
+    public boolean canPlantImmediately(Vec3 eyePos, BlockPos soilPos, double maxReach, boolean haveSeeds) {
+        if (!haveSeeds || soilPos == null || ctx.world() == null || ctx.player() == null) {
+            return false;
+        }
+        if (!isReadyToPlantSoil(soilPos)) {
+            return false;
+        }
+        double topY = soilPos.getY() + 0.9375D;
+        if (eyePos.y <= topY) {
+            return false;
+        }
+        double effectiveReach = Math.min(maxReach, 3.80D);
+        double maxReachSq = effectiveReach * effectiveReach;
+        Vec3 topCenter = new Vec3(soilPos.getX() + 0.5D, topY, soilPos.getZ() + 0.5D);
+        if (eyePos.distanceToSqr(topCenter) > maxReachSq) {
+            return false;
+        }
+        Vec3 visibleAim = resolveVisibleAimPoint(eyePos, soilPos, true);
+        if (visibleAim == null || eyePos.distanceToSqr(visibleAim) > maxReachSq) {
+            return false;
+        }
+        return true;
+    }
+
     private BlockHitResult rayTraceFarmlandTopFace(BlockPos soilPos, Rotation appliedRotation, double maxReach) {
         if (ctx.player() == null || ctx.world() == null || soilPos == null) return null;
 
@@ -1232,7 +1261,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 cachedOpenFarmland.remove(soilPos);
                 continue;
             }
-            if (isReadyToPlantSoil(soilPos) && isTargetInHandReach(eyePos, soilPos, plantReach, true)) {
+            if (canPlantImmediately(eyePos, soilPos, plantReach, true)) {
                 return soilPos;
             }
             if (eyePos.distanceToSqr(Vec3.atCenterOf(soilPos)) > (plantReach + 1.5D) * (plantReach + 1.5D)) {
@@ -1250,7 +1279,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 if (isBlacklisted(p) || !isReadyToPlantSoil(p)) continue;
 
                 double distSq = eyePos.distanceToSqr(p.getX() + 0.5D, p.getY() + 0.9375D, p.getZ() + 0.5D);
-                if (distSq <= 12.25D && isTargetInHandReach(eyePos, p, plantReach, true)) {
+                if (distSq <= 12.25D && canPlantImmediately(eyePos, p, plantReach, true)) {
                     if (distSq < bestScore) {
                         bestScore = distSq;
                         bestCloseSoil = p;
@@ -4000,7 +4029,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             // ==================== ETAP 0: PRIORYTETOWY INSTANT REPLANT (zaraz po ścięciu kłosa lub puste pole pod stopami) ====================
             if (Baritone.settings().replantCrops.value && haveSeeds) {
                 BlockPos urgentSoil = pollUrgentReplantTarget(eyePos, plantReach, openFarmland);
-                if (urgentSoil != null) {
+                if (urgentSoil != null && canPlantImmediately(eyePos, urgentSoil, plantReach, haveSeeds)) {
                     lockedTarget = urgentSoil;
                     lockedPhase = ActionPhase.REPLANT;
                     lockedTargetTicks = 0;
@@ -4044,11 +4073,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         continue;
                     }
                     if (isBlacklisted(p) || p.getY() < playerY - 2 || p.getY() > playerY + 1) continue;
-                    if (!isReadyToPlantSoil(p)) continue;
+                    if (!canPlantImmediately(eyePos, p, plantReach, haveSeeds)) continue;
 
-                    if (isTargetInHandReach(eyePos, p, plantReach, true)) {
-                        candidates.add(p);
-                    }
+                    candidates.add(p);
                 }
 
                 if (!candidates.isEmpty()) {
@@ -4056,27 +4083,42 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                             eyePos, lookVec, velVec, lockedTarget, candidates, reach2
                     );
                     lockedTarget = pair.primary().immutable();
-                    lookAheadTarget = (pair.lookAhead() != null && !pair.lookAhead().equals(lockedTarget)) ? pair.lookAhead().immutable() : null;
+                    lookAheadTarget = null;
                     lockedPhase = ActionPhase.REPLANT;
                     lockedTargetTicks = 0;
                 }
             }
 
             // ==================== ETAP 3: LOOKAHEAD PRE-AIMING (Gdy brak celów w zasięgu ręki) ====================
+            // ZASADA "Dopiero jak może to celuje":
+            // Pre-aiming dozwolony jest WYŁĄCZNIE dla dojrzałych plonów (HARVEST_MATURE).
+            // Puste grządki (Farmland) NIE MOGĄ być celem pre-aimingu (allowReplant = false)!
             if (isPracaModeActive() && lockedTarget == null && ctx.player() != null) {
                 if (!shouldYieldRotationToPathing(eyePos, null, null, false)) {
                     float spineYaw = farmOptimizer.computeCurrentTangentYaw(ctx.player().position(), ctx.player().getYRot());
                     Vec3 predictedEye = eyePos.add(ctx.player().getDeltaMovement());
                     Optional<FarmPathOptimizer.HarvestTarget> lookahead = farmOptimizer.findTargetInZone(
-                            ctx.player(), ctx.world(), predictedEye, spineYaw, Baritone.settings().replantCrops.value && haveSeeds, null, 1.5D, 6.50D, 65.0D);
-                    if (lookahead.isPresent()) {
+                            ctx.player(), ctx.world(), predictedEye, spineYaw, false, null, 1.5D, 6.50D, 65.0D);
+                    if (lookahead.isPresent() && lookahead.get().action() == FarmPathOptimizer.TargetAction.HARVEST_MATURE) {
                         FarmPathOptimizer.HarvestTarget lt = lookahead.get();
-                        Vec3 aimVec = lt.action() == FarmPathOptimizer.TargetAction.HARVEST_MATURE
-                                ? new Vec3(lt.pos().getX() + 0.5D, lt.pos().getY() + 0.65D, lt.pos().getZ() + 0.5D)
-                                : new Vec3(lt.pos().getX() + 0.5D, lt.pos().getY() + 0.9375D, lt.pos().getZ() + 0.5D);
+                        Vec3 aimVec = new Vec3(lt.pos().getX() + 0.5D, lt.pos().getY() + 0.65D, lt.pos().getZ() + 0.5D);
                         if (hasCleanColliderLineOfSight(eyePos, lt.pos(), aimVec)) {
                             float[] snap = GrimSnapRotationUtil.snapGcd(ctx.player().getYRot(), ctx.player().getXRot(), predictedEye, aimVec);
                             applyAimRotation(new Rotation(snap[0], snap[1]), true);
+                        }
+                    } else {
+                        // Naturalne utrzymywanie wzroku wzdłuż korytarza (pitch ~10.5°) zamiast wbijania wzroku w ziemię
+                        float curYaw = ctx.player().getYRot();
+                        float curPitch = ctx.player().getXRot();
+                        float yawDiff = Math.abs(Mth.wrapDegrees(spineYaw - curYaw));
+                        if (yawDiff < 60.0F) {
+                            Vec3 fwdLook = new Vec3(
+                                    -Math.sin(Math.toRadians(spineYaw)) * 5.0,
+                                    -Math.tan(Math.toRadians(10.5F)) * 5.0,
+                                    Math.cos(Math.toRadians(spineYaw)) * 5.0
+                            );
+                            float[] fwdSnap = GrimSnapRotationUtil.snapGcd(curYaw, curPitch, eyePos, eyePos.add(fwdLook));
+                            applyAimRotation(new Rotation(fwdSnap[0], fwdSnap[1]), false);
                         }
                     }
                 }
@@ -4246,8 +4288,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             } else if (lockedPhase == ActionPhase.REPLANT) {
                 BlockPos pos = lockedTarget;
 
-                // 1. Jeśli grządka została już obsiana (np. w poprzednim ticku), natychmiast zwolnij blokadę
-                if (!isReadyToPlantSoil(pos)) {
+                // 1. Jeśli grządka została już obsiana lub nie można natychmiast posadzić -> natychmiast zwolnij blokadę
+                if (!canPlantImmediately(head, pos, blockReachDistance, haveSeeds)) {
                     openFarmland.remove(pos);
                     farmlandSet.remove(pos.asLong());
                     cachedOpenFarmland.remove(pos);
@@ -4346,6 +4388,11 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                             acted = true;
 
                             onReplantCompleted(pos);
+
+                            // Natychmiast zwalniamy cel po udanym posadzeniu, aby wzrok nie wisiał w ziemi w kolejnym ticku
+                            lockedTarget = null;
+                            lockedPhase = ActionPhase.NONE;
+                            lockedTargetTicks = 0;
                         } else {
                             long key = pos.asLong();
                             int fails = failedPlantClicks.addTo(key, 1) + 1;

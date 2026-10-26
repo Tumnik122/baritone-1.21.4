@@ -587,6 +587,9 @@ public final class FarmPathOptimizer {
                     if (dist < EFFECTIVE_REACH_MIN || dist > EFFECTIVE_REACH_MAX) {
                         continue;
                     }
+                    if (action == TargetAction.PLANT_SEED && dist > 3.80D) {
+                        continue;
+                    }
 
                     // Weryfikacja stożka sprintu (GrimAC nie pozwala sprintować i celować za plecy)
                     Vec3 toTargetHoriz = new Vec3(targetCenter.x - eyePos.x, 0.0, targetCenter.z - eyePos.z);
@@ -1078,6 +1081,10 @@ public final class FarmPathOptimizer {
                     if (dist < minReach || dist > maxReach) {
                         continue;
                     }
+                    // Twarda bramka zasięgu dla sadzenia: brak celowania w puste pola powyżej 3.80m
+                    if (action == TargetAction.PLANT_SEED && dist > 3.80D) {
+                        continue;
+                    }
 
                     Vec3 toTargetHoriz = new Vec3(targetCenter.x - eyePos.x, 0.0, targetCenter.z - eyePos.z);
                     double horizLen = toTargetHoriz.length();
@@ -1094,7 +1101,7 @@ public final class FarmPathOptimizer {
                     float yawDiff = Math.abs(Mth.wrapDegrees(rotations[0] - player.getYRot()));
                     float pitchDiff = Math.abs(rotations[1] - player.getXRot());
 
-                    double actionPriorityBonus = (action == TargetAction.PLANT_SEED) ? -1.4 : 0.0;
+                    double actionPriorityBonus = (action == TargetAction.PLANT_SEED && dist <= 3.80D) ? -1.4 : 0.0;
                     double score = (dist * 0.85) + (yawDiff * 0.065) + (pitchDiff * 0.03) + (angleFromMoveDeg * 0.04) + actionPriorityBonus;
 
                     if (score < bestScore) {
