@@ -206,9 +206,21 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     private final Map<BlockPos, Long> stalledTargetCooldowns = new HashMap<>();
     private boolean lowLatencySettingsApplied = false;
 
+    // Śledzenie wektora wyjścia z wody i czarna lista celów za kanałem (Argon 4)
+    private Vec3 lastWaterEscapeDir = Vec3.ZERO;
+    private final Map<BlockPos, Long> canalBlockedTargets = new HashMap<>();
+    private static final double SHORE_HARVEST_REACH_SQ = 15.0D; // ~3.87m zasięgu ścinania/sadzenia z brzegu
+    private double prevWalkOnWaterOnePenalty = 3.0D;
+    private boolean prevAssumeWalkOnWater = false;
+
     private void ensureLowLatencyBaritoneSettings() {
         if (lowLatencySettingsApplied) return;
         lowLatencySettingsApplied = true;
+
+        prevWalkOnWaterOnePenalty = Baritone.settings().walkOnWaterOnePenalty.value;
+        prevAssumeWalkOnWater = Baritone.settings().assumeWalkOnWater.value;
+        Baritone.settings().walkOnWaterOnePenalty.value = 50.0D;
+        Baritone.settings().assumeWalkOnWater.value = false;
 
         Baritone.settings().primaryTimeoutMS.value = 85L;
         Baritone.settings().failureTimeoutMS.value = 250L;
@@ -406,6 +418,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         unplantableBlacklist.clear();
         lastAimedCropPos = null;
         serverAimedTicks = 0;
+        lastWaterEscapeDir = Vec3.ZERO;
+        canalBlockedTargets.clear();
         // Start statystyk pszenicy
         if (!sessionRunning) {
             farmSessionStartMs = System.currentTimeMillis();
@@ -465,6 +479,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         farmOptimizer.resetRoute();
         postWaterGraceTicks = 0;
         postWaterSafeAnchor = null;
+        lastWaterEscapeDir = Vec3.ZERO;
+        canalBlockedTargets.clear();
         magnetPullTarget = null;
         stallTicks = 0;
         stalledTargetCooldowns.clear();
@@ -2630,11 +2646,91 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
     // ============================================================================
 
     /**
+     * Uwzględnia specyfikę FarmlandBlock (wysokość 0.9375 — stopa gracza ma Y wewnątrz bloku ziemi uprawnej,
+     * podczas gdy na pełnym bloku stopa ma Y = blockY + 1.0).
+     */
+    private boolean isWaterAtOrNearFeet(Level world, double x, double footY, double z) {
+        if (world == null) return false;
+        double[] yOffsets = {0.1D, -0.15D, -0.65D, -1.15D};
+        for (double dy : yOffsets) {
+            BlockPos pos = BlockPos.containing(x, footY + dy, z);
+            if (!world.getFluidState(pos).isEmpty() || world.getBlockState(pos).is(Blocks.WATER) || world.getBlockState(pos).is(Blocks.WATER_CAULDRON)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Sprawdza, czy odcinek od A do B przecina jakikolwiek blok wody (raymarch co 0.25m z uwzględnieniem hitboxa 0.3m).
+     */
+    private boolean hasWaterAlongSegment(Vec3 from, Vec3 to, Level world) {
+        if (world == null || from == null || to == null) return false;
+        Vec3 diff = new Vec3(to.x - from.x, 0.0D, to.z - from.z);
+        double totalDist = diff.length();
+        if (totalDist < 1.0E-4D) return false;
+
+        Vec3 dir = diff.scale(1.0D / totalDist);
+        double step = 0.25D;
+        double halfWidth = 0.30D; // połowa szerokości hitboxa gracza
+
+        for (double d = 0.2D; d <= totalDist; d += step) {
+            double cx = from.x + dir.x * d;
+            double cz = from.z + dir.z * d;
+            if (isWaterAtOrNearFeet(world, cx, from.y, cz)
+                    || isWaterAtOrNearFeet(world, cx - halfWidth, from.y, cz - halfWidth)
+                    || isWaterAtOrNearFeet(world, cx + halfWidth, from.y, cz - halfWidth)
+                    || isWaterAtOrNearFeet(world, cx - halfWidth, from.y, cz + halfWidth)
+                    || isWaterAtOrNearFeet(world, cx + halfWidth, from.y, cz + halfWidth)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Predykcja wejścia do wody dla zadanego wektora kierunku ruchu (horyzont 0.85m przed graczem).
+     */
+    private boolean wouldMoveIntoWater(Vec3 playerPos, Vec3 moveDir, Level world) {
+        if (world == null || playerPos == null || moveDir == null) return false;
+        Vec3 horiz = new Vec3(moveDir.x, 0.0D, moveDir.z);
+        if (horiz.lengthSqr() < 1.0E-4D) return false;
+        Vec3 norm = horiz.normalize();
+
+        Vec3 probePoint = playerPos.add(norm.scale(0.85D));
+        return hasWaterAlongSegment(playerPos, probePoint, world);
+    }
+
+    /**
+     * Weryfikuje, czy najbliższe węzły wyznaczonej ścieżki A* prowadzą przez wodę.
+     */
+    private boolean isNextPathNodeInWater(Level world) {
+        if (world == null || baritone.getPathingBehavior() == null) return false;
+        return baritone.getPathingBehavior().getPath().map(path -> {
+            List<BetterBlockPos> posList = path.positions();
+            if (baritone.getPathingBehavior().getCurrent() == null) return false;
+            int idx = baritone.getPathingBehavior().getCurrent().getPosition();
+            int limit = Math.min(posList.size(), idx + 3);
+            for (int i = idx; i < limit; i++) {
+                BetterBlockPos node = posList.get(i);
+                if (isWaterAtOrNearFeet(world, node.x + 0.5D, node.y + 0.5D, node.z + 0.5D)) {
+                    return true;
+                }
+            }
+            return false;
+        }).orElse(false);
+    }
+
+    /**
      * Sprawdza, czy dana kolumna (x, z) wokół wysokości stóp gracza stanowi
      * dziurę z wodą (nawadnianie pola) lub brak podłoża prowadzący do wody.
      */
     private boolean isWaterHazardAt(Level level, int x, int feetY, int z) {
         if (level == null) return false;
+
+        if (isWaterAtOrNearFeet(level, x + 0.5D, feetY + 0.5D, z + 0.5D)) {
+            return true;
+        }
 
         BlockPos posAtFeet = new BlockPos(x, feetY, z);
         BlockState stateAtFeet = level.getBlockState(posAtFeet);
@@ -2734,88 +2830,101 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         float activeYaw = (serverRot != null) ? serverRot.getYaw() : ctx.player().getYRot();
 
         BlockPos hazardPos = detectImminentWaterHazard(activeYaw);
-        if (hazardPos == null) {
-            return;
+        boolean waterAhead = false;
+        Vec3 pos = ctx.player().position();
+        Vec3 vel = ctx.player().getDeltaMovement();
+        Level level = ctx.world();
+
+        if (hazardPos == null && level != null) {
+            if (vel.horizontalDistanceSqr() > 0.002D && wouldMoveIntoWater(pos, vel, level)) {
+                waterAhead = true;
+            } else if (baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD)) {
+                Vec3 look = Vec3.directionFromRotation(0.0F, activeYaw);
+                if (wouldMoveIntoWater(pos, look, level)) {
+                    waterAhead = true;
+                }
+            }
         }
 
-        // KRYTYCZNE DLA GRIMAC: Używamy WYŁĄCZNIE InputOverrideHandler!
-        // NIGDY nie wywołujemy tutaj ctx.player().setSprinting(false) bezpośrednio!
-        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+        if (currentCropTarget != null && level != null) {
+            Vec3 targetCenter = Vec3.atCenterOf(currentCropTarget);
+            if (hasWaterAlongSegment(pos, targetCenter, level)) {
+                waterAhead = true;
+            }
+        }
 
-        if (ctx.player().onGround()) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+        if (hazardPos != null || waterAhead) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+
+            if (ctx.player().onGround()) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+            }
         }
     }
 
     private boolean wouldMoveIntoWater(Vec3 currentPos, Level world, float moveYaw, double probeDist) {
         if (world == null || currentPos == null) return false;
-        int feetY = Mth.floor(currentPos.y + 0.08D);
         double rad = Math.toRadians(moveYaw);
-        double fwdX = -Math.sin(rad);
-        double fwdZ =  Math.cos(rad);
-        double perpX = -fwdZ;
-        double perpZ =  fwdX;
+        Vec3 moveDir = new Vec3(-Math.sin(rad) * probeDist, 0.0D, Math.cos(rad) * probeDist);
+        return wouldMoveIntoWater(currentPos, moveDir, world);
+    }
 
-        // Sprawdź 5 punktów: środek, lewy i prawy bok oraz narożniki przednie AABB
-        double[] probeSteps = { probeDist * 0.6D, probeDist };
-        double[] sideOffsets = { -0.32D, 0.0D, 0.32D };
+    /**
+     * Wyznacza punkt ucieczki 1-2 bloki w głąb TEGO SAMEGO brzegu zgodnie z wektorem wyjścia z wody.
+     * Blokuje wybór punktów po przeciwnej stronie kanału oraz weryfikuje brak wody na trasie.
+     */
+    private Vec3 findSafeInlandRetreatSpot(Vec3 playerPos, Vec3 escapeDir, Level world) {
+        if (world == null || playerPos == null) return playerPos;
+        Vec3 forward = (escapeDir != null && escapeDir.horizontalDistanceSqr() > 1.0E-4D)
+                ? new Vec3(escapeDir.x, 0.0D, escapeDir.z).normalize()
+                : (ctx.player() != null ? Vec3.directionFromRotation(0.0F, ctx.player().getYRot()).multiply(1.0D, 0.0D, 1.0D).normalize() : new Vec3(0, 0, 1));
 
-        for (double pStep : probeSteps) {
-            for (double sOff : sideOffsets) {
-                int bx = Mth.floor(currentPos.x + fwdX * pStep + perpX * sOff);
-                int bz = Mth.floor(currentPos.z + fwdZ * pStep + perpZ * sOff);
-                if (isWaterHazardAt(world, bx, feetY, bz)) {
-                    return true;
+        double[] distances = {2.0D, 1.25D};
+        double[] anglesDeg = {0.0D, -30.0D, 30.0D, -60.0D, 60.0D};
+
+        for (double dist : distances) {
+            for (double angle : anglesDeg) {
+                double rad = Math.toRadians(angle);
+                double cos = Math.cos(rad);
+                double sin = Math.sin(rad);
+                Vec3 rotatedDir = new Vec3(
+                    forward.x * cos - forward.z * sin,
+                    0.0D,
+                    forward.x * sin + forward.z * cos
+                ).normalize();
+
+                Vec3 candidate = new Vec3(
+                    Math.floor(playerPos.x + rotatedDir.x * dist) + 0.5D,
+                    playerPos.y,
+                    Math.floor(playerPos.z + rotatedDir.z * dist) + 0.5D
+                );
+
+                BlockPos candidateGround = BlockPos.containing(candidate.x, playerPos.y - 0.15D, candidate.z);
+                if (isSafeDryGround(world, candidateGround) && !hasWaterAlongSegment(playerPos, candidate, world)) {
+                    return new Vec3(candidate.x, candidateGround.getY() + 1.0D, candidate.z);
                 }
             }
         }
-        return false;
+
+        return playerPos;
+    }
+
+    private boolean isSafeDryGround(Level world, BlockPos groundPos) {
+        if (world == null || groundPos == null) return false;
+        if (isWaterAtOrNearFeet(world, groundPos.getX() + 0.5D, groundPos.getY() + 1.0D, groundPos.getZ() + 0.5D)) {
+            return false;
+        }
+        BlockState ground = world.getBlockState(groundPos);
+        BlockState feet = world.getBlockState(groundPos.above());
+        BlockState head = world.getBlockState(groundPos.above(2));
+        return !ground.getCollisionShape(world, groundPos).isEmpty()
+                && feet.getCollisionShape(world, groundPos.above()).isEmpty()
+                && head.getCollisionShape(world, groundPos.above(2)).isEmpty();
     }
 
     private Vec3 findDeepInlandDrySpot(Vec3 playerPos, Level world) {
-        if (world == null || playerPos == null) return null;
-        BlockPos feet = new BlockPos(Mth.floor(playerPos.x), Mth.floor(playerPos.y), Mth.floor(playerPos.z));
-
-        BlockPos bestSpot = null;
-        double maxWaterDist = -1.0D;
-        double minPlayerDist = Double.MAX_VALUE;
-
-        for (int dx = -4; dx <= 4; dx++) {
-            for (int dz = -4; dz <= 4; dz++) {
-                for (int dy = 0; dy <= 2; dy++) {
-                    BlockPos candidate = feet.offset(dx, dy, dz);
-                    if (isWaterOrFluid(world, candidate) || isWaterOrFluid(world, candidate.above())) {
-                        continue;
-                    }
-                    BlockState ground = world.getBlockState(candidate);
-                    if (!ground.blocksMotion() && !ground.is(Blocks.FARMLAND)) {
-                        continue;
-                    }
-                    BlockState space = world.getBlockState(candidate.above());
-                    if (!space.isAir() && !(space.getBlock() instanceof CropBlock)) {
-                        continue;
-                    }
-
-                    double waterDist = computeMinDistanceToWater(Vec3.atCenterOf(candidate), world, 3);
-                    if (waterDist < 0.9D) {
-                        continue;
-                    }
-
-                    double playerDist = playerPos.distanceToSqr(Vec3.atBottomCenterOf(candidate.above()));
-                    if (waterDist > maxWaterDist || (Math.abs(waterDist - maxWaterDist) < 0.2D && playerDist < minPlayerDist)) {
-                        maxWaterDist = waterDist;
-                        minPlayerDist = playerDist;
-                        bestSpot = candidate.above();
-                    }
-                }
-            }
-        }
-
-        if (bestSpot != null) {
-            return Vec3.atBottomCenterOf(bestSpot);
-        }
-        return null;
+        return findSafeInlandRetreatSpot(playerPos, this.lastWaterEscapeDir, world);
     }
 
     private double computeMinDistanceToWater(Vec3 pos, Level world, int radius) {
@@ -2917,7 +3026,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         double bestScore = Double.MAX_VALUE;
 
         for (BlockPos pos : primaryPool) {
-            if (stalledTargetCooldowns.containsKey(pos)) {
+            if (stalledTargetCooldowns.containsKey(pos) || canalBlockedTargets.containsKey(pos)) {
                 continue;
             }
             Vec3 center = Vec3.atBottomCenterOf(pos);
@@ -2941,7 +3050,14 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             }
             double laneDeviationPenalty = (dist <= 6.0D) ? ((lateralDist > 2.25D) ? lateralDist * 1.5D : lateralDist * 0.3D) : 0.0D;
 
-            double score = dist + backwardPenalty + laneDeviationPenalty;
+            // Kara za cel leżący za kanałem wodnym poza zasięgiem ręki:
+            // Najpierw wyczyść cały bieżący pas upraw przed próbą zmiany brzegu
+            double canalPenalty = 0.0D;
+            if (distSq > SHORE_HARVEST_REACH_SQ && hasWaterAlongSegment(playerPos, center, ctx.world())) {
+                canalPenalty = 20.0D;
+            }
+
+            double score = dist + backwardPenalty + laneDeviationPenalty + canalPenalty;
             if (score < bestScore) {
                 bestScore = score;
                 bestPos = pos;
@@ -3318,10 +3434,20 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         Vec3 playerPos = ctx.player().position();
         BlockPos waterBlockPos = BlockPos.containing(playerPos.x, playerPos.y + 0.2D, playerPos.z);
 
-        postWaterSafeAnchor = findDeepInlandDrySpot(playerPos, level);
-
         // 1. Wyznacz idealny KARDYNALNY brzeg wyjścia (N, S, E, W)
         BlockPos escapePos = findBestCardinalWaterExit(waterBlockPos);
+        if (escapePos != null) {
+            Vec3 rawDir = new Vec3(
+                escapePos.getX() + 0.5D - playerPos.x,
+                0.0D,
+                escapePos.getZ() + 0.5D - playerPos.z
+            );
+            if (rawDir.lengthSqr() > 1.0E-4D) {
+                this.lastWaterEscapeDir = rawDir.normalize();
+            }
+        }
+
+        postWaterSafeAnchor = findSafeInlandRetreatSpot(playerPos, this.lastWaterEscapeDir, level);
 
         // Wyczyść sprzeczne inputy z poprzedniego ticku
         baritone.getInputOverrideHandler().clearAllKeys();
@@ -3430,6 +3556,11 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         pendingCalcFailed |= calcFailed;
         if (isPracaModeActive()) {
             ensureLowLatencyBaritoneSettings();
+        }
+
+        if (ctx.world() != null) {
+            long currentTick = ctx.world().getGameTime();
+            canalBlockedTargets.entrySet().removeIf(e -> e.getValue() <= currentTick);
         }
 
         // Pkt 7: Cykliczny pruning blacklisty
@@ -3923,11 +4054,14 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         if (postWaterGraceTicks > 0) {
             postWaterGraceTicks--;
             if (postWaterSafeAnchor == null) {
-                postWaterSafeAnchor = findDeepInlandDrySpot(ctx.player().position(), ctx.world());
+                postWaterSafeAnchor = findSafeInlandRetreatSpot(ctx.player().position(), this.lastWaterEscapeDir, ctx.world());
+            }
+            if (hasWaterAlongSegment(ctx.player().position(), postWaterSafeAnchor, ctx.world())) {
+                postWaterSafeAnchor = ctx.player().position();
             }
             double distToWater = computeMinDistanceToWater(ctx.player().position(), ctx.world(), 2);
             boolean underLowCeiling = !isCollisionFree(ctx.world(), ctx.playerFeet().above(2));
-            if ((distToWater < 1.35D || underLowCeiling) && postWaterSafeAnchor != null) {
+            if ((distToWater < 1.35D || underLowCeiling) && postWaterSafeAnchor != null && ctx.player().position().distanceToSqr(postWaterSafeAnchor) > 0.05D) {
                 Vec3 eye = ctx.player().getEyePosition(1.0F);
                 Rotation escapeRot = RotationUtils.calcRotationFromVec3d(eye, postWaterSafeAnchor, getSafeServerRotation());
                 baritone.getLookBehavior().updateTarget(new Rotation(escapeRot.getYaw(), 10.0F), true);
@@ -4273,11 +4407,18 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         lockedTargetTicks = 0;
                     }
 
-                    // Move-While-Act (Argon 4): Hamuj TYLKO wtedy, gdy gracz ucieka poza zasięg celu!
-                    if (!acted && !isPracaModeActive() && shouldBrakeForTarget(eyePos, currentRefRot.getYaw(), lockedTarget, reach2, acted)) {
+                    // Move-While-Act & Shore-Harvest (Argon 4):
+                    boolean waterToTarget = (pos != null) && hasWaterAlongSegment(ctx.player().position(), Vec3.atCenterOf(pos), ctx.world());
+                    boolean movingInWater = wouldMoveIntoWater(ctx.player().position(), ctx.player().getDeltaMovement(), ctx.world());
+                    if (waterToTarget || movingInWater || (!isPracaModeActive() && shouldBrakeForTarget(eyePos, currentRefRot.getYaw(), lockedTarget, reach2, acted))) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                        if (ctx.player().onGround()) {
+                            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+                        }
+                        if (!acted) {
+                            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                        }
                     }
                 } else {
                     lockedTarget = null;
@@ -4418,11 +4559,18 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                         lockedTargetTicks = 0;
                     }
 
-                    // Move-While-Act (Argon 4): Hamuj TYLKO wtedy, gdy gracz ucieka poza zasięg celu!
-                    if (!acted && lockedTarget != null && !isPracaModeActive() && shouldBrakeForTarget(eyePos, actualServerRot.getYaw(), lockedTarget, reach2, acted)) {
+                    // Move-While-Act & Shore-Harvest (Argon 4):
+                    boolean waterToTarget = (pos != null) && hasWaterAlongSegment(ctx.player().position(), Vec3.atCenterOf(pos), ctx.world());
+                    boolean movingInWater = wouldMoveIntoWater(ctx.player().position(), ctx.player().getDeltaMovement(), ctx.world());
+                    if (waterToTarget || movingInWater || (!isPracaModeActive() && shouldBrakeForTarget(eyePos, actualServerRot.getYaw(), lockedTarget, reach2, acted))) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
                         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                        if (ctx.player().onGround()) {
+                            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+                        }
+                        if (!acted) {
+                            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                        }
                     }
                 } else {
                     lockedTarget = null;
@@ -4999,6 +5147,20 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 : findActiveMagnetTarget(playerVecPos, currentRot.getYaw(), toBreak, openFarmland, haveSeeds);
         BlockPos pullBlockPos = resolveStableWalkTarget(playerVecPos, rawPullBlockPos, world);
 
+        if (pullBlockPos != null) {
+            Vec3 targetCenter = Vec3.atCenterOf(pullBlockPos);
+            boolean waterBetween = hasWaterAlongSegment(playerVecPos, targetCenter, world);
+            boolean imminentHazard = wouldMoveIntoWater(playerVecPos, player.getDeltaMovement(), world)
+                    || (baritone.getInputOverrideHandler().isInputForcedDown(Input.MOVE_FORWARD) && wouldMoveIntoWater(playerVecPos, player.getViewVector(1.0F), world));
+            if ((waterBetween && playerVecPos.distanceToSqr(targetCenter) > SHORE_HARVEST_REACH_SQ) || imminentHazard) {
+                if (isNextPathNodeInWater(world) || imminentHazard) {
+                    baritone.getInputOverrideHandler().clearAllKeys();
+                    canalBlockedTargets.put(pullBlockPos.immutable(), world.getGameTime() + 80L);
+                    pullBlockPos = null;
+                }
+            }
+        }
+
         if (pullBlockPos != null && goalz.isEmpty()) {
             goalz.add(new GoalFarmTarget(pullBlockPos));
         }
@@ -5184,6 +5346,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         laneForwardDir = Vec3.ZERO;
         lastProgressPos = null;
         lockedLaneYaw = Float.NaN;
+        lastWaterEscapeDir = Vec3.ZERO;
+        canalBlockedTargets.clear();
         baritone.getInputOverrideHandler().clearAllKeys();
 
         // Pkt 10: Przywróć dokładny stan ustawień
@@ -5193,6 +5357,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         // (domyślna wartość pola).
         if (lowLatencySettingsApplied) {
             lowLatencySettingsApplied = false;
+            Baritone.settings().walkOnWaterOnePenalty.value = prevWalkOnWaterOnePenalty;
+            Baritone.settings().assumeWalkOnWater.value = prevAssumeWalkOnWater;
             Baritone.settings().primaryTimeoutMS.value = 1000L;
             Baritone.settings().failureTimeoutMS.value = 2000L;
             Baritone.settings().planAheadPrimaryTimeoutMS.value = 500L;
