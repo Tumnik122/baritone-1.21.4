@@ -140,6 +140,15 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
      *    i umieszcza 1 sztukę cenniejszego surowca, aby tam trafiały leżące diamenty.
      */
     private void checkFullInventoryAutoHome() {
+        // Twardy bypass-guard: W module #bypass bot ma NIGDY nie teleportować się do /home!
+        // BypassProcess sam zarządza ekwipunkiem (AutoDropProcess / InventoryCleaner czyści śmieci pod ziemią).
+        if (baritone.getBypassProcess() != null && baritone.getBypassProcess().isActive()) {
+            return;
+        }
+        if (savedMiningCommand != null && savedMiningCommand.toLowerCase().contains("bypass")) {
+            return;
+        }
+
         if (!Baritone.settings().autoHomeOnFull.value) {
             return;
         }
@@ -158,7 +167,6 @@ public class HomeProcess extends BaritoneProcessHelper implements IBaritoneProce
 
         boolean isMiningActive = baritone.getMineProcess().isActive()
                 || baritone.getFarmProcess().isActive()
-                || baritone.getBypassProcess().isActive()
                 || (savedMiningCommand != null && (baritone.getPathingBehavior().isPathing() || baritone.getPathingBehavior().getGoal() != null));
 
         if (!isMiningActive) {

@@ -109,6 +109,12 @@ public class MovementDescend extends Movement {
         //C, D, etc determine the length of the fall
 
         BlockState below = context.get(destX, y - 2, destZ);
+        // Bezwzględna ochrona przed lawą i niestabilnym podłożem w miejscu zejścia
+        if (MovementHelper.isLava(destDown) || MovementHelper.isLava(below)
+                || MovementHelper.isLavaPitBelow(context.bsi, destX, y - 2, destZ, 8)
+                || !MovementHelper.isSafeStepColumn(context.bsi, destX, y - 1, destZ)) {
+            return;
+        }
         if (context.mineAvoidWater && (MovementHelper.isWater(destDown) || MovementHelper.isWater(below))) {
             totalCost += Baritone.settings().waterAvoidPenalty.value;
         }
@@ -216,6 +222,11 @@ public class MovementDescend extends Movement {
                 return false; // falling onto a half slab is really glitchy, and can cause more fall damage than we'd expect
             }
             if (reachedMinimum && unprotectedFallHeight <= context.maxFallHeightNoWater + 1) {
+                // Weryfikacja czy punkt przyziemienia i kolumna pod nim są bezpieczne od lawy
+                if (MovementHelper.isLavaPitBelow(context.bsi, destX, newY - 1, destZ, 8)
+                        || !MovementHelper.isSafeStepColumn(context.bsi, destX, newY + 1, destZ)) {
+                    return false;
+                }
                 // fallHeight = 4 means onto.up() is 3 blocks down, which is the max
                 res.x = destX;
                 res.y = newY + 1;
@@ -240,6 +251,20 @@ public class MovementDescend extends Movement {
         super.updateState(state);
         if (state.getStatus() != MovementStatus.RUNNING) {
             return state;
+        }
+
+        // Rewalidacja w czasie rzeczywistym przed zrzuceniem gracza z krawędzi
+        if (ctx.playerFeet().getY() >= src.getY()) {
+            BlockStateInterface bsi = new BlockStateInterface(ctx);
+            if (MovementHelper.isLavaPitBelow(bsi, dest.getX(), dest.getY() - 1, dest.getZ(), 8)
+                    || !MovementHelper.isSafeStepColumn(bsi, dest.getX(), dest.getY(), dest.getZ())) {
+                state.setInput(Input.MOVE_FORWARD, false);
+                state.setInput(Input.SPRINT, false);
+                if (ctx.player().onGround()) {
+                    state.setInput(Input.SNEAK, true);
+                }
+                return state.setStatus(MovementStatus.UNREACHABLE);
+            }
         }
 
         BlockPos playerFeet = ctx.playerFeet();

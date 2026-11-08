@@ -51,6 +51,25 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
     @Override
     public abstract void setDestroyDelay(int destroyDelay);
 
+    @Accessor("destroyProgress")
+    @Override
+    public abstract float getDestroyProgress();
+
+    @Accessor("destroyProgress")
+    @Override
+    public abstract void setDestroyProgress(float destroyProgress);
+
+    @org.spongepowered.asm.mixin.Unique
+    private long argon$targetBlockPosLong = Long.MIN_VALUE;
+    @org.spongepowered.asm.mixin.Unique
+    private long argon$lastDestroyedPosLong = Long.MIN_VALUE;
+    @org.spongepowered.asm.mixin.Unique
+    private int argon$lastContinueTick = -1;
+    @org.spongepowered.asm.mixin.Unique
+    private int argon$miningTicks = 0;
+    @org.spongepowered.asm.mixin.Unique
+    private boolean argon$diggingActiveOnServer = false;
+
     /**
      * Zeroes destroyDelay at the HEAD of startDestroyBlock so that the
      * vanilla check (destroyDelay > 0 → skip mining) does NOT fire for
@@ -64,11 +83,35 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
      */
     @org.spongepowered.asm.mixin.injection.Inject(
             method = "startDestroyBlock",
-            at = @org.spongepowered.asm.mixin.injection.At("HEAD"))
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
+            cancellable = true)
     private void onStartDestroyBlockHead(
             BlockPos pos,
             net.minecraft.core.Direction direction,
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
+        long posLong = pos.asLong();
+        BlockPos current = this.getCurrentBlock();
+        if (current != null && (current.asLong() == this.argon$lastDestroyedPosLong || !this.argon$diggingActiveOnServer)) {
+            this.setIsHittingBlock(false);
+        }
+
+        // KRYTYCZNE DLA GRIMAC (FastBreak 51ms/107ms):
+        // Jeśli kopiemy już ten sam blok na serwerze i destroyProgress > 0,
+        // pod żadnym pozorem NIE wysyłaj ponownego pakietu START_DESTROY_BLOCK!
+        // Ponowny START_DESTROY_BLOCK resetuje stoper na serwerze GrimAC,
+        // co powoduje FastBreak delay=51ms / 107ms gdy chwile później pójdzie STOP!
+        if (this.isHittingBlock() && this.argon$targetBlockPosLong == posLong && this.getDestroyProgress() > 0.0f) {
+            cir.setReturnValue(true);
+            return;
+        }
+
+        if (this.argon$targetBlockPosLong != posLong) {
+            this.argon$targetBlockPosLong = posLong;
+            this.argon$miningTicks = 0;
+            this.argon$diggingActiveOnServer = true;
+            this.setDestroyProgress(0.0f);
+        }
+
         boolean isGrim = baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value
                 || baritone.api.BaritoneAPI.getSettings().grimCompat.value
                 || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value;
@@ -77,7 +120,6 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         }
     }
 
-
     /**
      * Same zero-out at the HEAD of continueDestroyBlock.
      * This allows mining progress to be computed on every tick without the
@@ -85,16 +127,73 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
      */
     @org.spongepowered.asm.mixin.injection.Inject(
             method = "continueDestroyBlock",
-            at = @org.spongepowered.asm.mixin.injection.At("HEAD"))
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
+            cancellable = true)
     private void onContinueDestroyBlockHead(
             BlockPos pos,
             net.minecraft.core.Direction direction,
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.player == null || mc.level == null) return;
+
         boolean isGrim = baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value
                 || baritone.api.BaritoneAPI.getSettings().grimCompat.value
                 || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value;
-        if (!isGrim && baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
+
+        if (isGrim) {
+            long currentPosLong = pos.asLong();
+            if (this.argon$targetBlockPosLong != currentPosLong) {
+                this.argon$targetBlockPosLong = currentPosLong;
+                this.argon$miningTicks = 0;
+                this.argon$diggingActiveOnServer = true;
+                this.setDestroyProgress(0.0f);
+            }
+
+            int currentTick = mc.player.tickCount;
+            if (currentTick == this.argon$lastContinueTick) {
+                cir.setReturnValue(true);
+                return;
+            }
+            this.argon$lastContinueTick = currentTick;
+            this.argon$miningTicks++;
+
+            net.minecraft.world.level.block.state.BlockState state = mc.level.getBlockState(pos);
+            int reqTicks = baritone.utils.GrimBreakValidator.getRequiredTicks(
+                    mc.player, mc.level, pos, state, mc.player.onGround()
+            );
+
+            // Dopóki nie minęła wymagana liczba ticków, trzymaj destroyProgress < 0.60f
+            if (this.argon$miningTicks < reqTicks) {
+                float vanillaDelta = state.getDestroyProgress(mc.player, mc.level, pos);
+                if (this.getDestroyProgress() + vanillaDelta >= 0.60f) {
+                    this.setDestroyProgress(Math.max(0.0f, 0.50f - vanillaDelta));
+                }
+            }
+        } else if (baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
             this.destroyDelay = 0;
+        }
+    }
+
+    @org.spongepowered.asm.mixin.injection.Inject(
+            method = "destroyBlock",
+            at = @org.spongepowered.asm.mixin.injection.At("RETURN"))
+    private void onBlockDestroyed(BlockPos pos, org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
+        this.argon$lastDestroyedPosLong = pos.asLong();
+        this.argon$diggingActiveOnServer = false;
+        this.argon$miningTicks = 0;
+        this.argon$targetBlockPosLong = Long.MIN_VALUE;
+    }
+
+    @org.spongepowered.asm.mixin.injection.Inject(
+            method = "stopDestroyBlock",
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"))
+    private void onStopDestroyBlockHead(org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        BlockPos current = this.getCurrentBlock();
+        if (current != null) {
+            long posLong = current.asLong();
+            if (posLong == this.argon$lastDestroyedPosLong || !this.argon$diggingActiveOnServer) {
+                this.setIsHittingBlock(false);
+            }
         }
     }
 
@@ -124,5 +223,22 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             return baritone.utils.player.BaritonePlayerController.getSafeBreakFace(mc.player, pos, direction);
         }
         return direction;
+    }
+
+    @org.spongepowered.asm.mixin.injection.Inject(
+            method = "attack",
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
+            require = 0
+    )
+    private void astra$onAttackEntity(net.minecraft.world.entity.player.Player player, net.minecraft.world.entity.Entity targetEntity, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (targetEntity != null) {
+            com.astra.revolution.visuals.AstraGodTierVisuals.triggerShockwave(
+                    targetEntity.getX(),
+                    targetEntity.getY() + targetEntity.getBbHeight() * 0.5,
+                    targetEntity.getZ(),
+                    0x00F0FF,
+                    true
+            );
+        }
     }
 }

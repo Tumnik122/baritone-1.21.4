@@ -94,6 +94,15 @@ public class BaritoneBypassScreen extends Screen {
                 Object pathingBehavior = primary.getClass().getMethod("getPathingBehavior").invoke(primary);
                 boolean isPathing = (boolean) pathingBehavior.getClass().getMethod("isPathing").invoke(pathingBehavior);
 
+                try {
+                    Object bypassProcess = primary.getClass().getMethod("getBypassProcess").invoke(primary);
+                    if (bypassProcess != null && (boolean) bypassProcess.getClass().getMethod("isActive").invoke(bypassProcess)) {
+                        Object state = bypassProcess.getClass().getMethod("getState").invoke(bypassProcess);
+                        return state != null ? state.toString().toUpperCase(Locale.ROOT) : "BYPASS";
+                    }
+                } catch (Throwable ignored) {
+                }
+
                 Object mineProcess = primary.getClass().getMethod("getMineProcess").invoke(primary);
                 if ((boolean) mineProcess.getClass().getMethod("isActive").invoke(mineProcess)) return "MINE";
 
@@ -577,11 +586,11 @@ public class BaritoneBypassScreen extends Screen {
                 "Tung Tung Sahur", "Ballerina Capuccina", "Cyber Mech", "Hologram Avatar", "Capybara King", "Wyłączone"
         ));
         BypassCard motionTrailCard = new BypassCard(
-                "motion_trail", "Motion Trail 3D Ribbon",
-                "Płynna wstęga w przestrzeni 3D z neonową żyłą wzdłuż krawędzi i zerowym jitterem współrzędnych.",
+                "motion_trail", "Motion Trail & MoonDLC DashCubics",
+                "Płynna wstęga Catmull-Rom z laserowym rantem oraz wirujące diamentowe kostki 3D DashCubics.",
                 "3D TRAIL", COL_ACCENT_LILAC, Category.RENDER, motionTrailVal,
                 false, null, null, 0, 0, 0,
-                "Cyber Lilac & Cyan", "Chroma Rainbow", "Sunset Gold", "Glacial Ice Blue", "Matrix Emerald"
+                "Cyber Lilac & Cyan", "Chroma Rainbow Flow", "Sunset Neon & Gold", "Glacial Ice Blue", "Matrix Emerald", "MoonDLC DashCubics Pure"
         );
         motionTrailCard.modeIndex = Math.min(Math.max(0, AstraVisualsEngine.getMotionTrailMode()), motionTrailCard.modes.length - 1);
         cards.add(motionTrailCard);
@@ -1206,6 +1215,7 @@ public class BaritoneBypassScreen extends Screen {
                         s.chinaHatFirstPerson.value = true;
                     }
                     AstraVisualsEngine.setChinaHatEnabled(card.enabled);
+                    com.astra.revolution.visuals.ChinaHatLayer.setEnabled(card.enabled);
                     break;
                 case "hand_shaders":
                     s.handShaders.value = card.enabled;
@@ -1252,6 +1262,7 @@ public class BaritoneBypassScreen extends Screen {
                     s.motionTrailMode.value = card.modeIndex;
                     AstraVisualsEngine.setMotionTrailEnabled(card.enabled);
                     AstraVisualsEngine.setMotionTrailMode(card.modeIndex);
+                    com.astra.revolution.visuals.AstraTrailEngine.INSTANCE.setEnabled(card.enabled);
                     break;
                 case "target_esp":
                     s.targetEsp.value = card.enabled;

@@ -33,7 +33,7 @@ public class BypassCommand extends Command {
     private final BypassConfig config = new BypassConfig();
 
     public BypassCommand(IBaritone baritone) {
-        super(baritone, "bypass");
+        super(baritone, "bypass", "byppas");
     }
 
     @Override
@@ -282,11 +282,14 @@ public class BypassCommand extends Command {
         }
 
         if (customY != null) {
-            activeConfig.yLevel = Math.max(-63, Math.min(320, customY));
+            activeConfig.yLevel = Math.max(-58, Math.min(320, customY));
             logDirect(String.format("§a[Bypass] Ustawiono docelowy poziom wydobywczy: Y=%d", activeConfig.yLevel));
-        } else if (filteredOres.contains("diamond") && activeConfig.yLevel > -58) {
-            activeConfig.yLevel = -58; // Optymalny poziom diamentów w 1.18+ / 1.21.4 (pod lawą na Y=-54, maks. gęstość)
-            logDirect("§b[Bypass] Wykryto kopanie diamentów: automatyczny poziom Y=-58 (maksymalna gęstość rudy).");
+        } else if (filteredOres.contains("diamond")) {
+            activeConfig.yLevel = -54;
+            logDirect("§b[Bypass] Wykryto kopanie diamentów: automatyczny poziom Y=-54.");
+        } else if (activeConfig.yLevel < -58) {
+            activeConfig.yLevel = -54;
+            logDirect("§b[Bypass] Korekta poziomu na bezpieczny Y=-54.");
         }
 
         if (filteredOres.isEmpty()) {
@@ -294,7 +297,7 @@ public class BypassCommand extends Command {
             return;
         }
 
-        HomeProcess.setSavedMiningCommand("bypass " + String.join(" ", filteredOres));
+        HomeProcess.clearSavedMiningCommand();
         process.startMining(filteredOres);
     }
 

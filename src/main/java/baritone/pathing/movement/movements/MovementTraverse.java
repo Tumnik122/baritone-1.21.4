@@ -91,6 +91,13 @@ public class MovementTraverse extends Movement {
         boolean standingOnABlock = MovementHelper.mustBeSolidToWalkOn(context, x, y - 1, z, srcDown);
         boolean frostWalker = standingOnABlock && !context.assumeWalkOnWater && MovementHelper.canUseFrostWalker(context, destOn);
         if (frostWalker || MovementHelper.canWalkOn(context, destX, y - 1, destZ, destOn)) { //this is a walk, not a bridge
+            if (context.mineAvoidLava) {
+                if (!MovementHelper.isFloorStable(context.bsi, destX, y - 1, destZ)
+                        || MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y - 1, destZ)
+                        || MovementHelper.isLavaHazardBelowOrAdjacent(context.bsi, destX, y, destZ)) {
+                    return COST_INF;
+                }
+            }
             double WC = WALK_ONE_BLOCK_COST;
             boolean water = false;
             boolean sneaking = false;
@@ -224,6 +231,18 @@ public class MovementTraverse extends Movement {
             if (state.getStatus() != MovementStatus.PREPPING) {
                 return state;
             }
+            // Weryfikacja podłogi przed ruchem w przód podczas kopania
+            BlockStateInterface bsi = new BlockStateInterface(ctx);
+            boolean unsafeFloor = !MovementHelper.isFloorStable(bsi, dest.x, dest.y - 1, dest.z)
+                    || MovementHelper.isLavaPitBelow(bsi, dest.x, dest.y - 1, dest.z, 6);
+            if (unsafeFloor) {
+                state.setInput(Input.MOVE_FORWARD, false);
+                state.setInput(Input.SPRINT, false);
+                if (ctx.player().onGround()) {
+                    state.setInput(Input.SNEAK, true);
+                }
+                return state;
+            }
             // and if it's fine to walk into the blocks in front
             if (MovementHelper.avoidWalkingInto(pb0)) {
                 return state;
@@ -311,6 +330,16 @@ public class MovementTraverse extends Movement {
         }
 
         if (isTheBridgeBlockThere) {
+            BlockStateInterface bsi = new BlockStateInterface(ctx);
+            if (!MovementHelper.isSafeStepColumn(bsi, dest.x, dest.y, dest.z)) {
+                if (MovementHelper.isLavaHazardBelowOrAdjacent(bsi, dest.x, dest.y - 1, dest.z)
+                        || MovementHelper.isLavaPitBelow(bsi, dest.x, dest.y - 1, dest.z, 6)) {
+                    state.setInput(Input.MOVE_FORWARD, false);
+                    state.setInput(Input.SPRINT, false);
+                    state.setInput(Input.SNEAK, ctx.player().onGround());
+                    return state.setStatus(MovementStatus.UNREACHABLE);
+                }
+            }
             if (feet.equals(dest) || (inWater && (feet.equals(dest.above()) || (feet.getX() == dest.getX() && feet.getZ() == dest.getZ() && Math.abs(ctx.player().position().y - dest.getY()) < 1.8)))) {
                 return state.setStatus(MovementStatus.SUCCESS);
             }

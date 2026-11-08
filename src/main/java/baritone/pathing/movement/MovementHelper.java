@@ -85,7 +85,7 @@ public interface MovementHelper extends ActionCosts, Helper {
                 return true;
             }
         }
-        return Baritone.settings().blocksToDisallowBreaking.value.contains(b)
+        if (Baritone.settings().blocksToDisallowBreaking.value.contains(b)
                 || b == Blocks.ICE // ice becomes water, and water can mess up the path
                 || b instanceof InfestedBlock // obvious reasons
                 // call context.get directly with x,y,z. no need to make 5 new BlockPos for no reason
@@ -93,7 +93,23 @@ public interface MovementHelper extends ActionCosts, Helper {
                 || avoidAdjacentBreaking(bsi, x + 1, y, z, false)
                 || avoidAdjacentBreaking(bsi, x - 1, y, z, false)
                 || avoidAdjacentBreaking(bsi, x, y, z + 1, false)
-                || avoidAdjacentBreaking(bsi, x, y, z - 1, false);
+                || avoidAdjacentBreaking(bsi, x, y, z - 1, false)) {
+            return true;
+        }
+
+        // Ochrona przed wykopaniem bloku podłogi bezpośrednio nad lawą / ogniem / basenem lawowym
+        BlockState directlyBelow = bsi.get0(x, y - 1, z);
+        if (isLava(directlyBelow) || directlyBelow.getBlock() instanceof BaseFireBlock || directlyBelow.getBlock() == Blocks.MAGMA_BLOCK) {
+            return true;
+        }
+        if (!canWalkOn(bsi, x, y - 1, z, directlyBelow) && isLavaPitBelow(bsi, x, y - 1, z, 8)) {
+            return true;
+        }
+        // Ochrona przed przebiciem podłogi na poziomie globalnego oceanu lawy (Y = -54 do -64)
+        if (y - 1 <= -54 && (isLava(directlyBelow) || isLavaPitBelow(bsi, x, y - 1, z, 4))) {
+            return true;
+        }
+        return false;
     }
 
     static boolean isFarmSoilOrStructure(Block b) {
@@ -872,18 +888,60 @@ public interface MovementHelper extends ActionCosts, Helper {
         return f == Fluids.LAVA || f == Fluids.FLOWING_LAVA;
     }
 
-    static boolean isLavaPitBelow(BlockStateInterface bsi, int x, int y, int z) {
+    static boolean isLavaPitBelow(BlockStateInterface bsi, int x, int startY, int z, int maxDepth) {
         if (bsi == null) return false;
-        for (int dy = 0; dy <= 5; dy++) {
-            BlockState s = bsi.get0(x, y - dy, z);
-            if (isLava(s)) {
+        int minY = Math.max(bsi.access.getMinY(), startY - maxDepth);
+        for (int y = startY; y >= minY; y--) {
+            BlockState s = bsi.get0(x, y, z);
+            if (isLava(s) || s.getBlock() instanceof BaseFireBlock || s.getBlock() == Blocks.MAGMA_BLOCK) {
                 return true;
             }
-            if (canWalkOn(bsi, x, y - dy, z, s)) {
+            if (canWalkOn(bsi, x, y, z, s) && !(s.getBlock() instanceof FallingBlock)) {
                 return false;
             }
         }
         return false;
+    }
+
+    static boolean isLavaPitBelow(BlockStateInterface bsi, int x, int y, int z) {
+        return isLavaPitBelow(bsi, x, y, z, 8);
+    }
+
+    static boolean isFloorStable(BlockStateInterface bsi, int x, int y, int z) {
+        if (bsi == null) return false;
+        BlockState floor = bsi.get0(x, y, z);
+        if (!canWalkOn(bsi, x, y, z, floor)) {
+            return false;
+        }
+        if (floor.getBlock() instanceof FallingBlock) {
+            int minY = Math.max(bsi.access.getMinY(), y - 6);
+            for (int checkY = y - 1; checkY >= minY; checkY--) {
+                BlockState below = bsi.get0(x, checkY, z);
+                if (isLava(below) || below.getBlock() instanceof BaseFireBlock || below.getBlock() == Blocks.MAGMA_BLOCK) {
+                    return false;
+                }
+                if (canWalkOn(bsi, x, checkY, z, below) && !(below.getBlock() instanceof FallingBlock)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+
+    static boolean isSafeStepColumn(BlockStateInterface bsi, int x, int footY, int z) {
+        if (bsi == null) return false;
+        if (!isFloorStable(bsi, x, footY - 1, z)) {
+            return false;
+        }
+        if (isLava(bsi.get0(x, footY, z)) || isLava(bsi.get0(x, footY + 1, z))) {
+            return false;
+        }
+        return !isLava(bsi.get0(x + 1, footY, z))
+                && !isLava(bsi.get0(x - 1, footY, z))
+                && !isLava(bsi.get0(x, footY, z + 1))
+                && !isLava(bsi.get0(x, footY, z - 1))
+                && !isLavaPitBelow(bsi, x, footY - 1, z, 8);
     }
 
     static boolean isLavaHazardBelowOrAdjacent(BlockStateInterface bsi, int x, int y, int z) {

@@ -16,7 +16,7 @@ record BypassStaircaseStep(BlockPos source, BlockPos destination, List<BlockPos>
         BlockPos destination = ascending ? front.above() : front.below();
         // Break the nearer face before the upper block behind it.
         List<BlockPos> clearance = ascending
-                ? List.of(source.above(2), destination, destination.above())
+                ? List.of(source.above(2), destination, destination.above(), destination.above(2))
                 : List.of(front.above(), front, destination);
         return new BypassStaircaseStep(source, destination, clearance);
     }

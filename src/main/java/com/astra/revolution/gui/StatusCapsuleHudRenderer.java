@@ -14,13 +14,11 @@ import net.minecraft.util.Mth;
 import java.util.Locale;
 
 /**
- * ASTRA REVOLUTION — UNIFIED 7-SEGMENT OBSIDIAN & LILAC GLASS HUD (V2)
+ * ASTRA REVOLUTION — UNIFIED 7-SEGMENT OBSIDIAN & LILAC GLASS HUD (V3)
  *
- * Kluczowe ulepszenia V2:
- * 1. Zastąpienie glow-boxa kierunkowym Drop-Shadow SDF (blur 8px, offsetY +3px, 0x80000000).
- * 2. 1-pikselowa subtelna matowa ramka 0x22FFFFFF zamiast jaskrawej obwódki.
- * 3. Pełna 7-segmentowa unifikacja: Profil V, Serwer, Ping ms, TPS, Prędkość bps, Baritone Task (IDLE/MINE/PATH) z pulsem, Ekwipunek (5/36).
- * 4. Wszystkie ikony VectorIcon i teksty wycentrowane co do 0.5px na wspólnej osi optycznej cy = y + h * 0.5f.
+ * Ulepszenia V3 (pożyczone z MoonDLC SkyRenderingMixin + estetyka Astra):
+ * 1. Animowany Chroma Border — obracający się gradient HSV wokół kapsuły (aktywny gdy Baritone pracuje).
+ * 2. Zachowanie V2: Drop-Shadow SDF, matowa ramka, 7 segmentów.
  */
 public final class StatusCapsuleHudRenderer {
 
@@ -41,6 +39,7 @@ public final class StatusCapsuleHudRenderer {
     private long lastWorldGameTime = -1L;
     private long lastWorldTimeRealMs = -1L;
     private float pulsePhase = 0.0f;
+    private float chromaPhase = 0.0f; // 0.0–1.0, obiegowy kąt barwy chroma bordera
 
     private StatusCapsuleHudRenderer() {}
 
@@ -65,6 +64,8 @@ public final class StatusCapsuleHudRenderer {
         float dt = Math.min(0.1f, (nowNs - lastFrameNs) / 1_000_000_000.0f);
         lastFrameNs = nowNs;
         pulsePhase = (pulsePhase + dt * 4.0f) % ((float) Math.PI * 2.0f);
+        // Chroma obraca się z prędkością ~0.12 obrotu/s (360° co ~8.3s) — subtelne, nie męczące
+        chromaPhase = (chromaPhase + dt * 0.12f) % 1.0f;
 
         updateTelemetry(mc, dt);
 
@@ -113,6 +114,14 @@ public final class StatusCapsuleHudRenderer {
 
         // 1. Kierunkowy Drop-Shadow (blur 8px, offset Y +3px, 0x80000000) - zero artefaktów Glow-Box
         VenturaSdfRenderer.drawDropShadow(x, y, totalW, h, 8.0f, 8.0f, 3.0f, 0x80000000);
+
+        // 1b. Chroma Border (MoonDLC-inspired: obracający się gradient HSV, widoczny gdy Baritone aktywny)
+        //     Pulsuje od 30% do 100% alpha synchronicznie z bitem aktywności
+        if (baritoneActive) {
+            float chromaAlphaNorm = 0.55f + 0.45f * Mth.sin(pulsePhase);
+            int chromaAlpha = (int)(chromaAlphaNorm * 210);
+            renderChromaBorder(g, x - 1.0f, y - 1.0f, totalW + 2.0f, h + 2.0f, chromaPhase, chromaAlpha);
+        }
 
         // 2. Kapsuła Obsidian Glass z 1-pikselową subtelną ramką 0x22FFFFFF
         VenturaSdfRenderer.drawRoundedRect(x, y, totalW, h, 8.0f, COL_CAPSULE_BG, COL_CAPSULE_BORDER, 1.0f);
@@ -213,5 +222,54 @@ public final class StatusCapsuleHudRenderer {
         if (conn == null || mc.player == null) return 0;
         PlayerInfo info = conn.getPlayerInfo(mc.player.getUUID());
         return info != null ? Math.max(0, info.getLatency()) : 0;
+    }
+
+    /**
+     * Rysuje animowany chroma border wokół HUD kapsuły.
+     * Technika: 16 segmentów na każdą krawędź, barwa HSV przesuwana wg hueOffset.
+     * Inspirowane MoonDLC SkyRenderingMixin (redirectStarColor — obracający się kolor gwiazd).
+     *
+     * @param g         GuiGraphics
+     * @param x, y      lewy górny róg bordera
+     * @param w, h      wymiary bordera
+     * @param hueOffset aktualny offset barwy (0.0–1.0)
+     * @param alpha     przezroczystość bordera (0–255)
+     */
+    private static void renderChromaBorder(GuiGraphics g, float x, float y, float w, float h,
+                                           float hueOffset, int alpha) {
+        if (alpha <= 0) return;
+        final int SEG = 16;
+        // Górna krawędź
+        for (int i = 0; i < SEG; i++) {
+            float t = (float) i / SEG;
+            float hue = (hueOffset + t * 0.40f) % 1.0f;
+            int rgb = Mth.hsvToRgb(hue, 0.75f, 1.0f) & 0x00FFFFFF;
+            int col = (alpha << 24) | rgb;
+            g.fill((int)(x + t * w), (int)y, (int)(x + (t + 1.0f / SEG) * w + 1), (int)(y + 1), col);
+        }
+        // Dolna krawędź (odwrócona hue o 0.5)
+        for (int i = 0; i < SEG; i++) {
+            float t = (float) i / SEG;
+            float hue = (hueOffset + 0.5f + (1.0f - t) * 0.40f) % 1.0f;
+            int rgb = Mth.hsvToRgb(hue, 0.75f, 1.0f) & 0x00FFFFFF;
+            int col = (alpha << 24) | rgb;
+            g.fill((int)(x + t * w), (int)(y + h - 1), (int)(x + (t + 1.0f / SEG) * w + 1), (int)(y + h), col);
+        }
+        // Lewa krawędź
+        for (int i = 0; i < SEG; i++) {
+            float t = (float) i / SEG;
+            float hue = (hueOffset + 0.25f + t * 0.20f) % 1.0f;
+            int rgb = Mth.hsvToRgb(hue, 0.75f, 1.0f) & 0x00FFFFFF;
+            int col = (alpha << 24) | rgb;
+            g.fill((int)x, (int)(y + t * h), (int)(x + 1), (int)(y + (t + 1.0f / SEG) * h + 1), col);
+        }
+        // Prawa krawędź
+        for (int i = 0; i < SEG; i++) {
+            float t = (float) i / SEG;
+            float hue = (hueOffset + 0.75f + t * 0.20f) % 1.0f;
+            int rgb = Mth.hsvToRgb(hue, 0.75f, 1.0f) & 0x00FFFFFF;
+            int col = (alpha << 24) | rgb;
+            g.fill((int)(x + w - 1), (int)(y + t * h), (int)(x + w), (int)(y + (t + 1.0f / SEG) * h + 1), col);
+        }
     }
 }

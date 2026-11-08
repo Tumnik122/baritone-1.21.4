@@ -254,13 +254,8 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
         long now = System.currentTimeMillis();
         Vec3 pos = player.position();
 
-        // 1. Motion Trail sampling
-        if (motionTrailEnabled) {
-            if (TRAIL_NODES.isEmpty() || TRAIL_NODES.peekLast().pos().distanceToSqr(pos) > 0.006D) {
-                TRAIL_NODES.addLast(new TrailNode(pos, player.getBbHeight(), now));
-            }
-        }
-        TRAIL_NODES.removeIf(n -> (now - n.timestamp()) > 900L);
+        // 1. Motion Trail & MoonDLC DashCubics sampling
+        AstraTrailEngine.INSTANCE.onTick(player);
 
         // 2. Jump and landing circle detection (Ground snapping + multi-entity support)
         boolean onGround = player.onGround();
@@ -324,13 +319,13 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
         float partialTick = event.getPartialTicks();
 
         poseStack.pushPose();
-        poseStack.translate(-camPos.x, -camPos.y, -camPos.z);
 
         try (AstraGlStateGuard guard = new AstraGlStateGuard(false, false, true)) {
-            // Pass 1: Motion Trail ribbons (Zero-Jitter camera relative)
-            if (motionTrailEnabled) {
-                renderMotionTrail(poseStack, camPos);
-            }
+            // Pass 1: Motion Trail ribbons & MoonDLC DashCubics (Zero-Jitter: kamera-względna)
+            AstraTrailEngine.INSTANCE.render(poseStack, camPos);
+
+            poseStack.pushPose();
+            poseStack.translate(-camPos.x, -camPos.y, -camPos.z);
 
             // Pass 2: Jump & landing circles
             if (jumpCirclesEnabled) {
@@ -400,6 +395,7 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
                     }
                 }
             }
+            poseStack.popPose();
         }
         poseStack.popPose();
     }

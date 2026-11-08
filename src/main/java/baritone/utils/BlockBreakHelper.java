@@ -20,14 +20,18 @@ package baritone.utils;
 import baritone.api.BaritoneAPI;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.IPlayerContext;
+import baritone.api.utils.RotationUtils;
 import baritone.hud.AiActionLogger;
 import baritone.utils.accessor.IPlayerControllerMP;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.Random;
 
@@ -90,19 +94,34 @@ public final class BlockBreakHelper {
     }
 
     public void stopBreakingBlock() {
-        if (ctx.player() != null && wasHitting) {
-            ctx.playerController().setHittingBlock(false);
-            ctx.playerController().resetBlockRemoving();
-            wasHitting = false;
-        }
-        lastTargetPos = null;
-        reactionDelay = 0;
+        stopBreakingCleanly();
         lastBreakWasNonInstamine = false;
         ContinuousBreakController.reset();
     }
 
+    public void stopBreakingCleanly() {
+        if (wasHitting) {
+            ctx.playerController().resetBlockRemoving();
+            wasHitting = false;
+            lastTargetPos = null;
+        }
+        reactionDelay = 0;
+    }
+
+    private HitResult getBlockHitResultDirectly() {
+        if (ctx.player() == null || ctx.world() == null) return null;
+        double reach = ctx.playerController().getBlockReachDistance();
+        Vec3 eyePos = ctx.player().getEyePosition(1.0F);
+        Vec3 lookVec = RotationUtils.calcLookDirectionFromRotation(ctx.playerRotations());
+        Vec3 endPos = eyePos.add(lookVec.scale(reach));
+        return ctx.world().clip(new ClipContext(eyePos, endPos, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, ctx.player()));
+    }
+
     public void tick(boolean isLeftClick) {
-        HitResult trace = ctx.objectMouseOver();
+        HitResult trace = getBlockHitResultDirectly();
+        if (trace == null || trace.getType() != HitResult.Type.BLOCK) {
+            trace = ctx.objectMouseOver();
+        }
         boolean isBlockTrace = trace != null && trace.getType() == HitResult.Type.BLOCK;
         BlockPos currentTarget = isBlockTrace ? ((BlockHitResult) trace).getBlockPos() : null;
 
@@ -175,110 +194,58 @@ public final class BlockBreakHelper {
         }
 
         if (isLeftClick && isBlockTrace) {
-            ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(currentTarget));
-
-            // Humanised reaction delay — skip for true instamine (they're already
-            // safe by definition, 1 tick = 50 ms which GrimAC allows).
-            if (!isInstaMine && BaritoneAPI.getSettings().humanizedInteractDelay.value) {
-                if (!currentTarget.equals(lastTargetPos)) {
-                    lastTargetPos = currentTarget;
-                    reactionDelay = 1 + random.nextInt(2); // 1-2 ticks
-                }
-                if (reactionDelay > 0) {
-                    reactionDelay--;
-                    return;
-                }
-            } else {
-                lastTargetPos = currentTarget;
+            // Zablokuj równoległe wywoływanie mc.gameMode.continueDestroyBlock przez Minecraft.handleKeybinds()
+            if (ctx.minecraft().options.keyAttack.isDown()) {
+                ctx.minecraft().options.keyAttack.setDown(false);
             }
 
-            ctx.playerController().syncHeldItem();
-            ctx.playerController().setHittingBlock(wasHitting);
+            BlockPos targetPos = ((BlockHitResult) trace).getBlockPos();
+            Direction side = ((BlockHitResult) trace).getDirection();
 
-            if (ctx.playerController().hasBrokenBlock()) {
-                // ── Branch A: not currently mining → call startDestroyBlock ──
-                BlockPos targetPos = ((BlockHitResult) trace).getBlockPos();
-                net.minecraft.world.level.block.state.BlockState brokenState =
-                        ctx.world().getBlockState(targetPos);
-                ctx.playerController().clickBlock(targetPos, ((BlockHitResult) trace).getDirection());
+            BlockState state = ctx.world().getBlockState(targetPos);
+            if (state.isAir() || state.is(Blocks.BEDROCK) || state.getDestroySpeed(ctx.world(), targetPos) < 0.0f) {
+                stopBreakingCleanly();
+                return;
+            }
+
+            ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(targetPos));
+            ctx.playerController().syncHeldItem();
+
+            // 1. PIERWSZY TICK na danym bloku: wykonaj clickBlock (startDestroyBlock) DOKŁADNIE RAZ
+            if (!wasHitting || !targetPos.equals(lastTargetPos)) {
+                if (wasHitting && lastTargetPos != null && !targetPos.equals(lastTargetPos)) {
+                    ctx.playerController().resetBlockRemoving();
+                }
+                ctx.playerController().syncHeldItem();
+                ctx.playerController().clickBlock(targetPos, side);
                 ctx.player().swing(InteractionHand.MAIN_HAND);
 
-                if (isInstaMine) {
-                    ((IPlayerControllerMP) ctx.minecraft().gameMode).setDestroyDelay(0);
-                    breakDelayTimer = 0;
-                    if (ctx.playerController().hasBrokenBlock()
-                            || ctx.world().getBlockState(targetPos).isAir()) {
-                        baritone.hud.GatherTracker.INSTANCE.onBlockBroken(
-                                brokenState.getBlock(), targetPos);
-                        AiActionLogger.log("MINE", "Wykopano "
-                                + brokenState.getBlock().getName().getString()
-                                + " na [" + targetPos.getX() + ", "
-                                + targetPos.getY() + ", " + targetPos.getZ() + "]");
-                    }
-                }
-            } else {
-                // ── Branch B: currently mining → call continueDestroyBlock ──
-                BlockPos targetPos = ((BlockHitResult) trace).getBlockPos();
-                net.minecraft.world.level.block.state.BlockState brokenState =
-                        ctx.world().getBlockState(targetPos);
-
-                if (ctx.playerController().onPlayerDamageBlock(
-                        targetPos, ((BlockHitResult) trace).getDirection())) {
-                    ctx.player().swing(InteractionHand.MAIN_HAND);
-                }
-
-                if (ctx.playerController().hasBrokenBlock()) {
-                    // Block just broke this tick.
-                    baritone.hud.GatherTracker.INSTANCE.onBlockBroken(
-                            brokenState.getBlock(), targetPos);
-                    AiActionLogger.log("MINE", "Wykopano "
-                            + brokenState.getBlock().getName().getString()
-                            + " na [" + targetPos.getX() + ", "
-                            + targetPos.getY() + ", " + targetPos.getZ() + "]");
-
-                    if (isInstaMine) {
-                        // ── FIX 3: instamine break — 0-tick inter-block gap ──
-                        // Vanilla calls startDestroyBlock for the next block within
-                        // the same continueDestroyBlock call, so the gap is already
-                        // 0 ticks in vanilla.  GrimAC accepts this.
-                        breakDelayTimer = 0;
-                        lastBreakWasNonInstamine = false;
-                        ((IPlayerControllerMP) ctx.minecraft().gameMode).setDestroyDelay(0);
-                    } else {
-                        // ── FIX 2 (continued): non-instamine broke ───────────
-                        // Force GRIM_INTER_BLOCK_TICKS before the next block,
-                        // regardless of what the next target is.
-                        lastBreakWasNonInstamine = true;
-
-                        int baseDelay = BaritoneAPI.getSettings().blockBreakSpeed.value
-                                - BASE_BREAK_DELAY;
-
-                        if (BaritoneAPI.getSettings().humanizedInteractDelay.value) {
-                            int jitter = (int) Math.round(random.nextGaussian() * 0.5);
-                            baseDelay += Math.max(0, Math.min(1, jitter));
-                            if (baseDelay < 0) baseDelay = 0;
-                        }
-
-                        // Always at least GRIM_INTER_BLOCK_TICKS so GrimAC's
-                        // inter-block delay check passes.
-                        breakDelayTimer = Math.max(GRIM_INTER_BLOCK_TICKS, baseDelay);
-                        // Restore vanilla destroyDelay so the server-side model
-                        // also sees a proper cooldown.
-                        ((IPlayerControllerMP) ctx.minecraft().gameMode)
-                                .setDestroyDelay(GRIM_INTER_BLOCK_TICKS);
-                        lastTargetPos = null;
-                    }
-                }
+                wasHitting = !ctx.world().getBlockState(targetPos).isAir();
+                lastTargetPos = wasHitting ? targetPos.immutable() : null;
+                return;
             }
 
-            wasHitting = !ctx.playerController().hasBrokenBlock();
-            ctx.playerController().setHittingBlock(false);
-        } else {
-            wasHitting = false;
-            if (!isLeftClick) {
+            // 2. KOLEJNE TICKI na tym samym bloku: TYLKO onPlayerDamageBlock (continueDestroyBlock)
+            if (ctx.playerController().onPlayerDamageBlock(targetPos, side)) {
+                ctx.player().swing(InteractionHand.MAIN_HAND);
+            }
+
+            // Gdy blok został zniszczony, zresetuj stan pod kolejny blok
+            if (ctx.world().getBlockState(targetPos).isAir()) {
+                baritone.hud.GatherTracker.INSTANCE.onBlockBroken(state.getBlock(), targetPos);
+                AiActionLogger.log("MINE", "Wykopano " + state.getBlock().getName().getString() + " na [" + targetPos.getX() + ", " + targetPos.getY() + ", " + targetPos.getZ() + "]");
+                wasHitting = false;
                 lastTargetPos = null;
-                reactionDelay = 0;
+                ctx.playerController().setHittingBlock(false);
+
+                // OCHRONA GRIMAC INTER-BLOCK DELAY:
+                // Po zniszczeniu bloku nie-instamine (np. deepslate, kamień), GrimAC ściśle wymaga zachowania
+                // waniliowego odstępu destroyDelay (5 ticków = 250ms) przed wysłaniem START_DESTROY_BLOCK na kolejny blok.
+                lastBreakWasNonInstamine = !isInstaMine;
+                breakDelayTimer = lastBreakWasNonInstamine ? GRIM_INTER_BLOCK_TICKS : 0;
             }
+        } else {
+            stopBreakingCleanly();
         }
     }
 }

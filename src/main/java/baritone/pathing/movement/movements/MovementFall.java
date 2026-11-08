@@ -31,6 +31,7 @@ import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.MovementState;
 import baritone.pathing.movement.MovementState.MovementTarget;
+import baritone.utils.BlockStateInterface;
 import baritone.utils.pathing.MutableMoveResult;
 import java.util.HashSet;
 import java.util.Optional;
@@ -63,6 +64,24 @@ public class MovementFall extends Movement {
 
     @Override
     public double calculateCost(CalculationContext context) {
+        // Weryfikacja strefy lądowania pod kątem lawy i niestabilnego podłoża
+        if (MovementHelper.isLava(context.get(dest.x, dest.y, dest.z))
+                || MovementHelper.isLavaPitBelow(context.bsi, dest.x, dest.y - 1, dest.z, 8)
+                || !MovementHelper.isSafeStepColumn(context.bsi, dest.x, dest.y, dest.z)) {
+            return COST_INF;
+        }
+
+        // Zabezpieczenie pionowego szybu opadania przed kontaktem z ciekami lawy w ścianach
+        for (int shaftY = src.y; shaftY >= dest.y; shaftY--) {
+            if (MovementHelper.isLava(context.get(dest.x, shaftY, dest.z))
+                    || MovementHelper.isLava(context.get(dest.x + 1, shaftY, dest.z))
+                    || MovementHelper.isLava(context.get(dest.x - 1, shaftY, dest.z))
+                    || MovementHelper.isLava(context.get(dest.x, shaftY, dest.z + 1))
+                    || MovementHelper.isLava(context.get(dest.x, shaftY, dest.z - 1))) {
+                return COST_INF;
+            }
+        }
+
         MutableMoveResult result = new MutableMoveResult();
         MovementDescend.cost(context, src.x, src.y, src.z, dest.x, dest.z, result);
         if (result.y != dest.y) {
@@ -92,6 +111,21 @@ public class MovementFall extends Movement {
         super.updateState(state);
         if (state.getStatus() != MovementStatus.RUNNING) {
             return state;
+        }
+
+        // Rewalidacja w czasie rzeczywistym przed zrzuceniem gracza w dół szybu
+        if (ctx.playerFeet().getY() >= src.getY()) {
+            BlockStateInterface bsi = new BlockStateInterface(ctx);
+            if (MovementHelper.isLavaPitBelow(bsi, dest.getX(), dest.getY() - 1, dest.getZ(), 8)
+                    || !MovementHelper.isSafeStepColumn(bsi, dest.getX(), dest.getY(), dest.getZ())
+                    || MovementHelper.isLava(bsi.get0(dest.getX(), dest.getY(), dest.getZ()))) {
+                state.setInput(Input.MOVE_FORWARD, false);
+                state.setInput(Input.SPRINT, false);
+                if (ctx.player().onGround()) {
+                    state.setInput(Input.SNEAK, true);
+                }
+                return state.setStatus(MovementStatus.UNREACHABLE);
+            }
         }
 
         BlockPos playerFeet = ctx.playerFeet();

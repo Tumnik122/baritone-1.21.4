@@ -104,56 +104,89 @@ public final class BaritonePlayerController implements IPlayerController {
 
     @Override
     public boolean hasBrokenBlock() {
-        return !((IPlayerControllerMP) mc.gameMode).isHittingBlock();
+        return serverDiggingPos == null || mc.level == null || mc.level.getBlockState(serverDiggingPos).isAir();
     }
 
-    private BlockPos currentBreakPos = null;
-    private int breakStartTick = 0;
+    private BlockPos serverDiggingPos = null;
+    private float serverDestroyProgress = 0.0f;
+    private int currentBlockMiningTicks = 0;
+    private int lastClientTick = -1;
+    private boolean lastTickOnGround = true;
 
     @Override
     public boolean onPlayerDamageBlock(BlockPos pos, Direction side) {
-        if (pos == null || side == null || mc.gameMode == null || mc.player == null) {
+        if (mc.gameMode == null || mc.level == null || mc.player == null) return false;
+
+        BlockState state = mc.level.getBlockState(pos);
+        if (state.isAir() || state.getDestroySpeed(mc.level, pos) < 0.0f) {
+            resetBlockRemoving();
             return false;
         }
 
-        IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(mc.player);
-        if (baritone != null && (Baritone.settings().antiCheatCompatibility.value || Baritone.settings().grimCompat.value || Baritone.settings().antiCheatCompat.value)) {
-            Rotation serverRot = baritone.getLookBehavior().getServerRotation();
-            if (serverRot != null) {
-                HitResult serverHit = RayTraceUtils.rayTraceTowards(mc.player, serverRot, getBlockReachDistance(), mc.player.isCrouching());
-                if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(pos)) {
-                    side = sbhr.getDirection();
-                }
-            } else if (mc.hitResult instanceof BlockHitResult bhr && bhr.getBlockPos().equals(pos)) {
-                side = bhr.getDirection();
-            }
-
-            side = getSafeBreakFace(mc.player, pos, side);
-
-            // GrimAC FastBreak pacing: do not call continueDestroyBlock earlier than server allows
-            if (currentBreakPos != null && currentBreakPos.equals(pos) && mc.level != null) {
-                BlockState st = mc.level.getBlockState(pos);
-                double grimProgress = FastBreakHelper.getGrimDestroyProgress(baritone.getPlayerContext(), pos, st);
-                int minGrimTicks = (grimProgress > 0) ? (int) Math.ceil(1.0 / grimProgress) : 1;
-                int elapsed = mc.player.tickCount - breakStartTick;
-                if (elapsed < minGrimTicks) {
-                    return true;
-                }
-            } else {
-                currentBreakPos = pos.immutable();
-                breakStartTick = mc.player.tickCount;
-            }
+        if (serverDiggingPos == null || !serverDiggingPos.equals(pos)) {
+            return clickBlock(pos, side);
         }
 
+        // BLOKADA 1: Maksymalnie jedno naliczenie postępu na jeden tick klienta (mc.player.tickCount)
+        if (mc.player.tickCount == lastClientTick) {
+            return true;
+        }
+        lastClientTick = mc.player.tickCount;
+
         syncHeldItem();
-        return mc.gameMode.continueDestroyBlock(pos, side);
+
+        float grimDelta = baritone.utils.GrimBreakValidator.getGrimDestroyProgress(mc.player, mc.level, pos, state, lastTickOnGround);
+        int requiredTicks = baritone.utils.GrimBreakValidator.getRequiredTicks(mc.player, mc.level, pos, state, lastTickOnGround);
+        lastTickOnGround = mc.player.onGround();
+
+        currentBlockMiningTicks++;
+        serverDestroyProgress += grimDelta;
+
+        float vanillaDelta = state.getDestroyProgress(mc.player, mc.level, pos);
+        boolean readyToBreak = (serverDestroyProgress >= 1.0f && currentBlockMiningTicks >= requiredTicks);
+
+        if (!readyToBreak) {
+            // BLOKADA 2: Ustaw destroyProgress tak, aby PO dodaniu vanillaDelta wewnątrz continueDestroyBlock
+            // wynik wyniósł maksymalnie 0.60f (poniżej waniliowego 1.0f ORAZ poniżej progów 0.7f z FastBreak).
+            // Dzięki temu continueDestroyBlock wykona animację/dźwięk, ale NIE wyśle STOP_DESTROY_BLOCK i NIE zniszczy bloku!
+            float safePreProgress = Math.max(0.0f, Math.min(serverDestroyProgress, 0.60f) - Math.max(0.0f, vanillaDelta));
+            ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(safePreProgress);
+            mc.gameMode.continueDestroyBlock(pos, side);
+            // Po wywołaniu ponownie przypilnuj bezpiecznej wartości
+            ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(Math.min(serverDestroyProgress, 0.60f));
+            return true;
+        }
+
+        // Blok osiągnął wymaganą liczbę ticków oraz postęp >= 1.0f na serwerze:
+        // Ustaw 1.0f, aby pojedyncze wywołanie continueDestroyBlock legalnie wysłało STOP_DESTROY_BLOCK
+        ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(1.0f);
+        boolean result = mc.gameMode.continueDestroyBlock(pos, side);
+
+        // Natychmiast wyczyść flagę kopania, aby zapobiec wysłaniu ABORT_DESTROY_BLOCK (WrongBreak: last=null)
+        ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
+        ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(0.0f);
+        serverDiggingPos = null;
+        serverDestroyProgress = 0.0f;
+        currentBlockMiningTicks = 0;
+
+        return result;
     }
 
     @Override
     public void resetBlockRemoving() {
-        currentBreakPos = null;
-        breakStartTick = 0;
+        if (mc.gameMode == null) return;
+
+        // KRYTYCZNE przeciw WrongBreak (action=CANCELLED_DIGGING, last=null):
+        // Jeśli serwer nie ma aktywnego bloku (lub STOP_DESTROY_BLOCK już poszedł),
+        // wyłącz isDestroying PRZED stopDestroyBlock(), aby klient nie wysłał nielegalnego pakietu ABORT_DESTROY_BLOCK.
+        if (serverDiggingPos == null) {
+            ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
+        }
         mc.gameMode.stopDestroyBlock();
+        serverDiggingPos = null;
+        serverDestroyProgress = 0.0f;
+        currentBlockMiningTicks = 0;
+        ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
     }
 
     @Override
@@ -173,6 +206,7 @@ public final class BaritonePlayerController implements IPlayerController {
 
     public boolean canInteractThisTick() {
         if (mc.player == null) return false;
+        if (mc.hasSingleplayerServer()) return true;
         long currentTick = mc.player.tickCount;
         long now = System.currentTimeMillis();
         final boolean isGrim = Baritone.settings().antiCheatCompatibility.value
@@ -302,51 +336,47 @@ public final class BaritonePlayerController implements IPlayerController {
 
     @Override
     public boolean clickBlock(BlockPos loc, Direction face) {
-        if (loc == null || face == null || mc.gameMode == null || mc.player == null) {
-            return false;
+        if (mc.gameMode == null || mc.level == null || mc.player == null) return false;
+
+        // Nie wysyłaj duplikatu START_DESTROY_BLOCK, jeśli już kopiemy ten blok
+        if (loc.equals(serverDiggingPos)) {
+            return true;
         }
 
-        final boolean isGrim = Baritone.settings().antiCheatCompatibility.value || Baritone.settings().grimCompat.value || Baritone.settings().antiCheatCompat.value;
-        BlockState bs = mc.level != null ? mc.level.getBlockState(loc) : null;
-        boolean isInstant = bs != null && bs.getDestroySpeed(mc.level, loc) == 0.0F;
+        BlockState state = mc.level.getBlockState(loc);
+        if (state.isAir() || state.getDestroySpeed(mc.level, loc) < 0.0f) return false;
 
-        if (isInstant) {
-            if (isGrim && mc.player.tickCount == lastBreakTick) {
-                return false;
-            } else if (!isGrim && !canInteractThisTick()) {
-                return false;
-            }
-        } else {
-            if (!canInteractThisTick()) {
-                return false;
-            }
-        }
-
-        // GrimAC Protection: RotationBreak & PositionBreakA
-        IBaritone baritone = BaritoneAPI.getProvider().getBaritoneForPlayer(mc.player);
-        if (baritone != null && isGrim) {
-            Rotation activeRot = baritone.getLookBehavior().getEffectiveRotation()
-                    .orElseGet(() -> baritone.getLookBehavior().getServerRotation());
-            if (activeRot == null) {
-                activeRot = new Rotation(mc.player.getYRot(), mc.player.getXRot());
-            }
-            double reach = Math.min(4.25D, Math.min(Baritone.settings().grimSafeReach.value, getBlockReachDistance()));
-            HitResult serverHit = RayTraceUtils.rayTraceTowards(mc.player, activeRot, reach, mc.player.isCrouching());
-            if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(loc)) {
-                face = sbhr.getDirection();
-            } else {
-                return false;
-            }
+        // Jeśli zmieniamy blok w trakcie kopania poprzedniego, najpierw czysto anuluj poprzedni
+        if (serverDiggingPos != null) {
+            resetBlockRemoving();
         }
 
         syncHeldItem();
-        currentBreakPos = loc.immutable();
-        breakStartTick = mc.player.tickCount;
+        lastTickOnGround = mc.player.onGround();
+        float initialDelta = baritone.utils.GrimBreakValidator.getGrimDestroyProgress(mc.player, mc.level, loc, state, lastTickOnGround);
+
+        lastClientTick = mc.player.tickCount;
+        currentBlockMiningTicks = 0;
+        serverDestroyProgress = initialDelta >= 1.0f ? 1.0f : 0.0f;
+        serverDiggingPos = loc.immutable();
+
+        // Wyzeruj stan przed startDestroyBlock, aby uniknąć przeniesienia postępu
+        ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(0.0f);
+
         boolean breakResult = mc.gameMode.startDestroyBlock(loc, face);
         if (breakResult) {
             lastBreakTick = mc.player.tickCount;
             markInteracted();
         }
+
+        if (initialDelta >= 1.0f || mc.level.getBlockState(loc).isAir()) {
+            // Instamine zakończony — zablokuj późniejszy ABORT_DESTROY_BLOCK
+            ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
+            ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(0.0f);
+            serverDiggingPos = null;
+            serverDestroyProgress = 0.0f;
+        }
+
         return breakResult;
     }
 

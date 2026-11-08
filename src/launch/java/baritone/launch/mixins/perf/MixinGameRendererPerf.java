@@ -21,6 +21,17 @@ public abstract class MixinGameRendererPerf {
     private void astra$skipGameRender(DeltaTracker deltaTracker, boolean renderLevel, CallbackInfo ci) {
         if (AstraPerformanceConfig.isHeadless()) {
             ci.cancel();
+            return;
+        }
+
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.getWindow() != null) {
+            long handle = mc.getWindow().getWindow();
+            if (handle != 0L && (mc.getWindow().getWidth() <= 0 || mc.getWindow().getHeight() <= 0
+                    || org.lwjgl.glfw.GLFW.glfwGetWindowAttrib(handle, org.lwjgl.glfw.GLFW.GLFW_ICONIFIED) == org.lwjgl.glfw.GLFW.GLFW_TRUE)) {
+                ci.cancel();
+                return;
+            }
         }
     }
 

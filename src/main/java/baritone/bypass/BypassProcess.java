@@ -5,6 +5,7 @@ import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalComposite;
 import baritone.api.pathing.goals.GoalGetToBlock;
+import baritone.api.pathing.goals.GoalItemDrop;
 import baritone.api.pathing.goals.GoalTwoBlocks;
 import baritone.api.pathing.goals.GoalYLevel;
 import baritone.api.process.IBaritoneProcess;
@@ -66,7 +67,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private static final double GOAL_APPROACH_EYE_REACH = 2.65D;
     private static final double WALL_STOP_DISTANCE = 1.15D;
     private static final int ORE_SCAN_RADIUS = 3; // Ściśle 3 bloki w każdą stronę wokół gracza (kostka 7x7x7)
-    public static final int DEFAULT_TARGET_Y = -50;
+    public static final int DEFAULT_TARGET_Y = -54;
     public static final int MIN_SAFE_BEDROCK_Y = -54;
     private static final int MIN_TOOL_DURABILITY = 5;
 
@@ -746,7 +747,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     private boolean canShiftVertical(Level level, BlockPos feet, Direction forward) {
-        if (feet.getY() >= -50) return false;
+        if (feet.getY() >= targetY) return false;
 
         BlockPos stepUpFeet = feet.above().relative(forward);
         BlockPos stepUpHead = stepUpFeet.above();
@@ -1306,6 +1307,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         });
 
         return items.stream()
+                .filter(item -> !DropCollectionHelper.isDropUnsafe(level, item))
                 .min(Comparator.comparingDouble(player::distanceToSqr))
                 .orElse(null);
     }
@@ -1354,7 +1356,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         long now = System.currentTimeMillis();
         ignoredDropIds.entrySet().removeIf(entry -> now > entry.getValue());
 
-        if (drop == null || !drop.isAlive() || ignoredDropIds.containsKey(drop.getId())) {
+        if (drop == null || !drop.isAlive() || ignoredDropIds.containsKey(drop.getId()) || DropCollectionHelper.isDropUnsafe(level, drop)) {
+            if (drop != null) {
+                ignoredDropIds.put(drop.getId(), now + 30_000L);
+            }
             resetDropCollectionState();
             return null;
         }
@@ -1418,9 +1423,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.currentBreakingBlock = null;
         baritone.getInputOverrideHandler().clearAllKeys();
 
-        BlockPos targetBlockPos = drop.blockPosition();
-        if (lastDropGoal == null || !lastDropGoal.isInGoal(targetBlockPos)) {
-            lastDropGoal = new GoalBlock(targetBlockPos);
+        if (lastDropGoal == null || !lastDropGoal.isInGoal(drop.blockPosition())) {
+            lastDropGoal = new GoalItemDrop(drop);
         }
 
         return new PathingCommand(lastDropGoal, PathingCommandType.REVALIDATE_GOAL_AND_PATH);
@@ -2195,26 +2199,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     @Override
     public double priority() {
-        return 3.0D;
+        return 6.0D;
     }
 
     @Override
     public void onLostControl() {
-        this.active = false;
         this.activeOreTarget = null;
         this.currentBreakingBlock = null;
-        this.tunnelAnchorPos = null;
-        this.veinQueue.clear();
-        this.blacklistedOres.clear();
-        this.invalidStandingPositions.clear();
-        this.oreStagnationTicks = 0;
-        this.oreAttemptTicks = 0;
-        this.returnStuckTicks = 0;
-        this.hazardSourcePos = null;
-        this.sealCooldownTicks = 0;
-        this.sealFailedAttempts = 0;
-        this.minedCorridorFeet.clear();
-        this.state = State.IDLE;
         baritone.getInputOverrideHandler().clearAllKeys();
     }
 

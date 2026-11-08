@@ -8,6 +8,7 @@ import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
 import baritone.bypass.BypassConfig;
+import baritone.bypass.DropCollectionHelper;
 import baritone.bypass.InventoryCleaner;
 import baritone.bypass.InventorySorter;
 import baritone.bypass.RotationEngine;
@@ -127,8 +128,11 @@ public class AutoDropProcess extends BaritoneProcessHelper implements IBaritoneP
         List<ItemEntity> nearby = world.getEntitiesOfClass(ItemEntity.class, pickupBox);
         for (ItemEntity entity : nearby) {
             if (!entity.isAlive()) continue;
+            if (DropCollectionHelper.isDropUnsafe(world, entity)) continue; // Nigdy nie poświęcaj dla itemów w lawie/ogniu
             ItemStack dropStack = entity.getItem();
             if (dropStack.isEmpty()) continue;
+            if (!dropStack.isStackable() || dropStack.getMaxStackSize() <= 1) continue; // Tylko stackowalne minerały
+            if (InventoryCleaner.isPickaxeOrTool(dropStack)) continue; // Nigdy nie traktuj narzędzi jako celu poświęcenia
 
             int dropPriority = InventoryCleaner.getResourcePriority(dropStack);
             if (dropPriority < 10) continue; // tylko wartościowe rudy/surowce (żelazo, złoto, diamenty itp.)
@@ -145,6 +149,8 @@ public class AutoDropProcess extends BaritoneProcessHelper implements IBaritoneP
             for (int i = 0; i < 36; i++) {
                 ItemStack stack = inv.getItem(i);
                 if (stack.isEmpty()) continue;
+                if (InventoryCleaner.isPickaxeOrTool(stack)) continue; // KILOFÓW I NARZĘDZI NIGDY NIE WYRZUCAJ!
+                if (InventoryCleaner.isProtected(stack, Set.of())) continue; // Chronione jedzenie, wiadra itp.
                 int prio = InventoryCleaner.getResourcePriority(stack);
                 if (prio < lowestPriority) {
                     lowestPriority = prio;
@@ -164,8 +170,12 @@ public class AutoDropProcess extends BaritoneProcessHelper implements IBaritoneP
                     }
                 }
 
+                if (sourceSlot == -1) {
+                    continue; // Brak stosu cenniejszego surowca do podzielenia – nie wykonuj poświęcenia
+                }
+
                 int candMenuSlot = InventoryCleaner.invToMenuSlot(bestCandSlot);
-                int sourceMenuSlot = sourceSlot != -1 ? InventoryCleaner.invToMenuSlot(sourceSlot) : -1;
+                int sourceMenuSlot = InventoryCleaner.invToMenuSlot(sourceSlot);
                 String name = BuiltInRegistries.ITEM.getKey(dropStack.getItem()).getPath();
                 return new SacrificeTarget(bestCandSlot, candMenuSlot, sourceSlot, sourceMenuSlot, name);
             }
@@ -675,7 +685,11 @@ public class AutoDropProcess extends BaritoneProcessHelper implements IBaritoneP
                 if (!carried.isEmpty() && sourceMenuSlot != -1) {
                     ctx.playerController().windowClick(ctx.player().inventoryMenu.containerId, sourceMenuSlot, 0, ClickType.PICKUP, ctx.player());
                 }
+                if (!ctx.player().containerMenu.getCarried().isEmpty()) {
+                    ctx.playerController().windowClick(ctx.player().inventoryMenu.containerId, -999, 0, ClickType.PICKUP, ctx.player());
+                }
 
+                ctx.player().closeContainer();
                 ctx.playerController().syncHeldItem();
                 lastLockTime = System.currentTimeMillis();
 
@@ -698,6 +712,9 @@ public class AutoDropProcess extends BaritoneProcessHelper implements IBaritoneP
                     }
                     lastCleanSortTime = System.currentTimeMillis();
                     lastSortTime = lastCleanSortTime;
+                    ctx.player().closeContainer();
+                    ctx.playerController().resetBlockRemoving();
+                    ctx.playerController().syncHeldItem();
                     state = State.IDLE;
                     forceCleanNow = false;
                     forceLockNow = false;

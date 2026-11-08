@@ -30,4 +30,8 @@ public interface IPlayerControllerMP {
     void callSyncCurrentPlayItem();
 
     void setDestroyDelay(int destroyDelay);
+
+    float getDestroyProgress();
+
+    void setDestroyProgress(float destroyProgress);
 }

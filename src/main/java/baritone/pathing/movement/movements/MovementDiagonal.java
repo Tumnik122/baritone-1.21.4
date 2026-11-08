@@ -301,6 +301,16 @@ public class MovementDiagonal extends Movement {
                 state.setInput(Input.JUMP, true);
             }
         }
+        BlockStateInterface bsi = new BlockStateInterface(ctx);
+        if (!MovementHelper.isSafeStepColumn(bsi, dest.x, dest.y, dest.z)) {
+            if (MovementHelper.isLavaHazardBelowOrAdjacent(bsi, dest.x, dest.y - 1, dest.z)
+                    || MovementHelper.isLavaPitBelow(bsi, dest.x, dest.y - 1, dest.z, 6)) {
+                state.setInput(Input.MOVE_FORWARD, false);
+                state.setInput(Input.SPRINT, false);
+                state.setInput(Input.SNEAK, ctx.player().onGround());
+                return state.setStatus(MovementStatus.UNREACHABLE);
+            }
+        }
         if (sprint()) {
             state.setInput(Input.SPRINT, true);
         }

@@ -26,7 +26,9 @@ import baritone.api.process.IMineProcess;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.api.utils.*;
+import baritone.api.utils.interfaces.IGoalRenderPos;
 import baritone.api.utils.input.Input;
+import baritone.bypass.DropCollectionHelper;
 import baritone.cache.CachedChunk;
 import baritone.pathing.calc.OreRouteOptimizer;
 import baritone.pathing.movement.CalculationContext;
@@ -503,6 +505,108 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         return isActive() && isLogFilter(filter);
     }
 
+    private static final double LOCAL_DROP_SWEEP_RADIUS_SQ = 8.0 * 8.0;
+
+    /**
+     * Zwraca stabilny cel dla najbliższego upuszczonego przedmiotu lub świeżo wykopanej rudy
+     * w promieniu 8 kratek, eliminując porzucanie wydobytych surowców i zapobiegając
+     * odejściu bota do odległej żyły przed zgarnięciem leżącego urobku.
+     */
+    private Goal buildLocalDropSweepGoal() {
+        if (!Baritone.settings().mineScanDroppedItems.value || filter == null) {
+            return null;
+        }
+        var player = ctx.player();
+        if (player == null || ctx.world() == null) {
+            return null;
+        }
+        double px = player.getX();
+        double py = player.getY();
+        double pz = player.getZ();
+        float yawRad = (float) Math.toRadians(player.getYRot());
+        double lookX = -Math.sin(yawRad);
+        double lookZ = Math.cos(yawRad);
+
+        ItemEntity bestItem = null;
+        double bestScore = Double.MAX_VALUE;
+
+        // 1. Zbadaj żywe encje przedmiotów w zasięgu renderingu
+        for (Entity entity : ((ClientLevel) ctx.world()).entitiesForRendering()) {
+            if (!(entity instanceof ItemEntity item) || !item.isAlive()) {
+                continue;
+            }
+            if (filter.has(item.getItem())) {
+                double dx = item.getX() - px;
+                double dy = item.getY() - py;
+                double dz = item.getZ() - pz;
+                double distSq = dx * dx + dy * dy + dz * dz;
+                if (distSq > LOCAL_DROP_SWEEP_RADIUS_SQ) {
+                    continue;
+                }
+
+                // Bezpieczeństwo: pomiń itemy w lawie
+                BlockPos bp = item.blockPosition();
+                if (Baritone.settings().mineAvoidLava.value) {
+                    BlockState state = baritone.bsi.get0(bp);
+                    BlockState below = baritone.bsi.get0(bp.below());
+                    if (MovementHelper.isLava(state) || MovementHelper.isLava(below)
+                            || MovementHelper.isLavaPitBelow(baritone.bsi, bp.getX(), bp.getY(), bp.getZ())) {
+                        continue;
+                    }
+                }
+
+                double distXZ = Math.sqrt(dx * dx + dz * dz);
+                double dot = (distXZ > 0.2) ? ((dx / distXZ) * lookX + (dz / distXZ) * lookZ) : 1.0;
+                double score = distXZ + Math.abs(dy) * 1.5 + (1.0 - dot) * 1.2;
+
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestItem = item;
+                }
+            }
+        }
+
+        if (bestItem != null) {
+            return new GoalItemDrop(bestItem, ctx.world());
+        }
+
+        // 2. Zbadaj anticipatedDrops (świeżo rozbite bloki w trakcie spadania)
+        BlockPos bestAnticipated = null;
+        double bestAntScore = Double.MAX_VALUE;
+        for (BlockPos dropPos : this.anticipatedDrops.keySet()) {
+            double dx = (dropPos.getX() + 0.5) - px;
+            double dy = (dropPos.getY() + 0.5) - py;
+            double dz = (dropPos.getZ() + 0.5) - pz;
+            double distSq = dx * dx + dy * dy + dz * dz;
+            if (distSq > LOCAL_DROP_SWEEP_RADIUS_SQ) {
+                continue;
+            }
+
+            if (Baritone.settings().mineAvoidLava.value) {
+                BlockState state = baritone.bsi.get0(dropPos);
+                BlockState below = baritone.bsi.get0(dropPos.below());
+                if (MovementHelper.isLava(state) || MovementHelper.isLava(below)
+                        || MovementHelper.isLavaPitBelow(baritone.bsi, dropPos.getX(), dropPos.getY(), dropPos.getZ())) {
+                    continue;
+                }
+            }
+
+            double distXZ = Math.sqrt(dx * dx + dz * dz);
+            double dot = (distXZ > 0.2) ? ((dx / distXZ) * lookX + (dz / distXZ) * lookZ) : 1.0;
+            double score = distXZ + Math.abs(dy) * 1.5 + (1.0 - dot) * 1.2;
+
+            if (score < bestAntScore) {
+                bestAntScore = score;
+                bestAnticipated = dropPos;
+            }
+        }
+
+        if (bestAnticipated != null) {
+            return new GoalItemDrop(bestAnticipated, ctx.world());
+        }
+        return null;
+    }
+
     private PathingCommand updateGoal() {
         BlockOptionalMetaLookup filter = filterFilter();
         if (filter == null) {
@@ -511,13 +615,23 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
         boolean legit = Baritone.settings().legitMine.value;
 
+        // 1. Zbieramy żywe encje dropów w pobliżu gracza (priorytet Post-Cluster Sweep)
+        Goal localDropGoal = buildLocalDropSweepGoal();
+        if (localDropGoal != null) {
+            currentGoal = localDropGoal;
+            currentPrimaryTarget = (localDropGoal instanceof IGoalRenderPos grp) ? grp.getGoalPos() : null;
+            return new PathingCommand(localDropGoal, legit ? PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH : PathingCommandType.SET_GOAL_AND_PATH);
+        }
+
         // CAŁKOWITY VEIN LOCK (Dokończ całe złoże przed przejściem do innego):
         // Jeśli bot posiada aktywne złoże (activeVeinBlocks), cel ścieżki i planowanie ograniczamy
-        // W 100% wyłącznie do bloków tego złoża! Bot NIE MOŻE przejść do innego odległego złoża!
+        // W 100% wyłącznie do bloków tego złoża! Używamy GoalBiasedComposite, aby A*
+        // bezwzględnie kopał bloki w wyznaczonej płynnej kolejności wejście -> wyjście.
         if (!activeVeinBlocks.isEmpty()) {
             CalculationContext context = new CalculationContext(baritone);
             List<BlockPos> veinList = new ArrayList<>(activeVeinBlocks);
-            Goal goal = new GoalComposite(veinList.stream().map(loc -> coalesce(loc, veinList, context)).toArray(Goal[]::new));
+            Goal[] veinGoals = veinList.stream().map(loc -> coalesce(loc, veinList, context)).toArray(Goal[]::new);
+            Goal goal = (veinGoals.length == 1) ? veinGoals[0] : new GoalBiasedComposite(14.0, veinGoals);
             currentGoal = goal;
             currentPrimaryTarget = veinList.get(0);
             return new PathingCommand(goal, legit ? PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH : PathingCommandType.SET_GOAL_AND_PATH);
@@ -541,8 +655,12 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             expandVeins(context, locs, filter);
             List<BlockPos> locs2 = prune(context, new ArrayList<>(locs), filter, Baritone.settings().mineMaxOreLocationsCount.value, blacklist, droppedItemsScan());
             if (!locs2.isEmpty()) {
-                List<BlockPos> activeWindow = getActiveGoalWindow(locs2, 12);
-                Goal goal = new GoalComposite(activeWindow.stream().map(loc -> coalesce(loc, locs2, context)).toArray(Goal[]::new));
+                // Ograniczamy okno do max 4 kolejnych węzłów z trasy TSP (zamiast 12 równorzędnych w GoalComposite!)
+                // Zastosowanie GoalBiasedComposite z karą +18.0 na indeks gwarantuje, że A* bezwzględnie
+                // respektuje optymalną trasę wyznaczoną przez TSP 2-Opt z OreRouteOptimizer!
+                List<BlockPos> activeWindow = getActiveGoalWindow(locs2, 4);
+                Goal[] windowGoals = activeWindow.stream().map(loc -> coalesce(loc, locs2, context)).toArray(Goal[]::new);
+                Goal goal = (windowGoals.length == 1) ? windowGoals[0] : new GoalBiasedComposite(18.0, windowGoals);
                 currentGoal = goal;
                 currentPrimaryTarget = locs2.get(0);
                 knownOreLocations = locs2;
@@ -647,7 +765,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     private Goal coalesce(BlockPos loc, List<BlockPos> locs, CalculationContext context) {
         if (droppedItemsScan().contains(loc)) {
-            return new GoalBlock(loc);
+            return new GoalItemDrop(loc, ctx.world());
         }
         if (!Baritone.settings().forceInternalMining.value) {
             // GoalOreMining pozwala na kopanie rudy z sąsiadującej stabilnej powierzchni (podłogi)
@@ -739,6 +857,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             if (entity instanceof ItemEntity) {
                 ItemEntity ei = (ItemEntity) entity;
                 if (filter.has(ei.getItem())) {
+                    if (DropCollectionHelper.isDropUnsafe(ctx.world(), ei)) {
+                        continue; // Całkowicie ignoruj przedmioty w lawie lub nad jeziorem lawy
+                    }
                     BlockPos bp = entity.blockPosition();
                     if (Baritone.settings().mineAvoidLava.value) {
                         BlockState state = bsi.get0(bp);
@@ -940,7 +1061,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             for (BlockOptionalMeta bom : filter.blocks()) {
                 Block b = bom.getBlock();
                 if (b == Blocks.DIAMOND_ORE || b == Blocks.DEEPSLATE_DIAMOND_ORE) {
-                    return -58;
+                    return -54; // Poziom kopania diamentów zadany przez użytkownika (-54)
                 }
                 if (b == Blocks.ANCIENT_DEBRIS) {
                     return 15;
@@ -959,7 +1080,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                     return 48;
                 }
                 if (b == Blocks.REDSTONE_ORE || b == Blocks.DEEPSLATE_REDSTONE_ORE) {
-                    return -58;
+                    return -54;
                 }
                 if (b == Blocks.LAPIS_ORE || b == Blocks.DEEPSLATE_LAPIS_ORE) {
                     return 0;

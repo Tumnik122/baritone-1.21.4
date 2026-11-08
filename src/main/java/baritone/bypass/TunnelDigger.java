@@ -9,6 +9,7 @@ import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.Helper;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
+import baritone.api.utils.RotationUtils;
 import baritone.api.utils.ObstructionHelper;
 import baritone.api.utils.input.Input;
 import baritone.utils.ContinuousBreakController;
@@ -16,8 +17,11 @@ import baritone.utils.FastBreakHelper;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
 
@@ -134,12 +138,28 @@ public class TunnelDigger {
 
         BlockPos frontFeet = feet.relative(activeDir);
         BlockPos frontHead = frontFeet.above();
+        BlockPos frontFloor = frontFeet.below();
 
-        // 2. Weryfikacja bezpieczeństwa cieczy (LiquidDetector)
-        if (!LiquidDetector.isSafeToMine(world, frontFeet) || !LiquidDetector.isSafeToMine(world, frontHead)) {
-            Helper.HELPER.logDirect("§6[TunnelDigger] Wykryto wodę lub lawę w korytarzu. Zmiana kierunku o 90°...");
-            turnTunnel();
+        // 2. Rygorystyczna weryfikacja bezpieczeństwa cieczy i basenów lawowych (LiquidDetector)
+        boolean directLiquidBreach = LiquidDetector.isLiquid(world, frontHead) || LiquidDetector.isLiquid(world, frontFeet);
+        if (directLiquidBreach) {
+            Helper.HELPER.logDirect("§c[TunnelDigger] WYCIEK CIECZY W TUNELU! Natychmiastowe zatkanie i odwrót...");
+            return handleLiquidBreachEmergency(world, feet, frontHead, frontFeet, activeDir);
+        }
+
+        boolean headSafe = LiquidDetector.isSafeToMine(world, frontHead, activeDir, feet.getY());
+        boolean feetSafe = LiquidDetector.isSafeToMine(world, frontFeet, activeDir, feet.getY());
+        boolean lavaPitAhead = LiquidDetector.isLavaPitBelow(world, frontFloor, 8);
+
+        if (!headSafe || !feetSafe || lavaPitAhead) {
+            Helper.HELPER.logDirect("§6[TunnelDigger] Zagrożenie lawą/płynem w korytarzu. Zatrzymanie i bezpieczny skręt...");
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            if (ctx.player().onGround()) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+            }
+            rotateToSafeCorridor(world, feet, activeDir);
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
@@ -151,9 +171,11 @@ public class TunnelDigger {
             toBreak = frontFeet;
         }
 
+        boolean floorSolid = LiquidDetector.isSafeToStep(world, frontFeet);
+
         // Gdy bot kopie szybkim kilofem:
         // Trzymamy celownik zablokowany prosto w korytarzu (yaw = activeDir, pitch = 11.5°),
-        // biegniemy prosto na sprincie i kopiemy ciągle bez zatrzymywania!
+        // kopiemy ciągle, ale sprintujemy TYLKO jeśli podłoga przed nami jest pewna i bezpieczna!
         boolean fastPickaxe = FastBreakHelper.isFastPickaxe(ctx);
         if (fastPickaxe) {
             double distH = Math.hypot(ctx.player().getX() - (frontFeet.getX() + 0.5D), ctx.player().getZ() - (frontFeet.getZ() + 0.5D));
@@ -164,8 +186,21 @@ public class TunnelDigger {
             Rotation straightRot = new Rotation(activeDir.toYRot(), pitch);
             RotationEngine.apply(ctx.player(), straightRot, baritone.settings(), true);
 
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
-            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
+            // Sprint dozwolony wyłącznie gdy podłoga pod stopami jest w 100% lita i brak lawy
+            BlockPos nextFeet = frontFeet.relative(activeDir);
+            boolean allowSprint = floorSolid && LiquidDetector.isSafeToStep(world, nextFeet);
+
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, floorSolid && distH > 0.82);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, allowSprint);
+            if (!floorSolid) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+                if (ctx.player().onGround()) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+                }
+            } else {
+                baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
+            }
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
 
             if (toBreak != null) {
@@ -196,8 +231,11 @@ public class TunnelDigger {
 
         if (toBreak != null) {
             double distH = Math.hypot(ctx.player().getX() - (frontFeet.getX() + 0.5D), ctx.player().getZ() - (frontFeet.getZ() + 0.5D));
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, distH > 0.82);
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, distH > 0.82 && floorSolid);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            if (!floorSolid && distH <= 0.82 && ctx.player().onGround()) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+            }
             if (!toBreak.equals(currentTarget)) {
                 currentTarget = toBreak;
             }
@@ -245,12 +283,75 @@ public class TunnelDigger {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // Tunel czysty przed nami - bezpośredni krok w przód (BEZ Baritone pathfinding)
+        // 4. Tunel z przodu wykopany — WERYFIKACJA PODŁOGI PRZED POSTAWIENIEM KROKU!
+        if (!floorSolid) {
+            // Brak podłogi pod frontFeet (jaskinia, wąwóz, dół z lawą): kategoryczny zakaz ruchu w przód!
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            if (ctx.player().onGround()) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+            }
+            Helper.HELPER.logDirect("§6[TunnelDigger] Brak stabilnej podłogi przed nami! Bezpieczny skręt tunelu...");
+            rotateToSafeCorridor(world, feet, activeDir);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // Korytarz i podłoga zweryfikowane — bezpieczny ruch w przód
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
         Rotation walkRot = new Rotation(activeDir.toYRot(), 0.0f);
         RotationEngine.apply(ctx.player(), walkRot, baritone.settings());
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+
+        // Sprint dozwolony wyłącznie gdy 2 bloki przed nami również są w 100% bezpieczne
+        BlockPos twoAhead = frontFeet.relative(activeDir);
+        boolean twoAheadSafe = LiquidDetector.isSafeToStep(world, twoAhead);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, fastPickaxe && twoAheadSafe);
+
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    private void rotateToSafeCorridor(Level world, BlockPos feet, Direction currentDir) {
+        Direction left = currentDir.getCounterClockWise();
+        Direction right = currentDir.getClockWise();
+        int leftScore = evaluateCorridorSafety(world, feet, left, 6);
+        int rightScore = evaluateCorridorSafety(world, feet, right, 6);
+
+        Direction chosen = (leftScore >= rightScore && leftScore > 0)
+                ? left
+                : (rightScore > 0 ? right : currentDir.getOpposite());
+
+        if (inSideBranch) {
+            sideBranchDirection = chosen;
+        } else {
+            mainDirection = chosen;
+            blocksInSegment = 0;
+            targetSegmentBlocks = config.minLengthBeforeTurn +
+                    ThreadLocalRandom.current().nextInt(config.maxLengthBeforeTurn - config.minLengthBeforeTurn + 1);
+        }
+        Helper.HELPER.logDirect(String.format("§a[TunnelDigger] Wybrano bezpieczny korytarz: %s (lewo: %d pkt, prawo: %d pkt)",
+                chosen, leftScore, rightScore));
+    }
+
+    private static int evaluateCorridorSafety(Level world, BlockPos origin, Direction dir, int range) {
+        int score = 0;
+        for (int step = 1; step <= range; step++) {
+            BlockPos targetFeet = origin.relative(dir, step);
+            BlockPos targetHead = targetFeet.above();
+            BlockPos targetFloor = targetFeet.below();
+
+            if (!LiquidDetector.isSafeToMine(world, targetHead, dir, origin.getY())
+                    || !LiquidDetector.isSafeToMine(world, targetFeet, dir, origin.getY())
+                    || LiquidDetector.isLavaPitBelow(world, targetFloor, 8)) {
+                return score;
+            }
+            if (LiquidDetector.isSafeToStep(world, targetFeet)) {
+                score += 2;
+            } else {
+                score -= 1;
+            }
+        }
+        return score;
     }
 
     private void checkBranchTriggers(BlockPos currentPos) {
@@ -275,13 +376,15 @@ public class TunnelDigger {
     }
 
     private void turnTunnel() {
-        ThreadLocalRandom rng = ThreadLocalRandom.current();
-        mainDirection = rng.nextBoolean() ? mainDirection.getClockWise() : mainDirection.getCounterClockWise();
-        blocksInSegment = 0;
-        targetSegmentBlocks = config.minLengthBeforeTurn +
-                rng.nextInt(config.maxLengthBeforeTurn - config.minLengthBeforeTurn + 1);
-        Helper.HELPER.logDirect(String.format("§a[TunnelDigger] Skręt głównego tunelu o 90° na kierunek: %s (kolejny odcinek: %d bloków)",
-                mainDirection, targetSegmentBlocks));
+        if (ctx.world() != null && ctx.player() != null) {
+            rotateToSafeCorridor(ctx.world(), ctx.playerFeet(), mainDirection);
+        } else {
+            ThreadLocalRandom rng = ThreadLocalRandom.current();
+            mainDirection = rng.nextBoolean() ? mainDirection.getClockWise() : mainDirection.getCounterClockWise();
+            blocksInSegment = 0;
+            targetSegmentBlocks = config.minLengthBeforeTurn +
+                    rng.nextInt(config.maxLengthBeforeTurn - config.minLengthBeforeTurn + 1);
+        }
     }
 
     private void applyBreakTimeVariance() {
@@ -300,6 +403,45 @@ public class TunnelDigger {
         double totalDelayMs = varianceMs + (pingMs / 20.0D);
         // Konwersja ms -> ticki (50ms = 1 tick)
         this.varianceCooldownTicks = (int) Math.round(totalDelayMs / 50.0D);
+    }
+
+    private PathingCommand handleLiquidBreachEmergency(Level world, BlockPos feet, BlockPos frontHead, BlockPos frontFeet, Direction activeDir) {
+        var ioh = baritone.getInputOverrideHandler();
+        ioh.setInputForceState(Input.MOVE_FORWARD, false);
+        ioh.setInputForceState(Input.SPRINT, false);
+        ioh.setInputForceState(Input.CLICK_LEFT, false);
+        if (ctx.player().onGround()) {
+            ioh.setInputForceState(Input.SNEAK, true);
+        }
+
+        BlockPos breach = LiquidDetector.isLiquid(world, frontHead) ? frontHead : frontFeet;
+
+        boolean selected = baritone.getInventoryBehavior().selectThrowawayForLocation(true, breach.getX(), breach.getY(), breach.getZ());
+        if (!selected && ctx.player() != null) {
+            for (int i = 0; i < 9; i++) {
+                ItemStack stack = ctx.player().getInventory().getItem(i);
+                if (!stack.isEmpty() && stack.getItem() instanceof BlockItem blockItem) {
+                    Block b = blockItem.getBlock();
+                    if (b == Blocks.COBBLESTONE || b == Blocks.COBBLED_DEEPSLATE || b == Blocks.DIRT || b == Blocks.STONE || b == Blocks.NETHERRACK) {
+                        ctx.player().getInventory().selected = i;
+                        selected = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (selected) {
+            Vec3 targetVec = Vec3.atCenterOf(breach).subtract(new Vec3(activeDir.getStepX() * 0.45D, 0.0D, activeDir.getStepZ() * 0.45D));
+            Rotation plugRot = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), targetVec, ctx.playerRotations());
+            RotationEngine.apply(ctx.player(), plugRot, baritone.settings(), true);
+            ioh.setInputForceState(Input.CLICK_RIGHT, true);
+        } else {
+            ioh.setInputForceState(Input.MOVE_BACK, true);
+        }
+
+        rotateToSafeCorridor(world, feet, activeDir);
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
     private boolean isPassable(Level world, BlockPos pos) {

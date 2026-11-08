@@ -74,8 +74,8 @@ public class StaircaseBuilder {
         Level world = ctx.world();
         BlockPos feet = ctx.playerFeet();
 
-        // Sprawdź czy osiągnięto poziom docelowy: Y = -55 ± 2 (czyli <= -53)
-        if (feet.getY() <= config.yLevel + 2) {
+        // Sprawdź czy osiągnięto poziom docelowy (domyślnie Y = -54)
+        if (feet.getY() <= config.yLevel) {
             completed = true;
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
             return null;
@@ -91,10 +91,12 @@ public class StaircaseBuilder {
         BlockPos frontHead = frontFeet.above();
         BlockPos frontStepDown = frontFeet.below();
 
-        // 1. Sprawdź czy pod spodem lub przed nami nie ma cieczy (LiquidDetector)
+        // 1. Sprawdź czy pod spodem lub przed nami nie ma cieczy (LiquidDetector) oraz czy nie schodzimy poniżej targetY (-54)
         if (!LiquidDetector.isSafeToMine(world, frontFeet) ||
             !LiquidDetector.isSafeToMine(world, frontHead) ||
-            !LiquidDetector.isSafeToMine(world, frontStepDown)) {
+            !LiquidDetector.isSafeToMine(world, frontStepDown) ||
+            frontStepDown.getY() < config.yLevel ||
+            LiquidDetector.isLavaPitBelow(world, frontStepDown.below(), 6)) {
             
             // Postaw blok zabezpieczający jeśli to możliwe i skręć o 90 stopni
             sealLiquidIfPossible(frontStepDown);

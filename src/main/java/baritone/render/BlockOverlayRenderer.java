@@ -127,14 +127,7 @@ public class BlockOverlayRenderer implements IRenderer, AbstractGameEventListene
             renderMiningTargetOverlay(event, stack, mc, vx, vy, vz, ignoreDepth);
         }
 
-        // 5. Renderowanie kapelusza China Hat (3D Visual Cosmetic)
-        if (settings.chinaHat.value) {
-            try {
-                ChinaHatRenderer.render(event, stack, mc, delta);
-            } catch (Throwable t) {
-                // Safeguard against cosmetic rendering failures
-            }
-        }
+        // 5. China Hat jest renderowany bezpośrednio na kości głowy gracza przez ChinaHatLayer (standard MoonDLC class_1925)
 
         // Twardy reset stanu OpenGL zabezpieczający przed czarnym ekranem przy F5
         RenderSystem.depthMask(true);
