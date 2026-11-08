@@ -180,13 +180,19 @@ public class ExecutionControlCommands {
                 if (paused[0]) {
                     paused[0] = false;
                 }
-                baritone.getPathingBehavior().cancelEverything();
-                if (baritone instanceof baritone.Baritone baritoneImpl) {
-                    baritoneImpl.getBypassProcess().stop();
-                }
-                if (!HomeProcess.isAutoHomeTriggered()) {
-                    HomeProcess.clearSavedMiningCommand();
-                }
+                try {
+                    baritone.getPathingBehavior().cancelEverything();
+                } catch (Throwable ignored) {}
+                try {
+                    if (baritone instanceof baritone.Baritone baritoneImpl) {
+                        baritoneImpl.getBypassProcess().stop();
+                    }
+                } catch (Throwable ignored) {}
+                try {
+                    if (!HomeProcess.isAutoHomeTriggered()) {
+                        HomeProcess.clearSavedMiningCommand();
+                    }
+                } catch (Throwable ignored) {}
                 try {
                     com.astra.revolution.schematic.AstraSchematicManager astraManager = com.astra.revolution.schematic.AstraSchematicManager.getInstance();
                     if (astraManager != null && astraManager.isBuilding()) {

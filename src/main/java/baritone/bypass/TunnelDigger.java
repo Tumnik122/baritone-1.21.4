@@ -17,6 +17,7 @@ import baritone.utils.FastBreakHelper;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -61,6 +62,7 @@ public class TunnelDigger {
 
     private BlockPos currentTarget = null;
     private int varianceCooldownTicks = 0;
+    private int retreatCooldownTicks = 0;
 
     public TunnelDigger(Baritone baritone, BypassConfig config) {
         this.baritone = baritone;
@@ -96,6 +98,36 @@ public class TunnelDigger {
         Level world = ctx.world();
         BlockPos feet = ctx.playerFeet();
         Direction activeDir = getActiveDirection();
+
+        // 0. Obsługa bezpiecznego wycofywania się (krok w tył do wykopanego tunelu przy lawie z obu stron)
+        if (retreatCooldownTicks > 0) {
+            retreatCooldownTicks--;
+            var ioh = baritone.getInputOverrideHandler();
+            ioh.setInputForceState(Input.MOVE_FORWARD, false);
+            ioh.setInputForceState(Input.SPRINT, false);
+            ioh.setInputForceState(Input.CLICK_LEFT, false);
+            ioh.setInputForceState(Input.SNEAK, false);
+            ioh.setInputForceState(Input.MOVE_BACK, true);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        } else {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
+        }
+
+        // OCHRONA ROTACJI: Jeśli gracz nie skończył jeszcze obracać się w stronę nowego korytarza,
+        // KATEGORYCZNIE zabraniamy ruchu w przód (MOVE_FORWARD) oraz kopania (CLICK_LEFT)!
+        // Zapobiega to wchodzeniu w lawę oraz kopaniu w pustkę/powietrze (AirLiquidBreak / Simulation).
+        float targetYaw = activeDir.toYRot();
+        float yawDiff = Math.abs(Mth.wrapDegrees(ctx.player().getYRot() - targetYaw));
+        if (yawDiff > 14.0f) {
+            var ioh = baritone.getInputOverrideHandler();
+            ioh.setInputForceState(Input.MOVE_FORWARD, false);
+            ioh.setInputForceState(Input.SPRINT, false);
+            ioh.setInputForceState(Input.CLICK_LEFT, false);
+            ioh.setInputForceState(Input.SNEAK, false);
+            ioh.setInputForceState(Input.MOVE_BACK, false);
+            RotationEngine.apply(ctx.player(), new Rotation(targetYaw, 11.5f), baritone.settings(), true);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
 
         // 1. Sprawdzenie strefy mobów (MobDetector) — bezpośrednie proste cofanie
         if (MobDetector.isMobInRetreatRange(ctx, config.mobRetreat)) {
@@ -152,15 +184,7 @@ public class TunnelDigger {
         boolean lavaPitAhead = LiquidDetector.isLavaPitBelow(world, frontFloor, 8);
 
         if (!headSafe || !feetSafe || lavaPitAhead) {
-            Helper.HELPER.logDirect("§6[TunnelDigger] Zagrożenie lawą/płynem w korytarzu. Zatrzymanie i bezpieczny skręt...");
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-            if (ctx.player().onGround()) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
-            }
-            rotateToSafeCorridor(world, feet, activeDir);
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            return handleLavaOrCliffAhead(world, feet, activeDir);
         }
 
         // 3. Kopanie tunelu 1x2 (głowa, potem stopy - zapobiega duszeniu przez żwir/piasek)
@@ -174,10 +198,8 @@ public class TunnelDigger {
         boolean floorSolid = LiquidDetector.isSafeToStep(world, frontFeet);
 
         // Gdy bot kopie szybkim kilofem:
-        // Trzymamy celownik zablokowany prosto w korytarzu (yaw = activeDir, pitch = 11.5°),
-        // kopiemy ciągle, ale sprintujemy TYLKO jeśli podłoga przed nami jest pewna i bezpieczna!
         boolean fastPickaxe = FastBreakHelper.isFastPickaxe(ctx);
-        if (fastPickaxe) {
+        if (fastPickaxe && toBreak != null) {
             double distH = Math.hypot(ctx.player().getX() - (frontFeet.getX() + 0.5D), ctx.player().getZ() - (frontFeet.getZ() + 0.5D));
             float pitch = 11.5f;
             if (!isPassable(world, frontFeet) && distH < 0.95) {
@@ -203,27 +225,25 @@ public class TunnelDigger {
             }
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
 
-            if (toBreak != null) {
-                ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(toBreak));
-                if (world.getBlockState(toBreak).isAir()) {
-                    RotationEngine.notifyBlockBroken(toBreak);
-                    currentTarget = null;
-                    varianceCooldownTicks = 0;
+            ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(toBreak));
+            if (world.getBlockState(toBreak).isAir()) {
+                RotationEngine.notifyBlockBroken(toBreak);
+                currentTarget = null;
+                varianceCooldownTicks = 0;
 
-                    // Skanowanie rud po KAŻDYM wykopanym bloku (OreScanner)
-                    List<BlockPos> scanned = OreScanner.scanArea(world, feet, targetOreBlocks,
-                            ctx.player().getEyePosition(), config.reachLimit, config);
-                    if (!scanned.isEmpty() && outFoundOres != null) {
-                        outFoundOres.addAll(scanned);
-                    }
+                // Skanowanie rud po KAŻDYM wykopanym bloku (OreScanner)
+                List<BlockPos> scanned = OreScanner.scanArea(world, feet, targetOreBlocks,
+                        ctx.player().getEyePosition(), config.reachLimit, config);
+                if (!scanned.isEmpty() && outFoundOres != null) {
+                    outFoundOres.addAll(scanned);
+                }
 
-                    // Aktualizacja liczników
-                    if (inSideBranch) {
-                        sideBranchLength++;
-                    } else {
-                        blocksInSegment++;
-                        checkBranchTriggers(feet);
-                    }
+                // Aktualizacja liczników
+                if (inSideBranch) {
+                    sideBranchLength++;
+                } else {
+                    blocksInSegment++;
+                    checkBranchTriggers(feet);
                 }
             }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -285,18 +305,11 @@ public class TunnelDigger {
 
         // 4. Tunel z przodu wykopany — WERYFIKACJA PODŁOGI PRZED POSTAWIENIEM KROKU!
         if (!floorSolid) {
-            // Brak podłogi pod frontFeet (jaskinia, wąwóz, dół z lawą): kategoryczny zakaz ruchu w przód!
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-            if (ctx.player().onGround()) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
-            }
-            Helper.HELPER.logDirect("§6[TunnelDigger] Brak stabilnej podłogi przed nami! Bezpieczny skręt tunelu...");
-            rotateToSafeCorridor(world, feet, activeDir);
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            Helper.HELPER.logDirect("§6[TunnelDigger] Brak stabilnej podłogi przed nami! Bezpieczny skręt lub odwrót...");
+            return handleLavaOrCliffAhead(world, feet, activeDir);
         }
 
-        // Korytarz i podłoga zweryfikowane — bezpieczny ruch w przód
+        // Korytarz i podłoga zweryfikowane — bezpieczny ruch w przód (CLICK_LEFT wyłączone, brak bloków do kopania)
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
         Rotation walkRot = new Rotation(activeDir.toYRot(), 0.0f);
@@ -311,15 +324,46 @@ public class TunnelDigger {
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
-    private void rotateToSafeCorridor(Level world, BlockPos feet, Direction currentDir) {
+    /**
+     * Główna procedura obsługi bajorka / jeziora lawy / pustej przestrzeni przed graczem.
+     * Zgodnie z wytycznymi użytkownika:
+     * 1. Sprawdza czy po lewej stronie nie ma lawy.
+     * 2. Sprawdza czy po prawej stronie nie ma lawy.
+     * 3. Skręca w wolną stronę (lewo lub prawo).
+     * 4. Jeśli z obu stron jest lawa — natychmiast cofa się do tyłu (MOVE_BACK do bezpiecznego tunelu).
+     */
+    private PathingCommand handleLavaOrCliffAhead(Level world, BlockPos feet, Direction currentDir) {
+        var ioh = baritone.getInputOverrideHandler();
+        ioh.setInputForceState(Input.MOVE_FORWARD, false);
+        ioh.setInputForceState(Input.SPRINT, false);
+        ioh.setInputForceState(Input.CLICK_LEFT, false);
+        ContinuousBreakController.reset();
+
         Direction left = currentDir.getCounterClockWise();
         Direction right = currentDir.getClockWise();
-        int leftScore = evaluateCorridorSafety(world, feet, left, 6);
-        int rightScore = evaluateCorridorSafety(world, feet, right, 6);
 
-        Direction chosen = (leftScore >= rightScore && leftScore > 0)
-                ? left
-                : (rightScore > 0 ? right : currentDir.getOpposite());
+        boolean leftSafe = isDirectionSafeFromLava(world, feet, left);
+        boolean rightSafe = isDirectionSafeFromLava(world, feet, right);
+
+        Direction chosen;
+        if (leftSafe && !rightSafe) {
+            chosen = left;
+            Helper.HELPER.logDirect("§6[TunnelDigger] Wykryto bajorko/lawę z przodu! Skręcam w LEWO (prawa strona zajęta przez lawę).");
+        } else if (rightSafe && !leftSafe) {
+            chosen = right;
+            Helper.HELPER.logDirect("§6[TunnelDigger] Wykryto bajorko/lawę z przodu! Skręcam w PRAWO (lewa strona zajęta przez lawę).");
+        } else if (leftSafe && rightSafe) {
+            int leftScore = evaluateCorridorSafety(world, feet, left, 6);
+            int rightScore = evaluateCorridorSafety(world, feet, right, 6);
+            chosen = (leftScore >= rightScore) ? left : right;
+            Helper.HELPER.logDirect(String.format("§a[TunnelDigger] Wykryto bajorko/lawę! Obie strony wolne. Skręcam w %s (lewo: %d pkt, prawo: %d pkt).",
+                    chosen, leftScore, rightScore));
+        } else {
+            // Zarówno lewo jak i prawo mają lawę — natychmiastowe cofanie się do tyłu!
+            chosen = currentDir.getOpposite();
+            Helper.HELPER.logDirect("§c[TunnelDigger] Wykryto lawę z przodu, z lewej i z prawej! Cofam się do tyłu...");
+            this.retreatCooldownTicks = 12; // 12 ticków bezpiecznego kroku w tył do wykopanego tunelu
+        }
 
         if (inSideBranch) {
             sideBranchDirection = chosen;
@@ -329,8 +373,42 @@ public class TunnelDigger {
             targetSegmentBlocks = config.minLengthBeforeTurn +
                     ThreadLocalRandom.current().nextInt(config.maxLengthBeforeTurn - config.minLengthBeforeTurn + 1);
         }
-        Helper.HELPER.logDirect(String.format("§a[TunnelDigger] Wybrano bezpieczny korytarz: %s (lewo: %d pkt, prawo: %d pkt)",
-                chosen, leftScore, rightScore));
+
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    /**
+     * Weryfikuje czy dany kierunek boczny jest w 100% wolny od lawy i płynów.
+     */
+    private boolean isDirectionSafeFromLava(Level world, BlockPos feet, Direction dir) {
+        BlockPos targetFeet = feet.relative(dir);
+        BlockPos targetHead = targetFeet.above();
+        BlockPos targetFloor = targetFeet.below();
+
+        // 1. Sprawdź czy korytarz lub jego bezpośrednie otoczenie nie jest lawą/wodą
+        if (LiquidDetector.isLiquid(world, targetFeet) || LiquidDetector.isLiquid(world, targetHead)
+                || LiquidDetector.isLiquid(world, targetFloor)) {
+            return false;
+        }
+
+        // 2. Sprawdź czy rozkopanie tych bloków nie uwolni lawy
+        if (!LiquidDetector.isSafeToMine(world, targetHead, dir, feet.getY())
+                || !LiquidDetector.isSafeToMine(world, targetFeet, dir, feet.getY())) {
+            return false;
+        }
+
+        // 3. Sprawdź czy pod stopami korytarza nie ma jeziora lawy
+        if (LiquidDetector.isLavaPitBelow(world, targetFloor, 8)) {
+            return false;
+        }
+
+        // 4. Ocena korytarza na dystansie minimum 3 bloków
+        int score = evaluateCorridorSafety(world, feet, dir, 3);
+        return score > 0;
+    }
+
+    private void rotateToSafeCorridor(Level world, BlockPos feet, Direction currentDir) {
+        handleLavaOrCliffAhead(world, feet, currentDir);
     }
 
     private static int evaluateCorridorSafety(Level world, BlockPos origin, Direction dir, int range) {
@@ -410,9 +488,7 @@ public class TunnelDigger {
         ioh.setInputForceState(Input.MOVE_FORWARD, false);
         ioh.setInputForceState(Input.SPRINT, false);
         ioh.setInputForceState(Input.CLICK_LEFT, false);
-        if (ctx.player().onGround()) {
-            ioh.setInputForceState(Input.SNEAK, true);
-        }
+        ContinuousBreakController.reset();
 
         BlockPos breach = LiquidDetector.isLiquid(world, frontHead) ? frontHead : frontFeet;
 
@@ -440,8 +516,7 @@ public class TunnelDigger {
             ioh.setInputForceState(Input.MOVE_BACK, true);
         }
 
-        rotateToSafeCorridor(world, feet, activeDir);
-        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        return handleLavaOrCliffAhead(world, feet, activeDir);
     }
 
     private boolean isPassable(Level world, BlockPos pos) {

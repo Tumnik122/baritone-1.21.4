@@ -283,6 +283,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     public void stop() {
+        this.active = false;
         onLostControl();
         logDirect("§e[Bypass] Zatrzymano proces.");
     }
