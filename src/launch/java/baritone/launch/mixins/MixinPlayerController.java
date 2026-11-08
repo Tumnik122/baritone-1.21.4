@@ -89,6 +89,18 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             BlockPos pos,
             net.minecraft.core.Direction direction,
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc.level != null) {
+            net.minecraft.world.level.block.state.BlockState state = mc.level.getBlockState(pos);
+            if (state.isAir() || !state.getFluidState().isEmpty() || state.getDestroySpeed(mc.level, pos) < 0.0f) {
+                this.setIsHittingBlock(false);
+                this.argon$diggingActiveOnServer = false;
+                this.argon$targetBlockPosLong = Long.MIN_VALUE;
+                cir.setReturnValue(false);
+                return;
+            }
+        }
+
         long posLong = pos.asLong();
         BlockPos current = this.getCurrentBlock();
         if (current != null && (current.asLong() == this.argon$lastDestroyedPosLong || !this.argon$diggingActiveOnServer)) {
@@ -96,11 +108,9 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         }
 
         // KRYTYCZNE DLA GRIMAC (FastBreak 51ms/107ms):
-        // Jeśli kopiemy już ten sam blok na serwerze i destroyProgress > 0,
-        // pod żadnym pozorem NIE wysyłaj ponownego pakietu START_DESTROY_BLOCK!
-        // Ponowny START_DESTROY_BLOCK resetuje stoper na serwerze GrimAC,
-        // co powoduje FastBreak delay=51ms / 107ms gdy chwile później pójdzie STOP!
-        if (this.isHittingBlock() && this.argon$targetBlockPosLong == posLong && this.getDestroyProgress() > 0.0f) {
+        // Jeśli kopiemy już ten sam blok na serwerze, pod żadnym pozorem NIE wysyłaj ponownego pakietu START_DESTROY_BLOCK!
+        // Ponowny START_DESTROY_BLOCK resetuje stoper na serwerze GrimAC, powodując FastBreak.
+        if (this.isHittingBlock() && this.argon$targetBlockPosLong == posLong && this.argon$diggingActiveOnServer) {
             cir.setReturnValue(true);
             return;
         }
@@ -136,6 +146,15 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
         if (mc.player == null || mc.level == null) return;
 
+        net.minecraft.world.level.block.state.BlockState state = mc.level.getBlockState(pos);
+        if (state.isAir() || !state.getFluidState().isEmpty()) {
+            this.setIsHittingBlock(false);
+            this.argon$diggingActiveOnServer = false;
+            this.argon$targetBlockPosLong = Long.MIN_VALUE;
+            cir.setReturnValue(true);
+            return;
+        }
+
         boolean isGrim = baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value
                 || baritone.api.BaritoneAPI.getSettings().grimCompat.value
                 || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value;
@@ -157,7 +176,7 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             this.argon$lastContinueTick = currentTick;
             this.argon$miningTicks++;
 
-            net.minecraft.world.level.block.state.BlockState state = mc.level.getBlockState(pos);
+            state = mc.level.getBlockState(pos);
             int reqTicks = baritone.utils.GrimBreakValidator.getRequiredTicks(
                     mc.player, mc.level, pos, state, mc.player.onGround()
             );
@@ -188,12 +207,12 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             method = "stopDestroyBlock",
             at = @org.spongepowered.asm.mixin.injection.At("HEAD"))
     private void onStopDestroyBlockHead(org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        this.argon$diggingActiveOnServer = false;
+        this.argon$miningTicks = 0;
+        this.argon$targetBlockPosLong = Long.MIN_VALUE;
         BlockPos current = this.getCurrentBlock();
         if (current != null) {
-            long posLong = current.asLong();
-            if (posLong == this.argon$lastDestroyedPosLong || !this.argon$diggingActiveOnServer) {
-                this.setIsHittingBlock(false);
-            }
+            this.setIsHittingBlock(false);
         }
     }
 
