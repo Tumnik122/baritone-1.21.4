@@ -135,6 +135,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private BlockPos tunnelAnchorPos = null;
     private BlockPos activeOreTarget = null;
     private BlockPos currentBreakingBlock = null;
+    private int currentBreakingBlockTicks = 0;
+    private Direction lastTurnBlockedDir = null;
     private final Deque<BlockPos> veinQueue = new ArrayDeque<>();
     private final Set<BlockPos> blacklistedOres = new HashSet<>();
     private final Set<BlockPos> invalidStandingPositions = new HashSet<>();
@@ -676,12 +678,14 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return mineBlockSafely(player, level, blockToMine);
         }
 
-        // 8. Zabezpieczenie przed bieganiem po starych tunelach
-        if (isLookingDownExistingTunnel(level, feet, primaryMiningDir)) {
-            BlockPos bridgeStep = frontFeet.below();
-            if (!isSolidSupport(level, bridgeStep)) {
+        // 8. Ochrona przed wejściem w przepaść lub do jeziora lawy:
+        // Pod żadnym pozorem nie stawiaj kroku w przód, jeśli podłoga nie daje oparcia!
+        BlockPos stepFloor = frontFeet.below();
+        if (!isSolidSupport(level, stepFloor)) {
+            if (!tryBridgeFloor(player, level, stepFloor, feet.below())) {
                 return handleLavaOrObstacleEncounter(player, level, feet);
             }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
         // Korytarz czysty -> płynny krok naprzód
@@ -692,38 +696,53 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     private boolean isFrontDirectlyBlockedByHazard(Level level, BlockPos feet, Direction forward) {
-        BlockPos frontFeet = feet.relative(forward);
-        BlockPos frontHead = frontFeet.above();
-        BlockPos ceilingAboveFront = frontHead.above();
-        BlockPos floorBelowFront = frontFeet.below();
+        // Skanowanie zagrożeń w osi marszu na dystans do 4 bloków w przód:
+        // Zapobiega przebijaniu ściany do komory lawowej / otwartej jaskini z jeziorem lawy!
+        for (int step = 1; step <= 4; step++) {
+            BlockPos frontFeet = feet.relative(forward, step);
+            BlockPos frontHead = frontFeet.above();
+            BlockPos ceilingAboveFront = frontHead.above();
+            BlockPos floorBelowFront = frontFeet.below();
 
-        // 1. Bezpośrednia lawa w bloku stóp lub głowy
-        if (level.getFluidState(frontFeet).is(FluidTags.LAVA) || level.getFluidState(frontHead).is(FluidTags.LAVA)) {
-            return true;
+            // 1. Bezpośrednia lawa w obrębie profilu tunelu
+            if (level.getFluidState(frontFeet).is(FluidTags.LAVA)
+                    || level.getFluidState(frontHead).is(FluidTags.LAVA)
+                    || level.getFluidState(ceilingAboveFront).is(FluidTags.LAVA)
+                    || level.getFluidState(floorBelowFront).is(FluidTags.LAVA)) {
+                return true;
+            }
+
+            // 2. Brak podłoża lub lawa w podłodze na pierwszym kroku
+            if (step == 1 && (!isSolidSupport(level, floorBelowFront) || level.getFluidState(floorBelowFront).is(FluidTags.LAVA))) {
+                return true;
+            }
+
+            // 3. Jeśli korytarz jest otwarty (air / cave), a w pobliżu (do 4 bloków) jest jezioro lawy
+            if (isPassable(level, frontFeet) || isPassable(level, frontHead)) {
+                if (isLavaLakeNearby(level, frontFeet, 4)) {
+                    return true;
+                }
+            }
         }
 
-        // 2. Brak podłoża lub lawa w podłodze (przepaść / jezioro lawy)
-        if (!isSolidSupport(level, floorBelowFront) || level.getFluidState(floorBelowFront).is(FluidTags.LAVA)) {
-            return true;
-        }
+        return false;
+    }
 
-        // 3. Bezpośrednia lawa w suficie nad blokiem (po wykopaniu zalałaby gracza)
-        if (level.getFluidState(ceilingAboveFront).is(FluidTags.LAVA)) {
-            return true;
+    private boolean isLavaLakeNearby(Level level, BlockPos center, int radius) {
+        int cx = center.getX();
+        int cy = center.getY();
+        int cz = center.getZ();
+        for (int dy = -3; dy <= 2; dy++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    if (dx * dx + dz * dz > radius * radius) continue;
+                    BlockPos p = new BlockPos(cx + dx, cy + dy, cz + dz);
+                    if (level.getFluidState(p).is(FluidTags.LAVA)) {
+                        return true;
+                    }
+                }
+            }
         }
-
-        // 4. Bezpośrednia lawa w bloku za czołem wykopu (w osi marszu)
-        BlockPos deepHead = frontHead.relative(forward);
-        BlockPos deepFeet = frontFeet.relative(forward);
-        if (level.getFluidState(deepHead).is(FluidTags.LAVA) || level.getFluidState(deepFeet).is(FluidTags.LAVA)) {
-            return true;
-        }
-
-        // 5. Jeśli korytarz jest już otwarty (air), a obok stoi lawa (nie wchodź w otwartą jaskinię z jeziorem)
-        if (isPassable(level, frontFeet) && isHazardNear(level, frontFeet)) {
-            return true;
-        }
-
         return false;
     }
 
@@ -884,6 +903,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         Direction currentDir = primaryMiningDir != null ? primaryMiningDir : Direction.SOUTH;
         this.blockedForwardDir = currentDir;
+        this.lastTurnBlockedDir = currentDir;
 
         Direction leftDir = currentDir.getCounterClockWise();
         Direction rightDir = currentDir.getClockWise();
@@ -927,6 +947,11 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.lateralOffsetDir = null;
         this.turnCommitCooldown = 40;
         this.consecutiveStraightBlocks = 0;
+        this.currentBreakingBlock = null;
+        this.currentBreakingBlockTicks = 0;
+        if (ctx.playerController() != null) {
+            ctx.playerController().resetBlockRemoving();
+        }
 
         BlockPos targetFeet = feet.relative(newDir);
         BlockPos targetHead = targetFeet.above();
@@ -984,47 +1009,54 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     private boolean isSafeBranchDirection(Level level, BlockPos origin, Direction dir) {
-        BlockPos sideFeet = origin.relative(dir);
-        BlockPos sideHead = sideFeet.above();
-        BlockPos sideFloor = sideFeet.below();
-        BlockPos sideCeiling = sideHead.above();
-
-        // 1. Nie wolno kopać w bedrock ani bloki niezniszczalne
-        if (isBedrockOrUnbreakable(level, sideFeet) || isBedrockOrUnbreakable(level, sideHead)) {
+        if (dir == this.lastTurnBlockedDir) {
+            return false;
+        }
+        if (primaryMiningDir != null && dir == primaryMiningDir.getOpposite()) {
             return false;
         }
 
-        // 2. Podłoże pod nowym korytarzem musi być stabilne (nie wolno wejść w pustkę/lawę)
-        if (!isSolidSupport(level, sideFloor) || level.getFluidState(sideFloor).is(FluidTags.LAVA)) {
-            return false;
-        }
+        for (int step = 1; step <= 3; step++) {
+            BlockPos sideFeet = origin.relative(dir, step);
+            BlockPos sideHead = sideFeet.above();
+            BlockPos sideFloor = sideFeet.below();
+            BlockPos sideCeiling = sideHead.above();
 
-        // 3. Sama nowa ściana nie może być ciekłą lawą
-        if (level.getFluidState(sideFeet).is(FluidTags.LAVA) || level.getFluidState(sideHead).is(FluidTags.LAVA)) {
-            return false;
-        }
+            // 1. Nie wolno kopać w bedrock ani bloki niezniszczalne
+            if (isBedrockOrUnbreakable(level, sideFeet) || isBedrockOrUnbreakable(level, sideHead)) {
+                return false;
+            }
 
-        // 4. Sufit nad nową odnogą nie może być ciekłą lawą
-        if (level.getFluidState(sideCeiling).is(FluidTags.LAVA)) {
-            return false;
-        }
+            // 2. Podłoże pod nowym korytarzem musi być stabilne (nie wolno wejść w pustkę/lawę)
+            if (!isSolidSupport(level, sideFloor) || level.getFluidState(sideFloor).is(FluidTags.LAVA)) {
+                return false;
+            }
 
-        // 5. Sprawdź 1 blok w głąb w osi nowej odnogi
-        BlockPos deepHead = sideHead.relative(dir);
-        BlockPos deepFeet = sideFeet.relative(dir);
-        if (level.getFluidState(deepHead).is(FluidTags.LAVA) || level.getFluidState(deepFeet).is(FluidTags.LAVA)) {
-            return false;
-        }
+            // 3. Ściana i sufit nie mogą być ciekłą lawą
+            if (level.getFluidState(sideFeet).is(FluidTags.LAVA)
+                    || level.getFluidState(sideHead).is(FluidTags.LAVA)
+                    || level.getFluidState(sideCeiling).is(FluidTags.LAVA)) {
+                return false;
+            }
 
-        // 6. Sprawdź czy korytarz nie nakłada się na starą wykopaną trasę
-        if (dugColumns2D.contains(to2DKey(sideFeet.getX(), sideFeet.getZ()))) {
-            return false;
+            // 4. Jeśli otwarta jaskinia ma w pobliżu lawę (np. do 4 bloków)
+            if ((isPassable(level, sideFeet) || isPassable(level, sideHead)) && isLavaLakeNearby(level, sideFeet, 4)) {
+                return false;
+            }
+
+            // 5. Sprawdź czy korytarz nie nakłada się na starą wykopaną trasę
+            if (dugColumns2D.contains(to2DKey(sideFeet.getX(), sideFeet.getZ()))) {
+                return false;
+            }
         }
 
         return true;
     }
 
     private Direction pickBestBranchDirection(Level level, BlockPos feet, Direction left, Direction right) {
+        if (left == this.lastTurnBlockedDir) return right;
+        if (right == this.lastTurnBlockedDir) return left;
+
         BlockPos leftFeet = feet.relative(left);
         BlockPos rightFeet = feet.relative(right);
 
@@ -1035,7 +1067,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         if (leftSolid && !rightSolid) return left;
         if (rightSolid && !leftSolid) return right;
 
-        return right;
+        boolean leftDug = dugColumns2D.contains(to2DKey(leftFeet.getX(), leftFeet.getZ()));
+        boolean rightDug = dugColumns2D.contains(to2DKey(rightFeet.getX(), rightFeet.getZ()));
+        if (!leftDug && rightDug) return left;
+        if (!rightDug && leftDug) return right;
+
+        return left;
     }
 
     private boolean isDetourRouteSafe(Level level, BlockPos origin, Direction dir) {
@@ -1237,6 +1274,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private PathingCommand mineBlockSafely(LocalPlayer player, Level level, BlockPos target) {
         if (target == null || isBedrockOrUnbreakable(level, target) || level.getBlockState(target).isAir() || !level.getFluidState(target).isEmpty()) {
             this.currentBreakingBlock = null;
+            this.currentBreakingBlockTicks = 0;
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -1248,7 +1286,23 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
 
-        this.currentBreakingBlock = target;
+        if (target.equals(this.currentBreakingBlock)) {
+            this.currentBreakingBlockTicks++;
+            if (this.currentBreakingBlockTicks > 40) {
+                // Blok nie pęka od 40 ticków (2 sekund) - zresetuj sesję, aby odblokować zacięcie (np. gravel/desync)
+                if (ctx.playerController() != null) {
+                    ctx.playerController().resetBlockRemoving();
+                }
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                this.currentBreakingBlock = null;
+                this.currentBreakingBlockTicks = 0;
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+        } else {
+            this.currentBreakingBlock = target;
+            this.currentBreakingBlockTicks = 0;
+        }
+
         double reach = getEffectiveReach();
 
         Optional<Rotation> snap = findVerifiedGrimSnapRotation(player, level, target, reach);
@@ -2393,12 +2447,17 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.active = false;
         this.activeOreTarget = null;
         this.currentBreakingBlock = null;
+        this.currentBreakingBlockTicks = 0;
         this.blockedForwardDir = null;
+        this.lastTurnBlockedDir = null;
         this.lateralDetourRemaining = 0;
         this.lateralOffsetDir = null;
         this.turnCommitCooldown = 0;
         this.consecutiveStraightBlocks = 0;
         baritone.getInputOverrideHandler().clearAllKeys();
+        if (ctx.playerController() != null) {
+            ctx.playerController().resetBlockRemoving();
+        }
     }
 
     @Override

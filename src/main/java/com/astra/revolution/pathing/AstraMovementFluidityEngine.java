@@ -203,8 +203,8 @@ public final class AstraMovementFluidityEngine {
 
         boolean w = delta >= -67.5f && delta <= 67.5f;
         boolean s = delta > 112.5f || delta < -112.5f;
-        boolean d = delta >= -157.5f && delta <= -22.5f;
-        boolean a = delta >= 22.5f && delta <= 157.5f;
+        boolean a = delta >= -157.5f && delta <= -22.5f;
+        boolean d = delta >= 22.5f && delta <= 157.5f;
 
         ioh.setInputForceState(Input.MOVE_FORWARD, w);
         ioh.setInputForceState(Input.MOVE_BACK, s);

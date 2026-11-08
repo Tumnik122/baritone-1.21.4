@@ -108,6 +108,7 @@ public final class BaritonePlayerController implements IPlayerController {
     }
 
     private BlockPos serverDiggingPos = null;
+    private BlockState lastServerDiggingState = null;
     private float serverDestroyProgress = 0.0f;
     private int currentBlockMiningTicks = 0;
     private int lastClientTick = -1;
@@ -123,7 +124,7 @@ public final class BaritonePlayerController implements IPlayerController {
             return false;
         }
 
-        if (serverDiggingPos == null || !serverDiggingPos.equals(pos)) {
+        if (serverDiggingPos == null || !serverDiggingPos.equals(pos) || (lastServerDiggingState != null && !lastServerDiggingState.equals(state))) {
             return clickBlock(pos, side);
         }
 
@@ -166,6 +167,7 @@ public final class BaritonePlayerController implements IPlayerController {
         ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
         ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(0.0f);
         serverDiggingPos = null;
+        lastServerDiggingState = null;
         serverDestroyProgress = 0.0f;
         currentBlockMiningTicks = 0;
 
@@ -184,6 +186,7 @@ public final class BaritonePlayerController implements IPlayerController {
         }
         mc.gameMode.stopDestroyBlock();
         serverDiggingPos = null;
+        lastServerDiggingState = null;
         serverDestroyProgress = 0.0f;
         currentBlockMiningTicks = 0;
         ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
@@ -338,13 +341,13 @@ public final class BaritonePlayerController implements IPlayerController {
     public boolean clickBlock(BlockPos loc, Direction face) {
         if (mc.gameMode == null || mc.level == null || mc.player == null) return false;
 
-        // Nie wysyłaj duplikatu START_DESTROY_BLOCK, jeśli już kopiemy ten blok
-        if (loc.equals(serverDiggingPos)) {
-            return true;
-        }
-
         BlockState state = mc.level.getBlockState(loc);
         if (state.isAir() || state.getDestroySpeed(mc.level, loc) < 0.0f) return false;
+
+        // Nie wysyłaj duplikatu START_DESTROY_BLOCK, jeśli już kopiemy ten sam blok w tym samym stanie
+        if (loc.equals(serverDiggingPos) && state.equals(lastServerDiggingState)) {
+            return true;
+        }
 
         // Jeśli zmieniamy blok w trakcie kopania poprzedniego, najpierw czysto anuluj poprzedni
         if (serverDiggingPos != null) {
@@ -359,6 +362,7 @@ public final class BaritonePlayerController implements IPlayerController {
         currentBlockMiningTicks = 0;
         serverDestroyProgress = initialDelta >= 1.0f ? 1.0f : 0.0f;
         serverDiggingPos = loc.immutable();
+        lastServerDiggingState = state;
 
         // Wyzeruj stan przed startDestroyBlock, aby uniknąć przeniesienia postępu
         ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(0.0f);

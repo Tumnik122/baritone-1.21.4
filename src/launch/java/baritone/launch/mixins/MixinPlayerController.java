@@ -69,6 +69,8 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
     private int argon$miningTicks = 0;
     @org.spongepowered.asm.mixin.Unique
     private boolean argon$diggingActiveOnServer = false;
+    @org.spongepowered.asm.mixin.Unique
+    private net.minecraft.world.level.block.state.BlockState argon$targetBlockState = null;
 
     /**
      * Zeroes destroyDelay at the HEAD of startDestroyBlock so that the
@@ -107,6 +109,14 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             this.setIsHittingBlock(false);
         }
 
+        net.minecraft.world.level.block.state.BlockState currentState = mc.level != null ? mc.level.getBlockState(pos) : null;
+        if (this.argon$targetBlockState != null && currentState != null && !this.argon$targetBlockState.equals(currentState)) {
+            // Blok uległ zmianie w tym samym pos (np. spadł gravel/sand) -> wymagany nowy START_DESTROY_BLOCK
+            this.argon$diggingActiveOnServer = false;
+            this.argon$miningTicks = 0;
+            this.argon$targetBlockPosLong = Long.MIN_VALUE;
+        }
+
         // KRYTYCZNE DLA GRIMAC (FastBreak 51ms/107ms):
         // Jeśli kopiemy już ten sam blok na serwerze, pod żadnym pozorem NIE wysyłaj ponownego pakietu START_DESTROY_BLOCK!
         // Ponowny START_DESTROY_BLOCK resetuje stoper na serwerze GrimAC, powodując FastBreak.
@@ -115,8 +125,9 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             return;
         }
 
-        if (this.argon$targetBlockPosLong != posLong) {
+        if (this.argon$targetBlockPosLong != posLong || !this.argon$diggingActiveOnServer) {
             this.argon$targetBlockPosLong = posLong;
+            this.argon$targetBlockState = currentState;
             this.argon$miningTicks = 0;
             this.argon$diggingActiveOnServer = true;
             this.setDestroyProgress(0.0f);
@@ -161,8 +172,10 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
 
         if (isGrim) {
             long currentPosLong = pos.asLong();
-            if (this.argon$targetBlockPosLong != currentPosLong) {
+            if (this.argon$targetBlockPosLong != currentPosLong
+                    || (this.argon$targetBlockState != null && !this.argon$targetBlockState.equals(state))) {
                 this.argon$targetBlockPosLong = currentPosLong;
+                this.argon$targetBlockState = state;
                 this.argon$miningTicks = 0;
                 this.argon$diggingActiveOnServer = true;
                 this.setDestroyProgress(0.0f);
@@ -182,7 +195,8 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             );
 
             // Dopóki nie minęła wymagana liczba ticków, trzymaj destroyProgress < 0.60f
-            if (this.argon$miningTicks < reqTicks) {
+            // ALE: jeśli destroyProgress >= 1.0f (BaritonePlayerController legalnie zezwolił na wykopanie), NIE cofaj postępu!
+            if (this.argon$miningTicks < reqTicks && this.getDestroyProgress() < 1.0f) {
                 float vanillaDelta = state.getDestroyProgress(mc.player, mc.level, pos);
                 if (this.getDestroyProgress() + vanillaDelta >= 0.60f) {
                     this.setDestroyProgress(Math.max(0.0f, 0.50f - vanillaDelta));
@@ -201,6 +215,7 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         this.argon$diggingActiveOnServer = false;
         this.argon$miningTicks = 0;
         this.argon$targetBlockPosLong = Long.MIN_VALUE;
+        this.argon$targetBlockState = null;
     }
 
     @org.spongepowered.asm.mixin.injection.Inject(
@@ -210,6 +225,7 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         this.argon$diggingActiveOnServer = false;
         this.argon$miningTicks = 0;
         this.argon$targetBlockPosLong = Long.MIN_VALUE;
+        this.argon$targetBlockState = null;
         BlockPos current = this.getCurrentBlock();
         if (current != null) {
             this.setIsHittingBlock(false);

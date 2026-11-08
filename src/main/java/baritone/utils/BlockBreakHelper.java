@@ -88,6 +88,7 @@ public final class BlockBreakHelper {
      */
     private int reactionDelay = 0;
     private BlockPos lastTargetPos = null;
+    private BlockState lastTargetBlockState = null;
 
     BlockBreakHelper(IPlayerContext ctx) {
         this.ctx = ctx;
@@ -104,6 +105,7 @@ public final class BlockBreakHelper {
             ctx.playerController().resetBlockRemoving();
             wasHitting = false;
             lastTargetPos = null;
+            lastTargetBlockState = null;
         }
         reactionDelay = 0;
     }
@@ -212,8 +214,10 @@ public final class BlockBreakHelper {
             ctx.playerController().syncHeldItem();
 
             // 1. PIERWSZY TICK na danym bloku: wykonaj clickBlock (startDestroyBlock) DOKŁADNIE RAZ
-            if (!wasHitting || !targetPos.equals(lastTargetPos)) {
-                if (wasHitting && lastTargetPos != null && !targetPos.equals(lastTargetPos)) {
+            // Jeśli stan bloku uległ zmianie (np. spadł gravel lub sand w to samo miejsce), resetujemy sesję i wysyłamy nowy START_DESTROY_BLOCK
+            boolean stateChanged = lastTargetBlockState != null && !state.equals(lastTargetBlockState);
+            if (!wasHitting || !targetPos.equals(lastTargetPos) || stateChanged) {
+                if (wasHitting && lastTargetPos != null && (!targetPos.equals(lastTargetPos) || stateChanged)) {
                     ctx.playerController().resetBlockRemoving();
                 }
                 ctx.playerController().syncHeldItem();
@@ -222,6 +226,7 @@ public final class BlockBreakHelper {
 
                 wasHitting = !ctx.world().getBlockState(targetPos).isAir();
                 lastTargetPos = wasHitting ? targetPos.immutable() : null;
+                lastTargetBlockState = wasHitting ? state : null;
                 return;
             }
 
@@ -236,6 +241,7 @@ public final class BlockBreakHelper {
                 AiActionLogger.log("MINE", "Wykopano " + state.getBlock().getName().getString() + " na [" + targetPos.getX() + ", " + targetPos.getY() + ", " + targetPos.getZ() + "]");
                 wasHitting = false;
                 lastTargetPos = null;
+                lastTargetBlockState = null;
                 ctx.playerController().setHittingBlock(false);
 
                 // OCHRONA GRIMAC INTER-BLOCK DELAY:
