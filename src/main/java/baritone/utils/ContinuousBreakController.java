@@ -43,6 +43,15 @@ public final class ContinuousBreakController {
         if (lastBreakPos == null || ctx == null || ctx.player() == null || nextTarget == null) {
             return false;
         }
+
+        // Ochrona GrimAC: Nie przytrzymuj kliknięcia, jeśli kolejny blok wymaga innego narzędzia (np. Deepslate po wykopaniu Gravelu łopatą)
+        if (ctx.world() != null) {
+            net.minecraft.world.level.block.state.BlockState nextState = ctx.world().getBlockState(nextTarget);
+            net.minecraft.world.item.ItemStack held = ctx.player().getMainHandItem();
+            if (nextState.requiresCorrectToolForDrops() && !held.isCorrectToolForDrops(nextState)) {
+                return false;
+            }
+        }
         int since = ctx.player().tickCount - lastBreakTick;
         if (since < 0) {
             return false;

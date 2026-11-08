@@ -1,6 +1,7 @@
 package baritone.bypass;
 
 import baritone.Baritone;
+import baritone.api.BaritoneAPI;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalComposite;
@@ -19,6 +20,7 @@ import baritone.api.utils.interfaces.IGoalRenderPos;
 import baritone.bypass.scripting.BypassLuaEngine;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.ContinuousBreakController;
+import baritone.utils.FastBreakHelper;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -27,6 +29,7 @@ import net.minecraft.tags.BlockTags;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.tags.ItemTags;
 import net.minecraft.util.Mth;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.inventory.ClickType;
@@ -38,7 +41,15 @@ import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.EntityBlock;
 import net.minecraft.world.level.block.FallingBlock;
+import net.minecraft.world.level.block.HoneyBlock;
+import net.minecraft.world.level.block.InfestedBlock;
+import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.block.MagmaBlock;
+import net.minecraft.world.level.block.SlimeBlock;
+import net.minecraft.world.level.block.SoulSandBlock;
+import net.minecraft.world.level.block.TntBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.material.Fluids;
@@ -52,13 +63,19 @@ import java.util.*;
 
 /**
  * Czysty rdzeń procesu #bypass (Argon 4 & dj architecture):
- * 1. Bezpieczne schodki w dół z prześwitem 3 bloków do poziomu docelowego (domyślnie Y = -50).
- * 2. Kopanie tunelu 1x2 przed siebie z kontrolą dystansu (~1.15m) bez wbiegania w ściany.
- * 3. Aktywne omijanie zagrożeń: lawa, woda, gravel/sand nad głową, dziury/jaskinie bez podłoża.
- * 4. Ciągły skan 5 bloków w każdą stronę w poszukiwaniu diamentów/rud (kostka 11x11x11) + Vein Mining 3x3x3.
+ * 1. Bezpieczne schodki w dół z prześwitem 3 bloków do poziomu docelowego
+ * (domyślnie Y = -50).
+ * 2. Kopanie tunelu 1x2 przed siebie z kontrolą dystansu (~1.15m) bez wbiegania
+ * w ściany.
+ * 3. Aktywne omijanie zagrożeń: lawa, woda, gravel/sand nad głową,
+ * dziury/jaskinie bez podłoża.
+ * 4. Ciągły skan 5 bloków w każdą stronę w poszukiwaniu diamentów/rud (kostka
+ * 11x11x11) + Vein Mining 3x3x3.
  * 5. Ścisły reach <= 3.5m (GrimAC safe reach limit):
- *    - Jeśli ruda w zasięgu <= 3.5m: 1-tick GrimSnap GCD i natychmiastowe wykopanie.
- *    - Jeśli ruda dalej lub za ścianą: podejście przez Baritone Pathing (GoalOreMining / GoalGetToBlock) jak w #mine.
+ * - Jeśli ruda w zasięgu <= 3.5m: 1-tick GrimSnap GCD i natychmiastowe
+ * wykopanie.
+ * - Jeśli ruda dalej lub za ścianą: podejście przez Baritone Pathing
+ * (GoalOreMining / GoalGetToBlock) jak w #mine.
  * 6. Automatyczne zbieranie dropu i powrót do tunelowania na Y=-50.
  */
 public final class BypassProcess extends BaritoneProcessHelper implements IBaritoneProcess {
@@ -75,9 +92,11 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         DESCENDING_STAIRCASE,
         ASCENDING_STAIRCASE,
         TUNNELING,
+        RETREATING,
         MINING_ORE,
         COLLECTING_DROP,
         SEALING_HAZARD,
+        TURNING,
         RETREATING_MOB,
         PATHFINDING_RETURN,
         DISCONNECTED,
@@ -93,8 +112,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             "lapis", Set.of(Blocks.LAPIS_ORE, Blocks.DEEPSLATE_LAPIS_ORE),
             "redstone", Set.of(Blocks.REDSTONE_ORE, Blocks.DEEPSLATE_REDSTONE_ORE),
             "emerald", Set.of(Blocks.EMERALD_ORE, Blocks.DEEPSLATE_EMERALD_ORE),
-            "debris", Set.of(Blocks.ANCIENT_DEBRIS)
-    );
+            "debris", Set.of(Blocks.ANCIENT_DEBRIS));
 
     private static final Map<String, Set<Item>> ORE_ITEM_MAP = Map.of(
             "diamond", Set.of(Items.DIAMOND, Items.DIAMOND_ORE, Items.DEEPSLATE_DIAMOND_ORE),
@@ -105,22 +123,32 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             "lapis", Set.of(Items.LAPIS_LAZULI),
             "redstone", Set.of(Items.REDSTONE),
             "emerald", Set.of(Items.EMERALD),
-            "debris", Set.of(Items.ANCIENT_DEBRIS, Items.NETHERITE_SCRAP)
-    );
+            "debris", Set.of(Items.ANCIENT_DEBRIS, Items.NETHERITE_SCRAP));
 
     public static String normalizeOreKey(String key) {
-        if (key == null) return "diamond";
+        if (key == null)
+            return "diamond";
         String s = key.toLowerCase(Locale.ROOT).trim();
-        if (s.equals("diamonds") || s.equals("diax") || s.equals("diaxy") || s.equals("diamond_ore")) return "diamond";
-        if (s.equals("gold_ore") || s.equals("zloto")) return "gold";
-        if (s.equals("iron_ore") || s.equals("zelazo")) return "iron";
-        if (s.equals("copper_ore") || s.equals("miedz")) return "copper";
-        if (s.equals("coal_ore") || s.equals("wegiel")) return "coal";
-        if (s.equals("lapis_ore") || s.equals("lazuryt") || s.equals("lapis_lazuli")) return "lapis";
-        if (s.equals("redstone_ore") || s.equals("czerwony")) return "redstone";
-        if (s.equals("emerald_ore") || s.equals("szmaragd") || s.equals("emeralds")) return "emerald";
-        if (s.equals("ancient_debris") || s.equals("netherite")) return "debris";
-        if (s.endsWith("_ore")) s = s.substring(0, s.length() - 4);
+        if (s.equals("diamonds") || s.equals("diax") || s.equals("diaxy") || s.equals("diamond_ore"))
+            return "diamond";
+        if (s.equals("gold_ore") || s.equals("zloto"))
+            return "gold";
+        if (s.equals("iron_ore") || s.equals("zelazo"))
+            return "iron";
+        if (s.equals("copper_ore") || s.equals("miedz"))
+            return "copper";
+        if (s.equals("coal_ore") || s.equals("wegiel"))
+            return "coal";
+        if (s.equals("lapis_ore") || s.equals("lazuryt") || s.equals("lapis_lazuli"))
+            return "lapis";
+        if (s.equals("redstone_ore") || s.equals("czerwony"))
+            return "redstone";
+        if (s.equals("emerald_ore") || s.equals("szmaragd") || s.equals("emeralds"))
+            return "emerald";
+        if (s.equals("ancient_debris") || s.equals("netherite"))
+            return "debris";
+        if (s.endsWith("_ore"))
+            s = s.substring(0, s.length() - 4);
         return s;
     }
 
@@ -135,13 +163,25 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private BlockPos tunnelAnchorPos = null;
     private BlockPos activeOreTarget = null;
     private BlockPos currentBreakingBlock = null;
-    private int currentBreakingBlockTicks = 0;
-    private Direction lastTurnBlockedDir = null;
+    private int activeMiningTicks = 0;
+    private int aimStallTicks = 0;
+
+    // Pamięć zablokowanych kierunków dla konkretnych kratek (zapobiega oscylacji
+    // L/P w kółko)
+    private final Map<BlockPos, EnumSet<Direction>> blockedDirsByNode = new LinkedHashMap<>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<BlockPos, EnumSet<Direction>> eldest) {
+            return size() > 48;
+        }
+    };
+    private Direction pendingTurnDir = null;
+    private int turnCooldownTicks = 0;
     private final Deque<BlockPos> veinQueue = new ArrayDeque<>();
     private final Set<BlockPos> blacklistedOres = new HashSet<>();
     private final Set<BlockPos> invalidStandingPositions = new HashSet<>();
     private final List<String> targetOresList = new ArrayList<>(List.of("diamond"));
-    private final Set<String> targetDropItems = new HashSet<>(Set.of("diamond", "raw_iron", "raw_gold", "ancient_debris"));
+    private final Set<String> targetDropItems = new HashSet<>(
+            Set.of("diamond", "raw_iron", "raw_gold", "ancient_debris"));
 
     // Pola stanu dla COLLECTING_DROP (odzyskiwanie dropu i rozkopywanie wnęk)
     private final Map<Integer, Long> ignoredDropIds = new HashMap<>();
@@ -156,10 +196,18 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private int sealCooldownTicks = 0;
     private int sealFailedAttempts = 0;
     private static final int MAX_SEAL_ATTEMPTS = 5;
+    private int placeCooldownTicks = 0;
 
-    // Pola dla unikania pustych / wykopanych tuneli oraz Dominant Mining Vector (Argon 4 & dj)
+    // Pola dla unikania pustych / wykopanych tuneli oraz Dominant Mining Vector
+    // (Argon 4 & dj)
     private Direction primaryMiningDir = Direction.NORTH;
     private final it.unimi.dsi.fastutil.longs.LongSet dugColumns2D = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+    private final it.unimi.dsi.fastutil.longs.LongSet hazardColumns2D = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+    private Direction retreatDir = null;
+    private BlockPos retreatStartPos = null;
+    private int retreatTicks = 0;
+    private static final int MAX_RETREAT_BLOCKS = 6;
+    private static final int MAX_RETREAT_TICKS = 80;
     private int lateralDetourRemaining = 0;
     private Direction lateralOffsetDir = null;
     private Direction blockedForwardDir = null;
@@ -181,6 +229,26 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private int diamondCount = 0;
     private int goldCount = 0;
     private long startTime = 0L;
+    private int toolSwitchCooldownTicks = 0;
+    private boolean originalAutoTool = true;
+    private boolean originalAllowPlace = false;
+    private int postPlaceMineDelayTicks = 0;
+    // Zamrożona rotacja na czas aktywnego kopania pojedynczego bloku (zapobiega
+    // jitterowi i ABORT_DESTROY_BLOCK)
+    private Rotation lockedMiningRotation = null;
+    private int lostSightGraceTicks = 0;
+    // Licznik ticków wyhamowania pędu przed obrotem w stanie TURNING
+    private int turnBrakeTicks = 0;
+
+    // Bloki postawione przez bota (plomby lawy / mostki), których nie wolno
+    // wykopywać z powrotem
+    private final Set<BlockPos> protectedSealBlocks = Collections
+            .newSetFromMap(new LinkedHashMap<BlockPos, Boolean>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<BlockPos, Boolean> eldest) {
+                    return size() > 128;
+                }
+            });
 
     public double getEffectiveReach() {
         Minecraft mc = ctx.minecraft();
@@ -207,6 +275,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.returnStuckTicks = 0;
         this.activeOreTarget = null;
         this.tunnelAnchorPos = null;
+        this.currentBreakingBlock = null;
+        this.activeMiningTicks = 0;
+        this.aimStallTicks = 0;
+        this.blockedDirsByNode.clear();
+        this.pendingTurnDir = null;
+        this.turnCooldownTicks = 0;
+        this.placeCooldownTicks = 0;
         this.stuckTicks = 0;
         this.ignoredDropIds.clear();
         this.currentDropId = -1;
@@ -215,10 +290,15 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.lastDistToDropSq = Double.MAX_VALUE;
         this.lastDropGoal = null;
         this.hazardSourcePos = null;
+        this.placeCooldownTicks = 0;
         this.sealCooldownTicks = 0;
         this.sealFailedAttempts = 0;
         this.minedCorridorFeet.clear();
         this.dugColumns2D.clear();
+        this.hazardColumns2D.clear();
+        this.retreatDir = null;
+        this.retreatStartPos = null;
+        this.retreatTicks = 0;
         this.lateralDetourRemaining = 0;
         this.lateralOffsetDir = null;
         this.blockedForwardDir = null;
@@ -227,9 +307,19 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.lastTrackedMovementPos = Vec3.ZERO;
         this.movementStuckTicks = 0;
         this.startTime = System.currentTimeMillis();
+        this.toolSwitchCooldownTicks = 0;
+        this.postPlaceMineDelayTicks = 0;
+        this.lockedMiningRotation = null;
+        this.lostSightGraceTicks = 0;
+        this.turnBrakeTicks = 0;
+        this.protectedSealBlocks.clear();
+        this.originalAutoTool = Baritone.settings().autoTool.value;
+        this.originalAllowPlace = Baritone.settings().allowPlace.value;
+        Baritone.settings().autoTool.value = false;
 
-        // Wymuszenie uprawnień Baritone do podbudowywania się (MovementPillar) i przebijania ścian
-        Baritone.settings().allowPlace.value = true;
+        // Zakaz samowolnego stawiania bloków pod nogami przez Baritone Pathing
+        // (eliminuje pętlę niszczenia i stawiania)
+        Baritone.settings().allowPlace.value = false;
         Baritone.settings().allowBreak.value = true;
         Baritone.settings().allowParkour.value = false;
 
@@ -238,8 +328,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         for (Item item : List.of(
                 Items.COBBLESTONE, Items.COBBLED_DEEPSLATE, Items.DEEPSLATE,
                 Items.TUFF, Items.STONE, Items.ANDESITE, Items.DIORITE,
-                Items.GRANITE, Items.DIRT, Items.NETHERRACK
-        )) {
+                Items.GRANITE, Items.DIRT, Items.NETHERRACK)) {
             if (!throwaway.contains(item)) {
                 throwaway.add(item);
             }
@@ -285,7 +374,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     public void resumeFromData(ReconnectData data) {
-        if (data == null) return;
+        if (data == null)
+            return;
         this.targetY = (int) Math.round(data.y);
         start(this.targetY, data.ores != null ? data.ores : List.of("diamond"));
     }
@@ -324,7 +414,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // 0. WaterSealer: Detekcja wycieku wody/lawy zagrażającego graczowi i natychmiastowe zatkanie
+        // 0. WaterSealer: Detekcja wycieku wody/lawy zagrażającego graczowi i
+        // natychmiastowe zatkanie
         BlockPos breachPos = findWaterBreachSource(level, player.blockPosition());
         if (breachPos != null) {
             this.hazardSourcePos = breachPos;
@@ -336,7 +427,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         }
 
         // 1. Priorytet: Ciągłe skanowanie 3 kratek wokół gracza (kostka 7x7x7)
-        if (state != State.MINING_ORE) {
+        if (state != State.MINING_ORE && state != State.TURNING) {
             BlockPos foundOre = findNearestOre(player, level);
             if (foundOre != null) {
                 if (tunnelAnchorPos == null && state == State.TUNNELING) {
@@ -352,7 +443,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         }
 
         // 2. Zbieranie leżącego dropu diamentów/surowców w pobliżu
-        if (state != State.MINING_ORE) {
+        if (state != State.MINING_ORE && state != State.TURNING) {
             ItemEntity drop = findNearbyValuableDrop(player, level);
             if (drop != null) {
                 if (tunnelAnchorPos == null && state == State.TUNNELING) {
@@ -368,7 +459,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                 if (tunnelAnchorPos == null || player.blockPosition().distManhattan(tunnelAnchorPos) <= 2) {
                     tunnelAnchorPos = null;
                     int diff = player.blockPosition().getY() - targetY;
-                    state = Math.abs(diff) > 1 ? (diff > 0 ? State.DESCENDING_STAIRCASE : State.ASCENDING_STAIRCASE) : State.TUNNELING;
+                    state = Math.abs(diff) > 1 ? (diff > 0 ? State.DESCENDING_STAIRCASE : State.ASCENDING_STAIRCASE)
+                            : State.TUNNELING;
                 } else {
                     state = State.PATHFINDING_RETURN;
                 }
@@ -379,6 +471,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             case DESCENDING_STAIRCASE -> tickDescending(player, level);
             case ASCENDING_STAIRCASE -> tickAscending(player, level);
             case TUNNELING -> tickTunneling(player, level);
+            case RETREATING -> tickRetreating(player, level);
+            case TURNING -> tickTurning(player, level);
             case MINING_ORE -> tickMiningOre(player, level, calcFailed, isSafeToCancel);
             case COLLECTING_DROP -> {
                 ItemEntity drop = findNearbyValuableDrop(player, level);
@@ -392,7 +486,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     /**
-     * KROK 1: Bezpieczne schodki 1x3 w dół do targetY (Y = -50) z planowaniem A* i blokadą Bedrocka.
+     * KROK 1: Bezpieczne schodki 1x3 w dół do targetY (Y = -50) z planowaniem A* i
+     * blokadą Bedrocka.
      * Czyszczenie pełnej wysokości 3 bloków zapobiega blokowaniu głowy o sufit.
      */
     private PathingCommand tickDescending(LocalPlayer player, Level level) {
@@ -414,30 +509,66 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         // 1. Zabezpieczenie przed Bedrockiem:
         // Jeśli stopień w dół (stepDown) lub przód to bedrock, nie możemy zejść niżej.
-        // Zamiast obracać się o 180° w tył (co powodowało spadek z bloku), adaptujemy obecny poziom Y jako bezpieczną podłogę!
-        if (stepDown.getY() <= MIN_SAFE_BEDROCK_Y || isBedrockOrUnbreakable(level, stepDown) || isBedrockOrUnbreakable(level, frontFeet)) {
+        // Zamiast obracać się o 180° w tył (co powodowało spadek z bloku), adaptujemy
+        // obecny poziom Y jako bezpieczną podłogę!
+        if (stepDown.getY() <= MIN_SAFE_BEDROCK_Y || isBedrockOrUnbreakable(level, stepDown)
+                || isBedrockOrUnbreakable(level, frontFeet)) {
             this.targetY = feet.getY();
             this.state = State.TUNNELING;
             this.tunnelDir = this.primaryMiningDir;
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
-        // 2. Zagrożenie na przodzie (lawa / woda / brak podłoża pod docelowym stopniem)
-        if (isHazardNear(level, frontHead) || isHazardNear(level, frontFeet) || isHazardNear(level, stepDown)
-                || !isSolidSupport(level, stepFloor)) {
-            if (!isSolidSupport(level, stepFloor) && tryBridgeFloor(player, level, stepFloor, feet.below())) {
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        // 2. Sprawdź realny wyciek (odsłonięta ciecz) vs ukryta lawa za ścianą
+        BlockPos exposedBreach = findExposedLavaBreach(level, feet, descendDir);
+        if (exposedBreach != null) {
+            if (selectThrowawayBlock(player)) {
+                this.hazardSourcePos = exposedBreach;
+                this.sealFailedAttempts = 0;
+                this.state = State.SEALING_HAZARD;
+                return handleSealingHazard(player, level);
             }
-            return resolveObstacleDeadlock(player, level, feet);
+            return handleLavaOrObstacleEncounter(player, level, feet);
         }
 
-        // Kolejność kopania schodków 1x3: sufit nad głową -> przód góra -> przód dół -> docelowy stopień
+        if (hasHiddenHazardBehind(level, frontHead)
+                || hasHiddenHazardBehind(level, frontFeet)
+                || hasHiddenHazardBehind(level, stepDown)) {
+            return handleLavaOrObstacleEncounter(player, level, feet);
+        }
+
+        // 3. Obsługa podłoża stepFloor (rozróżnienie powietrza/cieczy od stabilnego
+        // żwiru)
+        if (!hasStableFloorSupport(level, stepFloor)) {
+            if (level.getBlockState(stepFloor).canBeReplaced()) {
+                // Wykop najpierw frontHead, frontFeet i stepDown, aby odsłonić kąt do
+                // zmostkowania
+                if (!isPassable(level, frontHead))
+                    return mineBlockSafely(player, level, frontHead);
+                if (!isPassable(level, frontFeet))
+                    return mineBlockSafely(player, level, frontFeet);
+                if (!isPassable(level, stepDown))
+                    return mineBlockSafely(player, level, stepDown);
+
+                // Oparciem dla poziomu stepFloor (Y - 2) jest feet.below(2), a nie
+                // feet.below()!
+                if (tryBridgeFloor(player, level, stepFloor, feet.below(2))) {
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+            }
+            this.targetY = feet.getY();
+            this.state = State.TUNNELING;
+            this.tunnelAnchorPos = feet;
+            return handleLavaOrObstacleEncounter(player, level, feet);
+        }
+
+        // 4. Kolejność kopania schodków 1x3: sufit nad głową -> przód góra -> przód dół
+        // -> docelowy stopień
         List<BlockPos> stairBlocks = List.of(
                 feet.above(2),
                 frontHead,
                 frontFeet,
-                stepDown
-        );
+                stepDown);
 
         for (BlockPos target : stairBlocks) {
             if (isBedrockOrUnbreakable(level, target)) {
@@ -452,13 +583,15 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         }
 
         // Wszystkie bloki schodka są czyste -> płynny krok w przód i w dół bez spamu A*
+        resetMiningState();
         tunnelAnchorPos = stepDown;
         moveSafelyTowards(player, Vec3.atBottomCenterOf(stepDown));
         return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
     }
 
     /**
-     * Schodki 1x3 w górę z omijaniem Bedrocka i lawy powracające na targetY (np. Y = -50).
+     * Schodki 1x3 w górę z omijaniem Bedrocka i lawy powracające na targetY (np. Y
+     * = -50).
      */
     private PathingCommand tickAscending(LocalPlayer player, Level level) {
         BlockPos feet = player.blockPosition();
@@ -484,16 +617,19 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                     this.tunnelDir = this.primaryMiningDir;
                     return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
                 }
-                BlockPos forwardAscendTarget = feet.relative(primaryMiningDir, 4).atY(Math.min(targetY, MIN_SAFE_BEDROCK_Y));
-                return new PathingCommand(new baritone.api.pathing.goals.GoalBlock(forwardAscendTarget), PathingCommandType.SET_GOAL_AND_PATH);
+                BlockPos forwardAscendTarget = feet.relative(primaryMiningDir, 4)
+                        .atY(Math.min(targetY, MIN_SAFE_BEDROCK_Y));
+                return new PathingCommand(new baritone.api.pathing.goals.GoalBlock(forwardAscendTarget),
+                        PathingCommandType.SET_GOAL_AND_PATH);
             }
         }
 
         BlockPos headClearance = feet.above(2);
-        BlockPos nextStepFeet  = feet.relative(tunnelDir).above(1);
-        BlockPos nextStepHead  = feet.relative(tunnelDir).above(2);
+        BlockPos nextStepFeet = feet.relative(tunnelDir).above(1);
+        BlockPos nextStepHead = feet.relative(tunnelDir).above(2);
 
-        // Bloki do wykopania w profilu 1x3 w górę (sufit nad głową -> głowa stopnia -> stopy stopnia)
+        // Bloki do wykopania w profilu 1x3 w górę (sufit nad głową -> głowa stopnia ->
+        // stopy stopnia)
         List<BlockPos> ascendBlocks = List.of(headClearance, nextStepHead, nextStepFeet);
         for (BlockPos target : ascendBlocks) {
             if (isBedrockOrUnbreakable(level, target)) {
@@ -521,28 +657,33 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                     this.tunnelDir = this.primaryMiningDir;
                     return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
                 }
-                BlockPos forwardAscendTarget = feet.relative(primaryMiningDir, 4).atY(Math.min(targetY, MIN_SAFE_BEDROCK_Y));
-                return new PathingCommand(new baritone.api.pathing.goals.GoalBlock(forwardAscendTarget), PathingCommandType.SET_GOAL_AND_PATH);
+                BlockPos forwardAscendTarget = feet.relative(primaryMiningDir, 4)
+                        .atY(Math.min(targetY, MIN_SAFE_BEDROCK_Y));
+                return new PathingCommand(new baritone.api.pathing.goals.GoalBlock(forwardAscendTarget),
+                        PathingCommandType.SET_GOAL_AND_PATH);
             }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
         tunnelAnchorPos = nextStepFeet;
         moveSafelyTowards(player, Vec3.atBottomCenterOf(nextStepFeet));
-        boolean canAscendJump = player.onGround() && isPassable(level, feet.above(2)) && nextStepFeet.getY() > player.getY() + 0.35D;
+        boolean canAscendJump = player.onGround() && isPassable(level, feet.above(2))
+                && nextStepFeet.getY() > player.getY() + 0.35D;
         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, canAscendJump);
         return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
     }
 
     private boolean isAscendingDirectionClear(Level level, BlockPos feet, Direction dir) {
         BlockPos headClearance = feet.above(2);
-        BlockPos nextStepFeet  = feet.relative(dir).above(1);
-        BlockPos nextStepHead  = feet.relative(dir).above(2);
+        BlockPos nextStepFeet = feet.relative(dir).above(1);
+        BlockPos nextStepHead = feet.relative(dir).above(2);
 
-        if (isBedrockOrUnbreakable(level, headClearance) || isBedrockOrUnbreakable(level, nextStepFeet) || isBedrockOrUnbreakable(level, nextStepHead)) {
+        if (isBedrockOrUnbreakable(level, headClearance) || isBedrockOrUnbreakable(level, nextStepFeet)
+                || isBedrockOrUnbreakable(level, nextStepHead)) {
             return false;
         }
-        if (isHazardNear(level, headClearance) || isHazardNear(level, nextStepFeet) || isHazardNear(level, nextStepHead)) {
+        if (isHazardNear(level, headClearance) || isHazardNear(level, nextStepFeet)
+                || isHazardNear(level, nextStepHead)) {
             return false;
         }
         return true;
@@ -577,8 +718,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     /**
-     * KROK 2 i 3: Kopanie prostej autostrady 1x2 wzdłuż Dominant Mining Vector (primaryMiningDir)
-     * z omijaniem bedrocka w pionie (step up) i bezpiecznym objazdem bocznym (MIN_PARALLEL_SPACING = 3).
+     * KROK 2 i 3: Kopanie prostej autostrady 1x2 wzdłuż Dominant Mining Vector
+     * (primaryMiningDir)
+     * z omijaniem bedrocka w pionie (step up) i bezpiecznym objazdem bocznym
+     * (MIN_PARALLEL_SPACING = 3).
      */
     private PathingCommand tickTunneling(LocalPlayer player, Level level) {
         BlockPos feet = player.blockPosition();
@@ -611,11 +754,16 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         if (this.turnCommitCooldown > 0) {
             this.turnCommitCooldown--;
         }
+        if (this.turnCooldownTicks > 0) {
+            this.turnCooldownTicks--;
+        }
 
         // 2. Zabezpieczenie przed równoległym korytarzem w odległości < 3 bloków
         // Aktywne TYLKO po wykopaniu co najmniej 6 bloków prosto w nowym kierunku
-        // (zapobiega błędnemu wykrywaniu korytarza za plecami zaraz po skręcie o 90 stopni)
-        if (this.turnCommitCooldown <= 0 && this.consecutiveStraightBlocks >= 6 && isTooCloseToOldTunnel(feet, primaryMiningDir)) {
+        // (zapobiega błędnemu wykrywaniu korytarza za plecami zaraz po skręcie o 90
+        // stopni)
+        if (this.turnCommitCooldown <= 0 && this.consecutiveStraightBlocks >= 6
+                && isTooCloseToOldTunnel(feet, primaryMiningDir)) {
             return forceLateralCorrection(player, level, feet);
         }
 
@@ -624,23 +772,23 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         BlockPos ceilingAboveFront = frontHead.above();
         BlockPos floorBelowFront = frontFeet.below();
 
-        // 3. PRIORYTET LAVA PLUGGING: Zatykanie lawy/wody budulcem wprost przed botem bez uciekania i obracania!
-        BlockPos breachPos = findBreachInFront(level, feet, primaryMiningDir);
-        if (breachPos == null) {
-            // Sprawdź czy wokół frontFeet lub frontHead nie ma bezpośredniej lawy do zatkania
-            breachPos = findAnyLavaHazardNear(level, frontHead);
-            if (breachPos == null) {
-                breachPos = findAnyLavaHazardNear(level, frontFeet);
-            }
-        }
-
-        if (breachPos != null) {
+        // 3a. PRIORYTET LAVA PLUGGING: Zatykanie odsłoniętego wycieku lawy budulcem bez
+        // obracania
+        BlockPos exposedBreach = findExposedLavaBreach(level, feet, primaryMiningDir);
+        if (exposedBreach != null) {
             if (selectThrowawayBlock(player)) {
-                this.hazardSourcePos = breachPos;
+                this.hazardSourcePos = exposedBreach;
+                this.sealFailedAttempts = 0;
                 this.state = State.SEALING_HAZARD;
                 return handleSealingHazard(player, level);
             }
-            return resolveObstacleDeadlock(player, level, feet);
+            return handleLavaOrObstacleEncounter(player, level, feet);
+        }
+
+        // 3b. Lawa ukryta za litą ścianą przed graczem (nie próbuj zatykać przez skałę
+        // - bezpieczny objazd)
+        if (hasHiddenHazardBehind(level, frontHead) || hasHiddenHazardBehind(level, frontFeet)) {
+            return handleLavaOrObstacleEncounter(player, level, feet);
         }
 
         // 4. Sprawdź przeszkody w osi głównej (Bedrock / Lawa / Bajorko / Przepaść)
@@ -654,11 +802,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                 return executeVerticalStep(player, level, feet, primaryMiningDir);
             }
 
-            // W przypadku bajorka lawy, braku podłoża lub przeszkody: inteligentny skręt w lewo/prawo lub odwrót
+            // W przypadku bajorka lawy, braku podłoża lub przeszkody: inteligentny skręt w
+            // lewo/prawo lub odwrót
             return handleLavaOrObstacleEncounter(player, level, feet);
         }
 
-        // 6. Obsługa Gravelu / Sandu: jeśli nad frontHead wisi blok opadający, nie wbiegaj pod niego
+        // 6. Obsługa Gravelu / Sandu: jeśli nad frontHead wisi blok opadający, nie
+        // wbiegaj pod niego
         boolean fallingAbove = isFallingBlock(level.getBlockState(ceilingAboveFront));
 
         // 7. Kopanie korytarza 1x2 przed nami
@@ -666,26 +816,26 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         boolean feetBlocked = !isPassable(level, frontFeet);
 
         if (headBlocked || feetBlocked) {
-            BlockPos blockToMine = headBlocked ? frontHead : frontFeet;
-
-            double horizDist = horizontalDistanceToCenter(player.position(), frontFeet);
-            if (horizDist > WALL_STOP_DISTANCE) {
-                moveTowardsWithoutSprint(player, Vec3.atBottomCenterOf(frontFeet));
-            } else {
-                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            // TRYB SPRINT-MINING (Wydajność 10 + Haste 2): płynny bieg ze sprintem i
+            // instamine na spojeniu kratek 1 i 2
+            if (canSprintMine(player, level, frontHead, frontFeet)) {
+                return executeSprintMining(player, level, frontHead, frontFeet);
             }
 
+            stopMovementInputs();
+            BlockPos blockToMine = headBlocked ? frontHead : frontFeet;
             return mineBlockSafely(player, level, blockToMine);
         }
 
         // 8. Ochrona przed wejściem w przepaść lub do jeziora lawy:
         // Pod żadnym pozorem nie stawiaj kroku w przód, jeśli podłoga nie daje oparcia!
         BlockPos stepFloor = frontFeet.below();
-        if (!isSolidSupport(level, stepFloor)) {
-            if (!tryBridgeFloor(player, level, stepFloor, feet.below())) {
-                return handleLavaOrObstacleEncounter(player, level, feet);
+        if (!hasStableFloorSupport(level, stepFloor)) {
+            if (level.getBlockState(stepFloor).canBeReplaced()
+                    && tryBridgeFloor(player, level, stepFloor, feet.below())) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            return handleLavaOrObstacleEncounter(player, level, feet);
         }
 
         // Korytarz czysty -> płynny krok naprzód
@@ -695,31 +845,166 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
     }
 
+    private boolean isFastPickaxeActive(LocalPlayer player) {
+        if (FastBreakHelper.hasEfficiency10(ctx) || FastBreakHelper.isFastPickaxe(ctx)) {
+            return true;
+        }
+        ItemStack held = player.getMainHandItem();
+        if (isPickaxe(held)) {
+            int eff = FastBreakHelper.getEfficiencyLevel(held);
+            boolean hasHaste = player.hasEffect(MobEffects.DIG_SPEED);
+            if (eff >= 8 || (eff >= 5 && hasHaste) || eff >= 10) {
+                return true;
+            }
+        }
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (isPickaxe(stack)) {
+                int eff = FastBreakHelper.getEfficiencyLevel(stack);
+                if (eff >= 8 || (eff >= 5 && player.hasEffect(MobEffects.DIG_SPEED)) || eff >= 10) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean canSprintMine(LocalPlayer player, Level level, BlockPos frontHead, BlockPos frontFeet) {
+        if (!isFastPickaxeActive(player)) {
+            return false;
+        }
+        BlockState headState = level.getBlockState(frontHead);
+        BlockState feetState = level.getBlockState(frontFeet);
+
+        // Wyklucz bedrock, obsydian i bloki o twardości > 4.5
+        float headHardness = headState.getDestroySpeed(level, frontHead);
+        float feetHardness = feetState.getDestroySpeed(level, frontFeet);
+        if (headHardness < 0 || headHardness > 4.5f || feetHardness < 0 || feetHardness > 4.5f) {
+            return false;
+        }
+
+        // Upewnij się, że podłoga pod stopami i pod kolejnym krokiem jest stabilna
+        BlockPos nextFloor = frontFeet.below();
+        if (!hasStableFloorSupport(level, nextFloor) || !hasStableFloorSupport(level, player.blockPosition().below())) {
+            return false;
+        }
+
+        return !isFrontDirectlyBlockedByHazard(level, player.blockPosition(), primaryMiningDir);
+    }
+
+    private PathingCommand executeSprintMining(LocalPlayer player, Level level, BlockPos frontHead,
+            BlockPos frontFeet) {
+        boolean headBlocked = !isPassable(level, frontHead);
+        boolean feetBlocked = !isPassable(level, frontFeet);
+
+        // 1. Zapewnij kilof w ręku
+        BlockState stateToMine = headBlocked ? level.getBlockState(frontHead) : level.getBlockState(frontFeet);
+        equipBestTool(player, stateToMine);
+
+        // 2. Kąt patrzenia: celujemy w linię podziału między dolną kratką 1 (stopy) a
+        // górną 2 (głowa)
+        double distH = horizontalDistanceToCenter(player.position(), frontFeet);
+        float pitch;
+        if (feetBlocked && distH < 1.05D) {
+            // Jeśli dolny blok jest tuż przed stopami (<1.05m), obniżamy celownik, aby nie
+            // zawadzić o stopień
+            pitch = 25.5f;
+        } else {
+            // Kąt sprintu: ~12.5° w dół (dokładnie na wysokość Y+1.0 między kratką 1 a 2 z
+            // wyprzedzeniem 2-3 bloków)
+            pitch = 12.5f;
+        }
+
+        float targetYaw = primaryMiningDir.toYRot();
+
+        // Delikatne centrowanie w osi korytarza bez używania klawiszy A/D (eliminacja
+        // Simulation)
+        BlockPos feetPos = player.blockPosition();
+        double centerOffset = (primaryMiningDir.getAxis() == Direction.Axis.Z)
+                ? (player.getX() - (feetPos.getX() + 0.5D))
+                : (player.getZ() - (feetPos.getZ() + 0.5D));
+        if (Math.abs(centerOffset) > 0.05D) {
+            float steer = (float) Math.clamp(-centerOffset * 15.0D, -3.0D, 3.0D);
+            targetYaw += steer;
+        }
+
+        Rotation sprintRot = applyGrimGcd(player.getYRot(), player.getXRot(), targetYaw, pitch);
+        baritone.getLookBehavior().updateTarget(sprintRot, true);
+
+        // 3. Ciągły atak lewym przyciskiem myszy z powiadomieniem
+        // ContinuousBreakController
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+        BlockPos activeBreakTarget = (feetBlocked && distH < 1.05D) ? frontFeet : (headBlocked ? frontHead : frontFeet);
+        ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(activeBreakTarget));
+
+        // 4. Nieprzerwany sprint w przód bez zatrzymywania
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
+        player.setSprinting(true);
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
+
+        this.consecutiveStraightBlocks++;
+        this.activeMiningTicks = 0;
+        this.aimStallTicks = 0;
+
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    private boolean isLavaFluid(Level level, BlockPos pos) {
+        FluidState fs = level.getFluidState(pos);
+        return !fs.isEmpty() && (fs.is(FluidTags.LAVA) || fs.is(Fluids.LAVA) || fs.is(Fluids.FLOWING_LAVA));
+    }
+
+    private boolean isLava(Level level, BlockPos pos) {
+        return isLavaFluid(level, pos);
+    }
+
     private boolean isFrontDirectlyBlockedByHazard(Level level, BlockPos feet, Direction forward) {
+        BlockPos frontFeet = feet.relative(forward);
+        BlockPos frontHead = frontFeet.above();
+        long frontKey2D = to2DKey(frontFeet.getX(), frontFeet.getZ());
+
+        if (this.hazardColumns2D.contains(frontKey2D)) {
+            return true;
+        }
+
         // Skanowanie zagrożeń w osi marszu na dystans do 4 bloków w przód:
-        // Zapobiega przebijaniu ściany do komory lawowej / otwartej jaskini z jeziorem lawy!
         for (int step = 1; step <= 4; step++) {
-            BlockPos frontFeet = feet.relative(forward, step);
-            BlockPos frontHead = frontFeet.above();
-            BlockPos ceilingAboveFront = frontHead.above();
-            BlockPos floorBelowFront = frontFeet.below();
+            BlockPos stepFeet = feet.relative(forward, step);
+            BlockPos stepHead = stepFeet.above();
+            BlockPos ceilingAbove = stepHead.above();
+            BlockPos floorBelow = stepFeet.below();
 
             // 1. Bezpośrednia lawa w obrębie profilu tunelu
-            if (level.getFluidState(frontFeet).is(FluidTags.LAVA)
-                    || level.getFluidState(frontHead).is(FluidTags.LAVA)
-                    || level.getFluidState(ceilingAboveFront).is(FluidTags.LAVA)
-                    || level.getFluidState(floorBelowFront).is(FluidTags.LAVA)) {
+            if (isLava(level, stepFeet)
+                    || isLava(level, stepHead)
+                    || isLava(level, ceilingAbove)
+                    || isLava(level, floorBelow)) {
                 return true;
             }
 
             // 2. Brak podłoża lub lawa w podłodze na pierwszym kroku
-            if (step == 1 && (!isSolidSupport(level, floorBelowFront) || level.getFluidState(floorBelowFront).is(FluidTags.LAVA))) {
+            if (step == 1 && (!hasStableFloorSupport(level, floorBelow) || isLava(level, floorBelow))) {
                 return true;
             }
 
-            // 3. Jeśli korytarz jest otwarty (air / cave), a w pobliżu (do 4 bloków) jest jezioro lawy
-            if (isPassable(level, frontFeet) || isPassable(level, frontHead)) {
-                if (isLavaLakeNearby(level, frontFeet, 4)) {
+            // 3. Blok lity przed nami: sprawdzamy czy jego wykopanie uwolni lawę
+            if (step == 1) {
+                if (!isPassable(level, stepFeet) && hasHiddenHazardBehind(level, stepFeet, forward)) {
+                    return true;
+                }
+                if (!isPassable(level, stepHead) && hasHiddenHazardBehind(level, stepHead, forward)) {
+                    return true;
+                }
+            }
+
+            // 4. Przestrzeń otwarta przed nami (stary tunel / jaskinia):
+            // Sprawdzamy ODSŁONIĘTĄ lawę zamiast ślepej penetracji litej skały
+            if (isPassable(level, stepFeet) || isPassable(level, stepHead)) {
+                if (hasExposedLavaInOpenSpace(level, stepFeet, forward)) {
                     return true;
                 }
             }
@@ -728,56 +1013,118 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         return false;
     }
 
-    private boolean isLavaLakeNearby(Level level, BlockPos center, int radius) {
-        int cx = center.getX();
-        int cy = center.getY();
-        int cz = center.getZ();
-        for (int dy = -3; dy <= 2; dy++) {
-            for (int dx = -radius; dx <= radius; dx++) {
-                for (int dz = -radius; dz <= radius; dz++) {
-                    if (dx * dx + dz * dz > radius * radius) continue;
-                    BlockPos p = new BlockPos(cx + dx, cy + dy, cz + dz);
-                    if (level.getFluidState(p).is(FluidTags.LAVA)) {
-                        return true;
-                    }
+    /**
+     * Sprawdza czy w otwartej przestrzeni (stary tunel / skrzyżowanie / jaskinia) znajduje się
+     * ODSŁONIĘTA lawa mająca bezpośredni kontakt z powietrzem tunelu (zamiast ślepego cylindra przez litą skałę).
+     */
+    private boolean hasExposedLavaInOpenSpace(Level level, BlockPos airStartPos, Direction moveDir) {
+        BlockPos headPos = airStartPos.above();
+        BlockPos floorPos = airStartPos.below();
+        if (isLava(level, airStartPos) || isLava(level, headPos) || isLava(level, floorPos) || isLava(level, headPos.above())) {
+            return true;
+        }
+        if (isPassable(level, floorPos) && isLava(level, floorPos.below())) {
+            return true;
+        }
+
+        Direction backDir = (moveDir != null) ? moveDir.getOpposite() : null;
+        for (Direction dir : Direction.Plane.HORIZONTAL) {
+            if (dir == backDir) continue;
+            if (isLava(level, airStartPos.relative(dir)) || isLava(level, headPos.relative(dir))) {
+                return true;
+            }
+            BlockPos sideAir = airStartPos.relative(dir);
+            if (isPassable(level, sideAir)) {
+                if (isLava(level, sideAir.below()) || isLava(level, sideAir.relative(dir))
+                        || (moveDir != null && isLava(level, sideAir.relative(moveDir)))) {
+                    return true;
                 }
             }
         }
         return false;
     }
 
-    private BlockPos findBreachInFront(Level level, BlockPos feet, Direction forward) {
+    /**
+     * Zwraca pozycję do zatkania TYLKO wtedy, gdy lawa faktycznie ma otwarte
+     * przejście do korytarza gracza.
+     */
+    private BlockPos findExposedLavaBreach(Level level, BlockPos feet, Direction forward) {
+        BlockPos head = feet.above();
         BlockPos frontFeet = feet.relative(forward);
         BlockPos frontHead = frontFeet.above();
 
-        FluidState headFluid = level.getFluidState(frontHead);
-        if (!headFluid.isEmpty() && (headFluid.is(FluidTags.LAVA) || headFluid.isSource())) {
-            return frontHead.immutable();
+        List<BlockPos> corridorCells = new ArrayList<>(4);
+        corridorCells.add(feet);
+        corridorCells.add(head);
+        // Sprawdzamy sąsiadów frontFeet/frontHead pod kątem wycieku tylko jeśli same są
+        // już wykopane!
+        if (isPassable(level, frontFeet))
+            corridorCells.add(frontFeet);
+        if (isPassable(level, frontHead))
+            corridorCells.add(frontHead);
+
+        for (BlockPos cell : corridorCells) {
+            if (isLavaFluid(level, cell) && level.getBlockState(cell).canBeReplaced()) {
+                return cell.immutable();
+            }
+            for (Direction dir : Direction.values()) {
+                BlockPos adj = cell.relative(dir);
+                if (isLavaFluid(level, adj) && level.getBlockState(adj).canBeReplaced()
+                        && hasSolidNeighborForPlacement(level, adj)) {
+                    return adj.immutable();
+                }
+            }
         }
-
-        FluidState feetFluid = level.getFluidState(frontFeet);
-        if (!feetFluid.isEmpty() && (feetFluid.is(FluidTags.LAVA) || feetFluid.isSource())) {
-            return frontFeet.immutable();
-        }
-
-        BlockPos twoStepsFeet = frontFeet.relative(forward);
-        BlockPos twoStepsHead = twoStepsFeet.above();
-
-        FluidState head2Fluid = level.getFluidState(twoStepsHead);
-        if (!head2Fluid.isEmpty() && (head2Fluid.is(FluidTags.LAVA) || head2Fluid.isSource())) {
-            return twoStepsHead.immutable();
-        }
-
-        FluidState feet2Fluid = level.getFluidState(twoStepsFeet);
-        if (!feet2Fluid.isEmpty() && (feet2Fluid.is(FluidTags.LAVA) || feet2Fluid.isSource())) {
-            return twoStepsFeet.immutable();
-        }
-
         return null;
     }
 
     /**
-     * Sprawdza, czy w odległości 1..2 bloków prostopadle do wektora znajduje się już wykopany tunel.
+     * Wykrywa lawę ukrytą za litą ścianą (np. za frontFeet lub frontHead), zanim
+     * bot ją wykopie.
+     */
+    private boolean hasHiddenHazardBehind(Level level, BlockPos targetPos, Direction miningDir) {
+        if (isPassable(level, targetPos)) {
+            return false; // Powietrza się nie kopie - ściany boczne zostają nienaruszone
+        }
+        if (isLava(level, targetPos)) {
+            return true;
+        }
+        Direction backDir = (miningDir != null) ? miningDir.getOpposite() : null;
+        for (Direction dir : Direction.values()) {
+            if (dir == backDir) continue; // Ignoruj stronę gracza
+            if (dir == Direction.DOWN) continue; // Lawa pod litym blokiem nie płynie do góry
+
+            BlockPos neighbor = targetPos.relative(dir);
+            if (isLava(level, neighbor)) {
+                return true;
+            }
+            if (dir == Direction.UP && level.getBlockState(neighbor).getBlock() instanceof FallingBlock) {
+                if (isLava(level, neighbor.above())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean hasHiddenHazardBehind(Level level, BlockPos solidWallPos) {
+        return hasHiddenHazardBehind(level, solidWallPos, primaryMiningDir);
+    }
+
+    private boolean hasSolidNeighborForPlacement(Level level, BlockPos targetPos) {
+        for (Direction dir : Direction.values()) {
+            BlockPos neighbor = targetPos.relative(dir);
+            BlockState s = level.getBlockState(neighbor);
+            if (!s.canBeReplaced() && s.getFluidState().isEmpty() && !s.isAir()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Sprawdza, czy w odległości 1..2 bloków prostopadle do wektora znajduje się
+     * już wykopany tunel.
      */
     private boolean isTooCloseToOldTunnel(BlockPos feet, Direction forward) {
         Direction right = forward.getClockWise();
@@ -810,15 +1157,19 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     private boolean canShiftVertical(Level level, BlockPos feet, Direction forward) {
-        if (feet.getY() >= targetY) return false;
+        if (feet.getY() >= targetY)
+            return false;
 
         BlockPos stepUpFeet = feet.above().relative(forward);
         BlockPos stepUpHead = stepUpFeet.above();
         BlockPos ceilingAboveHead = feet.above(2);
 
-        if (isBedrockOrUnbreakable(level, ceilingAboveHead)) return false;
-        if (isBedrockOrUnbreakable(level, stepUpFeet) || isBedrockOrUnbreakable(level, stepUpHead)) return false;
-        if (isHazardNear(level, stepUpFeet) || isHazardNear(level, stepUpHead)) return false;
+        if (isBedrockOrUnbreakable(level, ceilingAboveHead))
+            return false;
+        if (isBedrockOrUnbreakable(level, stepUpFeet) || isBedrockOrUnbreakable(level, stepUpHead))
+            return false;
+        if (isHazardNear(level, stepUpFeet) || isHazardNear(level, stepUpHead))
+            return false;
 
         return true;
     }
@@ -891,127 +1242,254 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     private PathingCommand handleLavaOrObstacleEncounter(LocalPlayer player, Level level, BlockPos feet) {
-        // Natychmiastowe zatrzymanie wszystkich wektorów ruchu i kopania
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
+        baritone.getInputOverrideHandler().clearAllKeys();
+        resetMiningState();
 
         Direction currentDir = primaryMiningDir != null ? primaryMiningDir : Direction.SOUTH;
         this.blockedForwardDir = currentDir;
-        this.lastTurnBlockedDir = currentDir;
+
+        // Oznacz blok przed nami w osi marszu jako zagrożenie (zapobiega powrotowi po obrocie)
+        BlockPos frontPos = feet.relative(currentDir);
+        this.hazardColumns2D.add(to2DKey(frontPos.getX(), frontPos.getZ()));
+
+        BlockPos nodeKey = feet.immutable();
+        EnumSet<Direction> blockedAtNode = blockedDirsByNode.computeIfAbsent(nodeKey,
+                k -> EnumSet.noneOf(Direction.class));
+        blockedAtNode.add(currentDir);
+        blockedAtNode.add(currentDir.getOpposite());
 
         Direction leftDir = currentDir.getCounterClockWise();
         Direction rightDir = currentDir.getClockWise();
 
-        boolean leftSafe = isSafeBranchDirection(level, feet, leftDir);
-        boolean rightSafe = isSafeBranchDirection(level, feet, rightDir);
+        // Krok 1: Szukaj świeżej, niewykopanej ściany (preferowane dla strip-mine)
+        boolean leftFresh = !blockedAtNode.contains(leftDir) && isSafeBranchDirection(level, feet, leftDir, false);
+        boolean rightFresh = !blockedAtNode.contains(rightDir) && isSafeBranchDirection(level, feet, rightDir, false);
 
-        logDirect("§e[Bypass] Wykryto bajorko lawy / przeszkodę! Bezpieczeństwo ścian: LEWO=" 
-                + (leftSafe ? "§aWOLNE" : "§cLAWA/BLOK") + "§e, PRAWO=" 
-                + (rightSafe ? "§aWOLNE" : "§cLAWA/BLOK"));
+        // Krok 2: Fallback - pozwól ominąć przeszkodę przez własny wykopany wcześniej bezpieczny tunel!
+        boolean leftFallback = leftFresh || (!blockedAtNode.contains(leftDir) && isSafeBranchDirection(level, feet, leftDir, true));
+        boolean rightFallback = rightFresh || (!blockedAtNode.contains(rightDir) && isSafeBranchDirection(level, feet, rightDir, true));
 
-        // 1. Jeśli tylko lewo jest bezpieczne (prawo ma lawę) -> skręć w lewo
-        if (leftSafe && !rightSafe) {
-            logDirect("§c[Bypass] §ePo prawej stronie lawa! Skręcam natychmiast w §aLEWO§e!");
-            return turnAndMineNewDirection(player, level, feet, leftDir);
-        }
+        logDirect(String.format("§e[Bypass] Przeszkoda na węźle! Ściany (Nowe/Tunel): L=%s/%s, P=%s/%s",
+                (leftFresh ? "§aŚWIEŻA" : "§c-"), (leftFallback ? "§bTUNEL" : "§cZABLOK"),
+                (rightFresh ? "§aŚWIEŻA" : "§c-"), (rightFallback ? "§bTUNEL" : "§cZABLOK")));
 
-        // 2. Jeśli tylko prawo jest bezpieczne (lewo ma lawę) -> skręć w prawo
-        if (rightSafe && !leftSafe) {
-            logDirect("§c[Bypass] §ePo lewej stronie lawa! Skręcam natychmiast w §aPRAWO§e!");
-            return turnAndMineNewDirection(player, level, feet, rightDir);
-        }
-
-        // 3. Jeśli obie strony są bezpieczne -> wybierz lepszą (np. lita skała)
-        if (leftSafe && rightSafe) {
+        // 1. Jeśli świeże ściany są dostępne:
+        if (leftFresh && rightFresh) {
             Direction chosen = pickBestBranchDirection(level, feet, leftDir, rightDir);
             logDirect("§a[Bypass] Obie strony bezpieczne od lawy! Skręcam w §f" + chosen.name() + "§a!");
-            return turnAndMineNewDirection(player, level, feet, chosen);
+            return initiateTurnState(chosen);
+        }
+        if (leftFresh) {
+            logDirect("§c[Bypass] §ePo prawej stronie przeszkoda! Skręcam natychmiast w §aLEWO§e!");
+            return initiateTurnState(leftDir);
+        }
+        if (rightFresh) {
+            logDirect("§c[Bypass] §ePo lewej stronie przeszkoda! Skręcam natychmiast w §aPRAWO§e!");
+            return initiateTurnState(rightDir);
         }
 
-        // 4. Jeśli obie strony mają lawę (lawa z przodu, z lewej i z prawej) -> COFNIJ SIĘ DO TYŁU!
-        logDirect("§c[Bypass] §4Lawa ze wszystkich stron! Wycofuję się do tyłu bezpiecznym tunelem...");
+        // 2. Jeśli świeże ściany są niedostępne, ale stary tunel jest czysty i bezpieczny:
+        if (leftFallback && rightFallback) {
+            Direction chosen = pickBestBranchDirection(level, feet, leftDir, rightDir);
+            logDirect("§b[Bypass] Używam istniejącego bezpiecznego tunelu do ominięcia przeszkody: §f" + chosen.name());
+            return initiateTurnState(chosen);
+        }
+        if (leftFallback) {
+            logDirect("§b[Bypass] Omijanie przeszkody przez bezpieczny tunel po §aLEWEJ§b!");
+            return initiateTurnState(leftDir);
+        }
+        if (rightFallback) {
+            logDirect("§b[Bypass] Omijanie przeszkody przez bezpieczny tunel po §aPRAWEJ§b!");
+            return initiateTurnState(rightDir);
+        }
+
+        // 3. Wszystkie strony na tym węźle są fizycznie zablokowane -> przejdź w State.RETREATING
+        if (!leftFallback) blockedAtNode.add(leftDir);
+        if (!rightFallback) blockedAtNode.add(rightDir);
+
         return executeRetreatBackward(player, level, feet, currentDir);
     }
 
-    private PathingCommand turnAndMineNewDirection(LocalPlayer player, Level level, BlockPos feet, Direction newDir) {
-        this.primaryMiningDir = newDir;
-        this.tunnelDir = newDir;
+    private PathingCommand initiateTurnState(Direction newDir) {
+        baritone.getInputOverrideHandler().clearAllKeys();
+        stopMovementInputs();
+        resetMiningState();
+        this.pendingTurnDir = newDir;
+        this.state = State.TURNING;
+        this.turnBrakeTicks = 3; // Wymuś 3 ticki pełnego wygaszenia pędu przed jakimkolwiek obrotem
+        this.turnCooldownTicks = 15;
+        if (ctx.playerController() != null) {
+            ctx.playerController().resetBlockRemoving();
+        }
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    /**
+     * Wywoływane z onTick(), gdy state == State.TURNING.
+     * Obraca kamerę zgodnie z Grim GCD i dopiero po zakończeniu obrotu zatwierdza
+     * primaryMiningDir.
+     */
+    private PathingCommand tickTurning(LocalPlayer player, Level level) {
+        stopMovementInputs();
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+
+        if (this.pendingTurnDir == null) {
+            this.state = State.TUNNELING;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // FAZA 1: Pełne wygaszenie pędu poziomego PRZED obrotem kamery (eliminuje
+        // impuls 0.0098 w Simulation)
+        Vec3 vel = player.getDeltaMovement();
+        double horizSpeedSq = vel.x * vel.x + vel.z * vel.z;
+        if (this.turnBrakeTicks > 0 || horizSpeedSq > 1.0E-4D) {
+            if (this.turnBrakeTicks > 0) {
+                this.turnBrakeTicks--;
+            }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // FAZA 2: Czysty obrót kamery na stojąco (zero klawiszy ruchu = zero rozjazdu
+        // moveRelative w GrimAC)
+        float targetYaw = this.pendingTurnDir.toYRot();
+        float targetPitch = 0.0f;
+
+        Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), targetYaw, targetPitch);
+        baritone.getLookBehavior().updateTarget(gcdRot, true);
+
+        float yawDiff = Math.abs(Mth.wrapDegrees(player.getYRot() - targetYaw));
+        if (yawDiff > 2.5f) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // FAZA 3: Kamera patrzy już w nowy kierunek.
+        // Jeśli gracz stoi zbyt blisko ściany bocznej NOWEGO tunelu, wycentruj tylko w
+        // osi prostopadłej.
+        BlockPos feet = player.blockPosition();
+        Vec3 blockCenter = new Vec3(feet.getX() + 0.5D, player.getY(), feet.getZ() + 0.5D);
+        double lateralError = (this.pendingTurnDir.getAxis() == Direction.Axis.Z)
+                ? Math.abs(player.getX() - blockCenter.x)
+                : Math.abs(player.getZ() - blockCenter.z);
+
+        if (lateralError > 0.15D) {
+            stepTowardsPointWithSneak(player, blockCenter);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        this.primaryMiningDir = this.pendingTurnDir;
+        this.tunnelDir = this.pendingTurnDir;
         this.blockedForwardDir = null;
         this.lateralDetourRemaining = 0;
         this.lateralOffsetDir = null;
         this.turnCommitCooldown = 40;
         this.consecutiveStraightBlocks = 0;
-        this.currentBreakingBlock = null;
-        this.currentBreakingBlockTicks = 0;
-        if (ctx.playerController() != null) {
-            ctx.playerController().resetBlockRemoving();
-        }
+        this.pendingTurnDir = null;
+        this.state = State.TUNNELING;
 
-        BlockPos targetFeet = feet.relative(newDir);
-        BlockPos targetHead = targetFeet.above();
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
 
-        // 1. Płynny obrót kamery na nową ścianę z GCD
-        float targetYaw = newDir.toYRot();
-        Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), targetYaw, 0.0F);
-        baritone.getLookBehavior().updateTarget(gcdRot, true);
+    private PathingCommand executeRetreatBackward(LocalPlayer player, Level level, BlockPos feet,
+            Direction forwardDir) {
+        // Zapisz węzeł jako zablokowany, aby zapobiec natychmiastowemu zapętleniu
+        this.hazardColumns2D.add(to2DKey(feet.getX(), feet.getZ()));
 
-        // Kategoryczny zakaz chodzenia podczas obrotu kamery:
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
+        this.retreatDir = forwardDir.getOpposite();
+        this.retreatStartPos = feet.immutable();
+        this.retreatTicks = 0;
+        this.consecutiveStraightBlocks = 0;
+        this.state = State.RETREATING;
 
-        float yawDiff = Math.abs(Mth.wrapDegrees(player.getYRot() - targetYaw));
-        if (yawDiff > 12.0f) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+        logDirect("§c[Bypass] §4Wszystkie kierunki zablokowane na tym węźle! Wycofuję się do tyłu bezpiecznym tunelem...");
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    private PathingCommand tickRetreating(LocalPlayer player, Level level) {
+        this.retreatTicks++;
+        baritone.getInputOverrideHandler().clearAllKeys();
+
+        if (this.retreatDir == null || this.retreatStartPos == null) {
+            this.state = State.TUNNELING;
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // 2. Wykopanie nowej ściany (najpierw głowa, potem stopy)
-        if (!isPassable(level, targetHead)) {
-            return mineBlockSafely(player, level, targetHead);
-        }
-        if (!isPassable(level, targetFeet)) {
-            return mineBlockSafely(player, level, targetFeet);
+        BlockPos feet = player.blockPosition();
+        int distMoved = feet.distManhattan(this.retreatStartPos);
+
+        Direction leftDir = this.retreatDir.getClockWise();
+        Direction rightDir = this.retreatDir.getCounterClockWise();
+
+        // 1. Sprawdź czy po cofnięciu się o minimum 1 blok otworzyło się bezpieczne odejście w bok
+        if (distMoved >= 1) {
+            boolean canGoLeft = isSafeBranchDirection(level, feet, leftDir, false)
+                    || isSafeBranchDirection(level, feet, leftDir, true);
+            boolean canGoRight = isSafeBranchDirection(level, feet, rightDir, false)
+                    || isSafeBranchDirection(level, feet, rightDir, true);
+
+            if (canGoLeft && canGoRight) {
+                Direction chosen = pickBestBranchDirection(level, feet, leftDir, rightDir);
+                logDirect("§a[Bypass] Wycofano (" + distMoved + " bl.). Wybieram optymalne odejście: §f" + chosen.name());
+                return initiateTurnState(chosen);
+            } else if (canGoLeft) {
+                logDirect("§a[Bypass] Wycofano (" + distMoved + " bl.). Skręcam w bezpieczne odejście: §f" + leftDir.name());
+                return initiateTurnState(leftDir);
+            } else if (canGoRight) {
+                logDirect("§a[Bypass] Wycofano (" + distMoved + " bl.). Skręcam w bezpieczne odejście: §f" + rightDir.name());
+                return initiateTurnState(rightDir);
+            }
         }
 
-        // 3. Ściana przekopana -> płynny krok naprzód w nową odnogę
-        markTunnelDug(targetFeet);
-        moveSafelyTowards(player, Vec3.atBottomCenterOf(targetFeet));
-        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
-    }
-
-    private PathingCommand executeRetreatBackward(LocalPlayer player, Level level, BlockPos feet, Direction forwardDir) {
-        Direction backDir = forwardDir.getOpposite();
-        BlockPos backFeet = feet.relative(backDir);
+        // 2. Jeśli cofnęliśmy się o MAX_RETREAT_BLOCKS lub droga w tył jest zablokowana / minął timeout:
+        BlockPos backFeet = feet.relative(this.retreatDir);
         BlockPos backHead = backFeet.above();
+        boolean backPassable = isPassable(level, backFeet) && isPassable(level, backHead)
+                && !isLava(level, backFeet.below()) && !isLava(level, backFeet);
 
-        this.consecutiveStraightBlocks = 0;
+        if (distMoved >= MAX_RETREAT_BLOCKS || !backPassable || this.retreatTicks > MAX_RETREAT_TICKS) {
+            logDirect("§e[Bypass] Zakończono wycofywanie (dystans: " + distMoved + " bl.). Obracam wektor kopania o 180°.");
+            return initiateTurnState(this.retreatDir);
+        }
 
-        // Jeśli coś zablokowało korytarz za nami (np. gravel):
-        if (!isPassable(level, backHead)) return mineBlockSafely(player, level, backHead);
-        if (!isPassable(level, backFeet)) return mineBlockSafely(player, level, backFeet);
+        // 3. Sprawdź czy korytarz za nami nie został zasypany (np. gravel) - jeśli tak, odkop
+        if (!isPassable(level, backHead)) {
+            return mineBlockSafely(player, level, backHead);
+        }
+        if (!isPassable(level, backFeet)) {
+            return mineBlockSafely(player, level, backFeet);
+        }
 
-        float targetYaw = backDir.toYRot();
+        // 4. Fizyczny ruch w tył: trzymamy yaw osi tunelu i cofamy klawiszem MOVE_BACK (brak nagłych snapów 180°)
+        Direction lookDir = this.retreatDir.getOpposite();
+        float targetYaw = lookDir.toYRot();
         Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), targetYaw, 0.0F);
         baritone.getLookBehavior().updateTarget(gcdRot, false);
 
-        // Krok w tył do poprzedniego bloku
-        moveSafelyTowards(player, Vec3.atBottomCenterOf(backFeet));
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+
+        // Centrowanie w osi poprzecznej tunelu
+        double centerX = feet.getX() + 0.5D;
+        double centerZ = feet.getZ() + 0.5D;
+        double dx = centerX - player.getX();
+        double dz = centerZ - player.getZ();
+        double lateralOffset = dx * leftDir.getStepX() + dz * leftDir.getStepZ();
+
+        if (lateralOffset > 0.12D) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, true);
+        } else if (lateralOffset < -0.12D) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, true);
+        }
+
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
     private boolean isSafeBranchDirection(Level level, BlockPos origin, Direction dir) {
-        if (dir == this.lastTurnBlockedDir) {
-            return false;
-        }
+        return isSafeBranchDirection(level, origin, dir, false);
+    }
+
+    private boolean isSafeBranchDirection(Level level, BlockPos origin, Direction dir, boolean allowExistingTunnels) {
         if (primaryMiningDir != null && dir == primaryMiningDir.getOpposite()) {
             return false;
         }
@@ -1021,6 +1499,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             BlockPos sideHead = sideFeet.above();
             BlockPos sideFloor = sideFeet.below();
             BlockPos sideCeiling = sideHead.above();
+            long key2D = to2DKey(sideFeet.getX(), sideFeet.getZ());
+
+            // 0. Potwierdzone zagrożenia lawowe / zablokowane węzły
+            if (hazardColumns2D.contains(key2D)) {
+                return false;
+            }
 
             // 1. Nie wolno kopać w bedrock ani bloki niezniszczalne
             if (isBedrockOrUnbreakable(level, sideFeet) || isBedrockOrUnbreakable(level, sideHead)) {
@@ -1028,24 +1512,32 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             }
 
             // 2. Podłoże pod nowym korytarzem musi być stabilne (nie wolno wejść w pustkę/lawę)
-            if (!isSolidSupport(level, sideFloor) || level.getFluidState(sideFloor).is(FluidTags.LAVA)) {
+            if (!hasStableFloorSupport(level, sideFloor) || isLava(level, sideFloor)) {
                 return false;
             }
 
             // 3. Ściana i sufit nie mogą być ciekłą lawą
-            if (level.getFluidState(sideFeet).is(FluidTags.LAVA)
-                    || level.getFluidState(sideHead).is(FluidTags.LAVA)
-                    || level.getFluidState(sideCeiling).is(FluidTags.LAVA)) {
+            if (isLava(level, sideFeet) || isLava(level, sideHead) || isLava(level, sideCeiling)) {
                 return false;
             }
 
-            // 4. Jeśli otwarta jaskinia ma w pobliżu lawę (np. do 4 bloków)
-            if ((isPassable(level, sideFeet) || isPassable(level, sideHead)) && isLavaLakeNearby(level, sideFeet, 4)) {
+            // 4. Zagrożenie ukryte za litą ścianą na 1. kroku:
+            if (step == 1 && !isPassable(level, sideFeet) && hasHiddenHazardBehind(level, sideFeet, dir)) {
+                return false;
+            }
+            if (step == 1 && !isPassable(level, sideHead) && hasHiddenHazardBehind(level, sideHead, dir)) {
                 return false;
             }
 
-            // 5. Sprawdź czy korytarz nie nakłada się na starą wykopaną trasę
-            if (dugColumns2D.contains(to2DKey(sideFeet.getX(), sideFeet.getZ()))) {
+            // 5. Otwarta jaskinia / przestrzeń na 1. lub 2. kroku -> sprawdzamy ODSŁONIĘTĄ lawę
+            if (isPassable(level, sideFeet) || isPassable(level, sideHead)) {
+                if (hasExposedLavaInOpenSpace(level, sideFeet, dir)) {
+                    return false;
+                }
+            }
+
+            // 6. Sprawdź czy korytarz nie nakłada się na starą wykopaną trasę (tylko w normalnym trybie)
+            if (!allowExistingTunnels && dugColumns2D.contains(key2D)) {
                 return false;
             }
         }
@@ -1054,9 +1546,6 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     private Direction pickBestBranchDirection(Level level, BlockPos feet, Direction left, Direction right) {
-        if (left == this.lastTurnBlockedDir) return right;
-        if (right == this.lastTurnBlockedDir) return left;
-
         BlockPos leftFeet = feet.relative(left);
         BlockPos rightFeet = feet.relative(right);
 
@@ -1064,13 +1553,17 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         boolean rightSolid = !isPassable(level, rightFeet) && !isBedrockOrUnbreakable(level, rightFeet);
 
         // Preferuj lity kamień (bezpieczne kopanie w ścianę) zamiast otwartej jaskini
-        if (leftSolid && !rightSolid) return left;
-        if (rightSolid && !leftSolid) return right;
+        if (leftSolid && !rightSolid)
+            return left;
+        if (rightSolid && !leftSolid)
+            return right;
 
         boolean leftDug = dugColumns2D.contains(to2DKey(leftFeet.getX(), leftFeet.getZ()));
         boolean rightDug = dugColumns2D.contains(to2DKey(rightFeet.getX(), rightFeet.getZ()));
-        if (!leftDug && rightDug) return left;
-        if (!rightDug && leftDug) return right;
+        if (!leftDug && rightDug)
+            return left;
+        if (!rightDug && leftDug)
+            return right;
 
         return left;
     }
@@ -1079,13 +1572,16 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         return isSafeBranchDirection(level, origin, dir);
     }
 
-    private record MiningAction(BlockPos targetPos, Rotation snapRotation) {}
+    private record MiningAction(BlockPos targetPos, Rotation snapRotation) {
+    }
 
     /**
-     * KROK 4 i 5: Wykrywanie rud, ścisły reach <= 3.5 bloka (GrimSnap) oraz podejście przez Baritone jak w #mine.
+     * KROK 4 i 5: Wykrywanie rud, ścisły reach <= 3.5 bloka (GrimSnap) oraz
+     * podejście przez Baritone jak w #mine.
      */
     private PathingCommand tickMiningOre(LocalPlayer player, Level level, boolean calcFailed, boolean isSafeToCancel) {
-        while (activeOreTarget == null || !isTargetOre(level.getBlockState(activeOreTarget)) || blacklistedOres.contains(activeOreTarget)) {
+        while (activeOreTarget == null || !isTargetOre(level.getBlockState(activeOreTarget))
+                || blacklistedOres.contains(activeOreTarget)) {
             this.invalidStandingPositions.clear();
             this.oreStagnationTicks = 0;
             this.oreAttemptTicks = 0;
@@ -1110,16 +1606,31 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         double effectiveReach = getEffectiveReach();
 
-        // 0. Aktywny lock kopania: jeśli już niszczymy blok (np. zasłaniający lub rudę) i nadal istnieje -> kontynuuj niszczenie bez przerywania!
+        // 0. Aktywny lock kopania: jeśli już niszczymy blok (np. zasłaniający lub rudę)
+        // i nadal istnieje -> kontynuuj niszczenie bez przerywania!
         if (this.currentBreakingBlock != null) {
             BlockState curState = level.getBlockState(this.currentBreakingBlock);
             if (!curState.isAir() && !isBedrockOrUnbreakable(level, this.currentBreakingBlock)) {
-                Optional<Rotation> curSnap = findVerifiedGrimSnapRotation(player, level, this.currentBreakingBlock, effectiveReach);
+                Optional<Rotation> curSnap = findVerifiedGrimSnapRotation(player, level, this.currentBreakingBlock,
+                        effectiveReach);
                 if (curSnap.isEmpty()) {
                     curSnap = RotationUtils.reachable(ctx, this.currentBreakingBlock, effectiveReach);
                 }
                 if (curSnap.isPresent()) {
-                    equipBestTool(player, curState);
+                    boolean switched = equipBestTool(player, curState);
+                    if (switched) {
+                        if (ctx.playerController() != null) {
+                            ctx.playerController().resetBlockRemoving();
+                        }
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                        ContinuousBreakController.reset();
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+                    if (curState.requiresCorrectToolForDrops()
+                            && !player.getMainHandItem().isCorrectToolForDrops(curState)) {
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
                     baritone.getLookBehavior().updateTarget(curSnap.get(), true);
                     baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
                     ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(this.currentBreakingBlock));
@@ -1130,7 +1641,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             }
         }
 
-        // 1. Sprawdź czy ruda (lub blok bezpośrednio ją zasłaniający) ma czysty raycast GrimSnap
+        // 1. Sprawdź czy ruda (lub blok bezpośrednio ją zasłaniający) ma czysty raycast
+        // GrimSnap
         Optional<MiningAction> directAction = findMiningAction(player, level, activeOreTarget, effectiveReach);
         if (directAction.isPresent()) {
             this.invalidStandingPositions.clear();
@@ -1138,7 +1650,21 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             this.oreAttemptTicks = 0;
             MiningAction action = directAction.get();
             this.currentBreakingBlock = action.targetPos();
-            equipBestTool(player, level.getBlockState(action.targetPos()));
+            BlockState actionState = level.getBlockState(action.targetPos());
+            boolean switched = equipBestTool(player, actionState);
+            if (switched) {
+                if (ctx.playerController() != null) {
+                    ctx.playerController().resetBlockRemoving();
+                }
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                ContinuousBreakController.reset();
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            if (actionState.requiresCorrectToolForDrops()
+                    && !player.getMainHandItem().isCorrectToolForDrops(actionState)) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
             baritone.getLookBehavior().updateTarget(action.snapRotation(), true);
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
             ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(action.targetPos()));
@@ -1147,7 +1673,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         // Zwiększ licznik prób dotarcia do tej rudy
         if (++this.oreAttemptTicks > 40) {
-            // Po 40 tickach (~2s) bez możliwości wykopania lub podejścia: pomijamy tę rudę, aby nie blokować bota
+            // Po 40 tickach (~2s) bez możliwości wykopania lub podejścia: pomijamy tę rudę,
+            // aby nie blokować bota
             blacklistedOres.add(activeOreTarget);
             activeOreTarget = null;
             this.oreAttemptTicks = 0;
@@ -1157,16 +1684,19 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         }
 
         // 2. Brak bezpośredniego strzału z obecnej pozycji:
-        // Sprawdź czy bot może bezpiecznie wykonać krok w stronę rudy (jeśli stoi na stabilnym podłożu i ruda jest blisko < 4.2m)
+        // Sprawdź czy bot może bezpiecznie wykonać krok w stronę rudy (jeśli stoi na
+        // stabilnym podłożu i ruda jest blisko < 4.2m)
         Vec3 eyePos = player.getEyePosition(1.0F);
         double distSqToOre = eyePos.distanceToSqr(Vec3.atCenterOf(activeOreTarget));
         if (distSqToOre <= 4.2D * 4.2D && !isHazardNear(level, activeOreTarget)) {
             double dx = activeOreTarget.getX() + 0.5D - player.getX();
             double dz = activeOreTarget.getZ() + 0.5D - player.getZ();
             if (Math.abs(dx) > 0.3D || Math.abs(dz) > 0.3D) {
-                Direction stepDir = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? Direction.EAST : Direction.WEST) : (dz > 0 ? Direction.SOUTH : Direction.NORTH);
+                Direction stepDir = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? Direction.EAST : Direction.WEST)
+                        : (dz > 0 ? Direction.SOUTH : Direction.NORTH);
                 BlockPos stepCheck = player.blockPosition().relative(stepDir);
-                if (isSolidSupport(level, stepCheck.below()) && isPassable(level, stepCheck) && isPassable(level, stepCheck.above())) {
+                if (isSolidSupport(level, stepCheck.below()) && isPassable(level, stepCheck)
+                        && isPassable(level, stepCheck.above())) {
                     baritone.getInputOverrideHandler().clearAllKeys();
                     moveTowardsWithoutSprint(player, Vec3.atBottomCenterOf(activeOreTarget));
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -1174,7 +1704,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             }
         }
 
-        // 3. Jeśli A* już idzie w stronę rudy lub oblicza trasę -> pozwól mu działać, NIE anuluj co tick!
+        // 3. Jeśli A* już idzie w stronę rudy lub oblicza trasę -> pozwól mu działać,
+        // NIE anuluj co tick!
         if (baritone.getPathingBehavior().isPathing()) {
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -1184,7 +1715,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         this.currentBreakingBlock = null;
 
-        // 4. Jeśli A* nie potrafi wyznaczyć ścieżki do rudy -> czarna lista i przejście dalej
+        // 4. Jeśli A* nie potrafi wyznaczyć ścieżki do rudy -> czarna lista i przejście
+        // dalej
         if (calcFailed) {
             blacklistedOres.add(activeOreTarget);
             activeOreTarget = null;
@@ -1195,7 +1727,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
-        // 5. Podejście przez Baritone ze ścisłym limitem reach <= 2.65m i wykluczeniem martwych pozycji
+        // 5. Podejście przez Baritone ze ścisłym limitem reach <= 2.65m i wykluczeniem
+        // martwych pozycji
         Goal goal = new GoalStrictOreApproach(activeOreTarget, this.invalidStandingPositions);
         return new PathingCommand(goal, PathingCommandType.SET_GOAL_AND_PATH);
     }
@@ -1206,7 +1739,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return Optional.empty();
         }
 
-        // 1. Bezpośredni strzał w rudę <= reach (najpierw precyzyjny multipoint raycast GrimSnap)
+        // 1. Bezpośredni strzał w rudę <= reach (najpierw precyzyjny multipoint raycast
+        // GrimSnap)
         Optional<Rotation> multiSnap = findVerifiedGrimSnapRotation(player, level, orePos, reach);
         if (multiSnap.isPresent()) {
             if (hasDirectLavaAboveOrBehind(level, orePos) && player.blockPosition().distManhattan(orePos) <= 1) {
@@ -1223,15 +1757,18 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                 blacklistedOres.add(orePos);
                 return Optional.empty();
             }
-            Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), directOreSnap.get().getYaw(), directOreSnap.get().getPitch());
+            Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), directOreSnap.get().getYaw(),
+                    directOreSnap.get().getPitch());
             return Optional.of(new MiningAction(orePos, gcdRot));
         }
 
-        // 2. Jeśli ruda jest zasłonięta przez pojedynczy blok w ścianie lub podłodze na dystansie <= (reach + 0.7m) -> wykop blok przeszkadzający
+        // 2. Jeśli ruda jest zasłonięta przez pojedynczy blok w ścianie lub podłodze na
+        // dystansie <= (reach + 0.7m) -> wykop blok przeszkadzający
         Vec3 eyePos = player.getEyePosition(1.0F);
         if (eyePos.distanceToSqr(Vec3.atCenterOf(orePos)) <= (reach + 0.7D) * (reach + 0.7D)) {
             BlockPos obstructing = findObstructingBlockInReach(player, level, orePos, reach);
-            if (obstructing != null && !isHazardNear(level, obstructing) && !isBedrockOrUnbreakable(level, obstructing)) {
+            if (obstructing != null && !isHazardNear(level, obstructing)
+                    && !isBedrockOrUnbreakable(level, obstructing)) {
                 // Nie kop podłogi pod własnymi stopami, jeśli pod nią nie ma podpory
                 if (obstructing.equals(player.blockPosition().below()) && !isSolidSupport(level, obstructing.below())) {
                     return Optional.empty();
@@ -1241,7 +1778,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                     obstructSnap = RotationUtils.reachable(ctx, obstructing, reach);
                 }
                 if (obstructSnap.isPresent()) {
-                    Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), obstructSnap.get().getYaw(), obstructSnap.get().getPitch());
+                    Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), obstructSnap.get().getYaw(),
+                            obstructSnap.get().getPitch());
                     return Optional.of(new MiningAction(obstructing, gcdRot));
                 }
             }
@@ -1254,7 +1792,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
      * Powrót na oś głównego tunelu Y=-50 po wykopaniu całej żyły i zebraniu dropu.
      */
     private PathingCommand tickReturningToTunnel(LocalPlayer player, Level level, boolean calcFailed) {
-        if (tunnelAnchorPos == null || calcFailed || player.blockPosition().distManhattan(tunnelAnchorPos) <= 2 || ++returnStuckTicks > 40) {
+        if (tunnelAnchorPos == null || calcFailed || player.blockPosition().distManhattan(tunnelAnchorPos) <= 2
+                || ++returnStuckTicks > 40) {
             tunnelAnchorPos = null;
             returnStuckTicks = 0;
             this.tunnelDir = this.primaryMiningDir;
@@ -1272,141 +1811,267 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     // =========================================================================
 
     private PathingCommand mineBlockSafely(LocalPlayer player, Level level, BlockPos target) {
-        if (target == null || isBedrockOrUnbreakable(level, target) || level.getBlockState(target).isAir() || !level.getFluidState(target).isEmpty()) {
-            this.currentBreakingBlock = null;
-            this.currentBreakingBlockTicks = 0;
+        BlockState targetState = level.getBlockState(target);
+        if (target == null || isBedrockOrUnbreakable(level, target) || targetState.isAir()
+                || !level.getFluidState(target).isEmpty()) {
+            if (ctx.playerController() != null && this.currentBreakingBlock != null) {
+                ctx.playerController().resetBlockRemoving();
+            }
+            resetMiningState();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        stopMovementInputs();
+
+        // 1. Zmiana docelowego bloku -> bezwzględny reset stanu niszczenia i
+        // odblokowanie rotacji
+        if (!target.equals(this.currentBreakingBlock)) {
+            if (ctx.playerController() != null && this.currentBreakingBlock != null) {
+                ctx.playerController().resetBlockRemoving();
+            }
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            ContinuousBreakController.reset();
+            this.currentBreakingBlock = target.immutable();
+            this.lockedMiningRotation = null;
+            this.activeMiningTicks = 0;
+            this.aimStallTicks = 0;
+            this.lostSightGraceTicks = 0;
+        }
+
+        // 2. Dobór narzędzia i obsługa 1-tickowego bufora synchronizacji slota z
+        // serwerem
+        boolean switchedSlot = equipBestTool(player, targetState);
+        if (switchedSlot) {
+            if (ctx.playerController() != null) {
+                ctx.playerController().resetBlockRemoving();
+            }
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            ContinuousBreakController.reset();
+            this.lockedMiningRotation = null;
+            this.toolSwitchCooldownTicks = 1;
+            this.activeMiningTicks = 0;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        if (this.toolSwitchCooldownTicks > 0) {
+            this.toolSwitchCooldownTicks--;
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // KATEGORYCZNE ZATRZYMANIE RUCHU PODCZAS KOPANIA (Zero Simulation Flags):
+        // 3. Kategoryczna ochrona GrimAC: blokada kopania skał (np. Deepslate) łopatą
+        // lub ręką!
+        ItemStack heldStack = player.getMainHandItem();
+        if (targetState.requiresCorrectToolForDrops() && !heldStack.isCorrectToolForDrops(targetState)) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            if (ctx.playerController() != null) {
+                ctx.playerController().resetBlockRemoving();
+            }
+            ContinuousBreakController.reset();
+            return handleLavaOrObstacleEncounter(player, level, player.blockPosition());
+        }
+
+        // 4. Dynamiczny limit ticków z dużym marginesem bezpieczeństwa (nie przerywa
+        // kopania przy lagu)
+        float destroyProgress = targetState.getDestroyProgress(player, level, target);
+        int maxExpectedTicks = destroyProgress > 0.0f
+                ? Math.max(100, (int) Math.ceil(1.0f / destroyProgress) + 60)
+                : 200;
+
+        if (this.activeMiningTicks > maxExpectedTicks) {
+            if (ctx.playerController() != null) {
+                ctx.playerController().resetBlockRemoving();
+            }
+            resetMiningState();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        double reach = getEffectiveReach();
+
+        // 5. Jeśli mamy już zamrożoną rotację i kopiemy blok, sprawdzamy czy nadal
+        // trafia w target
+        if (this.lockedMiningRotation != null) {
+            Vec3 eyePos = player.getEyePosition(1.0F);
+            Vec3 lockedLook = Vec3.directionFromRotation(this.lockedMiningRotation.getPitch(),
+                    this.lockedMiningRotation.getYaw());
+            BlockHitResult checkClip = level.clip(new ClipContext(
+                    eyePos,
+                    eyePos.add(lockedLook.scale(reach)),
+                    ClipContext.Block.OUTLINE,
+                    ClipContext.Fluid.NONE,
+                    player));
+            if (checkClip.getType() != HitResult.Type.BLOCK || !checkClip.getBlockPos().equals(target)) {
+                this.lockedMiningRotation = null; // Kąt przestał trafiać, potrzebna rekalkulacja
+            }
+        }
+
+        // Wylicz nową rotację TYLKO gdy nie mamy jeszcze zablokowanego kąta
+        if (this.lockedMiningRotation == null) {
+            Optional<Rotation> candidate = findMultipointGrimRotation(player, level, target, reach);
+            if (candidate.isEmpty()) {
+                Optional<Rotation> fallbackSnap = RotationUtils.reachable(ctx, target, reach);
+                if (fallbackSnap.isPresent()) {
+                    Rotation gcdRot = applyGrimGcd(
+                            player.getYRot(),
+                            player.getXRot(),
+                            fallbackSnap.get().getYaw(),
+                            fallbackSnap.get().getPitch());
+                    candidate = Optional.of(gcdRot);
+                }
+            }
+            candidate.ifPresent(rot -> this.lockedMiningRotation = rot);
+        }
+
+        if (this.lockedMiningRotation != null) {
+            baritone.getLookBehavior().updateTarget(this.lockedMiningRotation, true);
+
+            Vec3 eyePos = player.getEyePosition(1.0F);
+            Vec3 currentLook = RotationUtils.calcLookDirectionFromRotation(ctx.playerRotations());
+            BlockHitResult currentHit = level.clip(new ClipContext(
+                    eyePos,
+                    eyePos.add(currentLook.scale(reach)),
+                    ClipContext.Block.OUTLINE,
+                    ClipContext.Fluid.NONE,
+                    player));
+
+            float yawDelta = Math.abs(Mth.wrapDegrees(player.getYRot() - this.lockedMiningRotation.getYaw()));
+            float pitchDelta = Math.abs(player.getXRot() - this.lockedMiningRotation.getPitch());
+            boolean hitValid = currentHit.getType() == HitResult.Type.BLOCK && currentHit.getBlockPos().equals(target);
+
+            if (hitValid && yawDelta <= 10.0f && pitchDelta <= 10.0f) {
+                this.aimStallTicks = 0;
+                this.lostSightGraceTicks = 0;
+                this.activeMiningTicks++;
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+                ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(target));
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+
+            // Jeśli kopanie już trwało, 2 ticki tolerancji zapobiegają zerowaniu postępu
+            // przez mikrolag interpolacji
+            if (this.activeMiningTicks > 0 && this.lostSightGraceTicks < 2 && yawDelta <= 12.0f
+                    && pitchDelta <= 12.0f) {
+                this.lostSightGraceTicks++;
+                this.activeMiningTicks++;
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+                ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(target));
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+        }
+
+        // Raycast zablokowany przed rozpoczęciem kopania
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+        this.activeMiningTicks = 0;
+        this.aimStallTicks++;
+
+        if (this.lockedMiningRotation == null && this.aimStallTicks > 5) {
+            nudgeTowardsVisibleEdge(player, target);
+        }
+
+        if (this.aimStallTicks > 45) {
+            if (ctx.playerController() != null) {
+                ctx.playerController().resetBlockRemoving();
+            }
+            resetMiningState();
+        }
+
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    public static Optional<Rotation> findMultipointGrimRotation(LocalPlayer player, Level level, BlockPos target,
+            double reach) {
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        if (eyePos.distanceToSqr(Vec3.atCenterOf(target)) > (reach + 1.2D) * (reach + 1.2D)) {
+            return Optional.empty();
+        }
+
+        BlockState state = level.getBlockState(target);
+        VoxelShape shape = state.getShape(level, target);
+        AABB box = shape.isEmpty() ? new AABB(0, 0, 0, 1, 1, 1) : shape.bounds();
+
+        // Bezpieczne offsety wewnątrz bryły (unikamy krawędzi, gdzie promień ślizga się
+        // po bloku pod stopami)
+        double[] yOffsets = { 0.55D, 0.72D, 0.82D, 0.35D };
+        double[] xzOffsets = { 0.50D, 0.35D, 0.65D, 0.25D, 0.75D };
+
+        Rotation bestRot = null;
+        double bestScore = Double.MAX_VALUE;
+
+        for (double yFrac : yOffsets) {
+            double py = target.getY() + Mth.lerp(yFrac, box.minY, box.maxY);
+            for (double xFrac : xzOffsets) {
+                double px = target.getX() + Mth.lerp(xFrac, box.minX, box.maxX);
+                for (double zFrac : xzOffsets) {
+                    double pz = target.getZ() + Mth.lerp(zFrac, box.minZ, box.maxZ);
+                    Vec3 hitVec = new Vec3(px, py, pz);
+                    if (eyePos.distanceToSqr(hitVec) > reach * reach)
+                        continue;
+
+                    Rotation rawRot = calcRotationFromVec3d(eyePos, hitVec, player.getYRot());
+                    Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), rawRot.getYaw(),
+                            rawRot.getPitch());
+
+                    Vec3 lookVec = Vec3.directionFromRotation(gcdRot.getPitch(), gcdRot.getYaw());
+                    BlockHitResult clip = level.clip(new ClipContext(
+                            eyePos,
+                            eyePos.add(lookVec.scale(reach)),
+                            ClipContext.Block.OUTLINE,
+                            ClipContext.Fluid.NONE,
+                            player));
+
+                    if (clip.getType() == HitResult.Type.BLOCK && clip.getBlockPos().equals(target)) {
+                        double angDist = Math.hypot(
+                                Mth.wrapDegrees(gcdRot.getYaw() - player.getYRot()),
+                                gcdRot.getPitch() - player.getXRot());
+                        // Kara za punkty blisko krawędzi bocznych, preferujemy stabilny środek ścianki
+                        double edgePenalty = (Math.abs(xFrac - 0.5D) + Math.abs(zFrac - 0.5D)) * 8.0D;
+                        double score = angDist + edgePenalty;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestRot = gcdRot;
+                        }
+                    }
+                }
+            }
+        }
+        return Optional.ofNullable(bestRot);
+    }
+
+    public static Optional<Rotation> findVerifiedGrimSnapRotation(LocalPlayer player, Level level, BlockPos pos,
+            double maxReach) {
+        return findMultipointGrimRotation(player, level, pos, maxReach);
+    }
+
+    private void nudgeTowardsVisibleEdge(LocalPlayer player, BlockPos target) {
+        Vec3 targetCenter = Vec3.atCenterOf(target);
+        double dx = targetCenter.x - player.getX();
+        double dz = targetCenter.z - player.getZ();
+        float moveYaw = (float) (Mth.atan2(dz, dx) * (180.0D / Math.PI)) - 90.0F;
+        float yawDiff = Math.abs(Mth.wrapDegrees(player.getYRot() - moveYaw));
+
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+        if (yawDiff < 60.0F) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        }
+    }
+
+    private void resetMiningState() {
+        this.currentBreakingBlock = null;
+        this.lockedMiningRotation = null;
+        this.activeMiningTicks = 0;
+        this.aimStallTicks = 0;
+        this.lostSightGraceTicks = 0;
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
+        ContinuousBreakController.reset();
+    }
+
+    private void stopMovementInputs() {
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
-
-        if (target.equals(this.currentBreakingBlock)) {
-            this.currentBreakingBlockTicks++;
-            if (this.currentBreakingBlockTicks > 40) {
-                // Blok nie pęka od 40 ticków (2 sekund) - zresetuj sesję, aby odblokować zacięcie (np. gravel/desync)
-                if (ctx.playerController() != null) {
-                    ctx.playerController().resetBlockRemoving();
-                }
-                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-                this.currentBreakingBlock = null;
-                this.currentBreakingBlockTicks = 0;
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-            }
-        } else {
-            this.currentBreakingBlock = target;
-            this.currentBreakingBlockTicks = 0;
-        }
-
-        double reach = getEffectiveReach();
-
-        Optional<Rotation> snap = findVerifiedGrimSnapRotation(player, level, target, reach);
-        if (snap.isEmpty()) {
-            Optional<Rotation> fallbackSnap = RotationUtils.reachable(ctx, target, reach);
-            if (fallbackSnap.isPresent()) {
-                Rotation gcdRot = applyGrimGcd(
-                    player.getYRot(),
-                    player.getXRot(),
-                    fallbackSnap.get().getYaw(),
-                    fallbackSnap.get().getPitch()
-                );
-                snap = Optional.of(gcdRot);
-            }
-        }
-
-        if (snap.isPresent()) {
-            equipBestTool(player, level.getBlockState(target));
-            baritone.getLookBehavior().updateTarget(snap.get(), true);
-
-            float targetYaw = snap.get().getYaw();
-            float targetPitch = snap.get().getPitch();
-            float yawDelta = Math.abs(Mth.wrapDegrees(player.getYRot() - targetYaw));
-            float pitchDelta = Math.abs(player.getXRot() - targetPitch);
-
-            // Sprawdź, czy celownik trafia w docelowy blok
-            Vec3 eyePos = player.getEyePosition(1.0F);
-            Vec3 lookVec = RotationUtils.calcLookDirectionFromRotation(ctx.playerRotations());
-            BlockHitResult currentHit = level.clip(new ClipContext(
-                eyePos,
-                eyePos.add(lookVec.scale(reach)),
-                ClipContext.Block.OUTLINE,
-                ClipContext.Fluid.NONE,
-                player
-            ));
-
-            boolean hitValid = currentHit.getType() == HitResult.Type.BLOCK && currentHit.getBlockPos().equals(target);
-            if (hitValid && yawDelta <= 10.0f && pitchDelta <= 10.0f) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
-            } else {
-                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-            }
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-        }
-
-        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-        moveTowardsWithoutSprint(player, Vec3.atBottomCenterOf(target));
-        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-    }
-
-    public static Optional<Rotation> findVerifiedGrimSnapRotation(LocalPlayer player, Level level, BlockPos pos, double maxReach) {
-        Vec3 eyePos = player.getEyePosition(1.0F);
-        if (eyePos.distanceToSqr(Vec3.atCenterOf(pos)) > (maxReach + 1.0D) * (maxReach + 1.0D)) {
-            return Optional.empty();
-        }
-
-        BlockState state = level.getBlockState(pos);
-        VoxelShape shape = state.getShape(level, pos);
-        AABB box = shape.isEmpty() ? new AABB(0, 0, 0, 1, 1, 1) : shape.bounds();
-
-        double[] offsets = {0.5D, 0.3D, 0.7D, 0.2D, 0.8D};
-        float currentYaw = player.getYRot();
-        float currentPitch = player.getXRot();
-
-        for (double dy : offsets) {
-            for (double dx : offsets) {
-                for (double dz : offsets) {
-                    double px = pos.getX() + Mth.lerp(dx, box.minX, box.maxX);
-                    double py = pos.getY() + Mth.lerp(dy, box.minY, box.maxY);
-                    double pz = pos.getZ() + Mth.lerp(dz, box.minZ, box.maxZ);
-
-                    Vec3 targetVec = new Vec3(px, py, pz);
-                    if (eyePos.distanceToSqr(targetVec) > maxReach * maxReach) {
-                        continue;
-                    }
-
-                    Rotation raw = calcRotationFromVec3d(eyePos, targetVec, currentYaw);
-                    Rotation gcdRot = applyGrimGcd(currentYaw, currentPitch, raw.getYaw(), raw.getPitch());
-
-                    if (verifyRaytraceHit(player, level, pos, gcdRot, maxReach)) {
-                        return Optional.of(gcdRot);
-                    }
-                }
-            }
-        }
-        return Optional.empty();
-    }
-
-    private static boolean verifyRaytraceHit(LocalPlayer player, Level level, BlockPos expectedPos, Rotation rot, double maxReach) {
-        Vec3 eyePos = player.getEyePosition(1.0F);
-        Vec3 lookVec = Vec3.directionFromRotation(rot.getPitch(), rot.getYaw());
-        Vec3 rayEnd = eyePos.add(lookVec.scale(maxReach));
-
-        BlockHitResult hit = level.clip(new ClipContext(
-                eyePos,
-                rayEnd,
-                ClipContext.Block.OUTLINE,
-                ClipContext.Fluid.NONE,
-                player
-        ));
-
-        return hit.getType() == HitResult.Type.BLOCK
-                && hit.getBlockPos().equals(expectedPos)
-                && eyePos.distanceToSqr(hit.getLocation()) <= maxReach * maxReach;
     }
 
     private static Rotation calcRotationFromVec3d(Vec3 orig, Vec3 dest, float currentYaw) {
@@ -1443,7 +2108,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         return new Rotation(finalYaw, finalPitch);
     }
 
-    private static BlockPos findObstructingBlockInReach(LocalPlayer player, Level level, BlockPos orePos, double maxReach) {
+    private static BlockPos findObstructingBlockInReach(LocalPlayer player, Level level, BlockPos orePos,
+            double maxReach) {
         Vec3 eyePos = player.getEyePosition(1.0F);
         Vec3 oreCenter = Vec3.atCenterOf(orePos);
         Vec3 dir = oreCenter.subtract(eyePos).normalize();
@@ -1454,8 +2120,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                 end,
                 ClipContext.Block.OUTLINE,
                 ClipContext.Fluid.NONE,
-                player
-        ));
+                player));
 
         if (hit.getType() == HitResult.Type.BLOCK && !hit.getBlockPos().equals(orePos)) {
             BlockPos hitPos = hit.getBlockPos();
@@ -1480,7 +2145,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             for (int dy = -ORE_SCAN_RADIUS; dy <= ORE_SCAN_RADIUS; dy++) {
                 for (int dz = -ORE_SCAN_RADIUS; dz <= ORE_SCAN_RADIUS; dz++) {
                     BlockPos pos = origin.offset(dx, dy, dz);
-                    if (blacklistedOres.contains(pos)) continue;
+                    if (blacklistedOres.contains(pos))
+                        continue;
 
                     BlockState state = level.getBlockState(pos);
                     if (isTargetOre(state)) {
@@ -1502,7 +2168,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         for (int dx = -1; dx <= 1; dx++) {
             for (int dy = -1; dy <= 1; dy++) {
                 for (int dz = -1; dz <= 1; dz++) {
-                    if (dx == 0 && dy == 0 && dz == 0) continue;
+                    if (dx == 0 && dy == 0 && dz == 0)
+                        continue;
                     BlockPos neighbor = center.offset(dx, dy, dz);
                     if (!blacklistedOres.contains(neighbor)
                             && !veinQueue.contains(neighbor)
@@ -1516,7 +2183,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     private boolean isTargetOre(BlockState state) {
-        if (state == null || state.isAir()) return false;
+        if (state == null || state.isAir())
+            return false;
         Block block = state.getBlock();
         if (targetOresList.isEmpty()) {
             return block == Blocks.DIAMOND_ORE || block == Blocks.DEEPSLATE_DIAMOND_ORE;
@@ -1534,7 +2202,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private ItemEntity findNearbyValuableDrop(LocalPlayer player, Level level) {
         AABB searchBox = player.getBoundingBox().inflate(6.0D, 3.5D, 6.0D);
         List<ItemEntity> items = level.getEntitiesOfClass(ItemEntity.class, searchBox, entity -> {
-            if (!entity.isAlive() || entity.isInLava() || ignoredDropIds.containsKey(entity.getId())) return false;
+            if (!entity.isAlive() || entity.isInLava() || ignoredDropIds.containsKey(entity.getId()))
+                return false;
             Item item = entity.getItem().getItem();
             if (targetOresList.isEmpty()) {
                 return item == Items.DIAMOND || item == Items.DIAMOND_ORE || item == Items.DEEPSLATE_DIAMOND_ORE;
@@ -1556,15 +2225,19 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     /**
-     * Aktualizuje rotację tylko wtedy, gdy różnica kątów przekracza próg czułości sieciowej.
-     * Zapobiega wysyłaniu zduplikowanych pakietów PosRot/Rot (GrimAC AimDuplicateLook).
+     * Aktualizuje rotację tylko wtedy, gdy różnica kątów przekracza próg czułości
+     * sieciowej.
+     * Zapobiega wysyłaniu zduplikowanych pakietów PosRot/Rot (GrimAC
+     * AimDuplicateLook).
      */
     private void updateRotationGrimSafe(LocalPlayer player, Rotation targetRot, boolean blockInteract) {
-        if (player == null || targetRot == null) return;
+        if (player == null || targetRot == null)
+            return;
         float yawDiff = Math.abs(Mth.wrapDegrees(targetRot.getYaw() - player.getYRot()));
         float pitchDiff = Math.abs(targetRot.getPitch() - player.getXRot());
 
-        // Ignoruj mikro-zmiany kątów (< 0.20 stopnia), które po kwantyzacji dają duplikat pakietu rotacji (AimDuplicateLook)
+        // Ignoruj mikro-zmiany kątów (< 0.20 stopnia), które po kwantyzacji dają
+        // duplikat pakietu rotacji (AimDuplicateLook)
         if (yawDiff < 0.20f && pitchDiff < 0.20f) {
             return;
         }
@@ -1572,11 +2245,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     /**
-     * Płynne podchodzenie w stronę dropu — zmienia tylko Yaw przy realnym odchyleniu,
+     * Płynne podchodzenie w stronę dropu — zmienia tylko Yaw przy realnym
+     * odchyleniu,
      * nie wymusza Pitch w dół na nieruchomy item.
      */
     private void moveSafelyTowardsDrop(LocalPlayer player, Vec3 targetPos) {
-        if (player == null || targetPos == null) return;
+        if (player == null || targetPos == null)
+            return;
         Rotation fullRot = calcRotationFromVec3d(player.getEyePosition(1.0F), targetPos, player.getYRot());
         float yawDiff = Math.abs(Mth.wrapDegrees(fullRot.getYaw() - player.getYRot()));
 
@@ -1599,7 +2274,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         long now = System.currentTimeMillis();
         ignoredDropIds.entrySet().removeIf(entry -> now > entry.getValue());
 
-        if (drop == null || !drop.isAlive() || ignoredDropIds.containsKey(drop.getId()) || DropCollectionHelper.isDropUnsafe(level, drop)) {
+        if (drop == null || !drop.isAlive() || ignoredDropIds.containsKey(drop.getId())
+                || DropCollectionHelper.isDropUnsafe(level, drop)) {
             if (drop != null) {
                 ignoredDropIds.put(drop.getId(), now + 30_000L);
             }
@@ -1642,24 +2318,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // PRZYPADEK 2: Drop jest blisko (<= 4.2m), ale zasłania go blok (np. deepslate we wnęce) — rozkop blok!
+        // PRZYPADEK 2: Drop jest blisko (<= 4.2m), ale zasłania go blok (np. deepslate
+        // we wnęce) — rozkop blok!
         BlockPos obstruction = DropCollectionHelper.findObstructingBlock(player, level, drop);
         if (obstruction != null && !isBedrockOrUnbreakable(level, obstruction)) {
-            baritone.getInputOverrideHandler().clearAllKeys();
-
-            Vec3 hitVec = Vec3.atCenterOf(obstruction);
-            Rotation breakRot = calcRotationFromVec3d(player.getEyePosition(1.0F), hitVec, player.getYRot());
-            Rotation gcdBreakRot = applyGrimGcd(player.getYRot(), player.getXRot(), breakRot.getYaw(), breakRot.getPitch());
-            updateRotationGrimSafe(player, gcdBreakRot, true);
-
-            this.currentBreakingBlock = obstruction;
-            equipBestTool(player, level.getBlockState(obstruction));
-            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
-            ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(obstruction));
-
             dropStuckTicks = 0;
             lastDropGoal = null;
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            return mineBlockSafely(player, level, obstruction);
         }
 
         // PRZYPADEK 3: Drop wymaga podejścia lub rozkopania ścieżki przez A* Baritone
@@ -1689,17 +2354,22 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     private boolean isHazardNear(Level level, BlockPos pos) {
         // 1. Lawa w bloku lub sąsiadach to bezwzględne zagrożenie
-        if (level.getFluidState(pos).is(FluidTags.LAVA)) return true;
+        if (level.getFluidState(pos).is(FluidTags.LAVA))
+            return true;
         for (Direction dir : Direction.values()) {
             BlockPos adj = pos.relative(dir);
-            if (level.getFluidState(adj).is(FluidTags.LAVA)) return true;
+            if (level.getFluidState(adj).is(FluidTags.LAVA))
+                return true;
         }
 
-        // 2. Źródło wody bezpośrednio w bloku lub nad nim to zagrożenie (nie kopiemy w źródło oceanu/podziemnego jeziora)
+        // 2. Źródło wody bezpośrednio w bloku lub nad nim to zagrożenie (nie kopiemy w
+        // źródło oceanu/podziemnego jeziora)
         FluidState selfFluid = level.getFluidState(pos);
-        if (selfFluid.is(FluidTags.WATER) && selfFluid.isSource()) return true;
+        if (selfFluid.is(FluidTags.WATER) && selfFluid.isSource())
+            return true;
         FluidState aboveFluid = level.getFluidState(pos.above());
-        if (aboveFluid.is(FluidTags.WATER) && aboveFluid.isSource()) return true;
+        if (aboveFluid.is(FluidTags.WATER) && aboveFluid.isSource())
+            return true;
 
         return false;
     }
@@ -1721,7 +2391,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return center.above().immutable();
         }
 
-        // 2. Zagrożenie zalania tunelu: bezpośrednie źródło wody lub jakakolwiek lawa tuż przed botem w kierunku marszu
+        // 2. Zagrożenie zalania tunelu: bezpośrednie źródło wody lub jakakolwiek lawa
+        // tuż przed botem w kierunku marszu
         BlockPos frontFeet = center.relative(tunnelDir);
         BlockPos frontHead = frontFeet.above();
 
@@ -1735,7 +2406,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return frontFeet.immutable();
         }
 
-        // Płynąca woda na stopach (feet) lub na podłodze otwartej jaskini NIE aktywuje zatykania!
+        // Płynąca woda na stopach (feet) lub na podłodze otwartej jaskini NIE aktywuje
+        // zatykania!
         return null;
     }
 
@@ -1748,178 +2420,279 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
     }
 
-    private BlockPos findAnyLavaHazardNear(Level level, BlockPos pos) {
-        if (level.getFluidState(pos).is(FluidTags.LAVA)) return pos.immutable();
-        for (Direction d : Direction.values()) {
-            BlockPos adj = pos.relative(d);
-            if (level.getFluidState(adj).is(FluidTags.LAVA)) return adj.immutable();
+    private record PlacementCandidate(
+            BlockPos supportPos,
+            Direction placeFace,
+            Vec3 hitVec,
+            Rotation rotation) {
+    }
+
+    /**
+     * Szuka widocznej ścianki sąsiedniego bloku oparcia, w którą można kliknąć PPM,
+     * aby postawić blok w miejscu targetPos bez naruszania czeków GrimAC RayTrace /
+     * FabricatedPlace.
+     */
+    private Optional<PlacementCandidate> findBestPlacementCandidate(LocalPlayer player, Level level, BlockPos targetPos,
+            double reach) {
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        double[] grid = { 0.5D, 0.3D, 0.7D, 0.2D, 0.8D };
+
+        PlacementCandidate best = null;
+        double bestAngDist = Double.MAX_VALUE;
+
+        for (Direction dir : Direction.values()) {
+            BlockPos supportPos = targetPos.relative(dir);
+            Direction placeFace = dir.getOpposite();
+
+            BlockState supportState = level.getBlockState(supportPos);
+            if (supportState.isAir() || supportState.canBeReplaced() || !supportState.getFluidState().isEmpty()) {
+                continue;
+            }
+
+            for (double u : grid) {
+                for (double v : grid) {
+                    Vec3 hitVec = getFaceSamplePoint(supportPos, placeFace, u, v);
+                    if (eyePos.distanceToSqr(hitVec) > reach * reach) {
+                        continue;
+                    }
+
+                    Rotation rawRot = calcRotationFromVec3d(eyePos, hitVec, player.getYRot());
+                    Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), rawRot.getYaw(),
+                            rawRot.getPitch());
+
+                    Vec3 lookVec = Vec3.directionFromRotation(gcdRot.getPitch(), gcdRot.getYaw());
+                    BlockHitResult clip = level.clip(new ClipContext(
+                            eyePos,
+                            eyePos.add(lookVec.scale(reach)),
+                            ClipContext.Block.OUTLINE,
+                            ClipContext.Fluid.NONE,
+                            player));
+
+                    if (clip.getType() == HitResult.Type.BLOCK
+                            && clip.getBlockPos().equals(supportPos)
+                            && clip.getDirection() == placeFace) {
+                        double angDist = Math.hypot(
+                                Mth.wrapDegrees(gcdRot.getYaw() - player.getYRot()),
+                                gcdRot.getPitch() - player.getXRot());
+                        if (angDist < bestAngDist) {
+                            bestAngDist = angDist;
+                            best = new PlacementCandidate(supportPos, placeFace, clip.getLocation(), gcdRot);
+                        }
+                    }
+                }
+            }
         }
-        return null;
+        return Optional.ofNullable(best);
+    }
+
+    private Vec3 getFaceSamplePoint(BlockPos pos, Direction face, double u, double v) {
+        double x = pos.getX() + switch (face) {
+            case WEST -> 0.001D;
+            case EAST -> 0.999D;
+            default -> u;
+        };
+        double y = pos.getY() + switch (face) {
+            case DOWN -> 0.001D;
+            case UP -> 0.999D;
+            default -> (face.getAxis() == Direction.Axis.Y ? u : v);
+        };
+        double z = pos.getZ() + switch (face) {
+            case NORTH -> 0.001D;
+            case SOUTH -> 0.999D;
+            default -> v;
+        };
+        return new Vec3(x, y, z);
+    }
+
+    private boolean isValidPlaceableStack(ItemStack stack) {
+        if (stack == null || stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem)) {
+            return false;
+        }
+
+        Block block = blockItem.getBlock();
+
+        // 1. Bezwzględne wykluczenie bloków opadających, posiadających TileEntity/GUI
+        // oraz specjalnej fizyki
+        if (block instanceof FallingBlock
+                || block instanceof EntityBlock
+                || block instanceof SlimeBlock
+                || block instanceof HoneyBlock
+                || block instanceof SoulSandBlock
+                || block instanceof MagmaBlock
+                || block instanceof TntBlock
+                || block instanceof InfestedBlock
+                || block instanceof LeavesBlock) {
+            return false;
+        }
+
+        // 2. Akceptacja bloków z listy Baritone acceptableThrowawayItems lub
+        // standardowych pełnych skał/ziemi
+        if (BaritoneAPI.getSettings().acceptableThrowawayItems.value.contains(blockItem)) {
+            return true;
+        }
+
+        return block == Blocks.COBBLESTONE
+                || block == Blocks.COBBLED_DEEPSLATE
+                || block == Blocks.DEEPSLATE
+                || block == Blocks.STONE
+                || block == Blocks.TUFF
+                || block == Blocks.ANDESITE
+                || block == Blocks.DIORITE
+                || block == Blocks.GRANITE
+                || block == Blocks.DIRT
+                || block == Blocks.COARSE_DIRT
+                || block == Blocks.ROOTED_DIRT
+                || block == Blocks.NETHERRACK
+                || block == Blocks.BLACKSTONE
+                || block == Blocks.BASALT
+                || block == Blocks.SMOOTH_BASALT
+                || block == Blocks.CALCITE
+                || block == Blocks.DRIPSTONE_BLOCK
+                || block == Blocks.END_STONE;
+    }
+
+    private boolean isHoldingValidPlaceableBlock(LocalPlayer player) {
+        return isValidPlaceableStack(player.getMainHandItem());
+    }
+
+    private int findValidBlockInRange(LocalPlayer player, int startInclusive, int endExclusive) {
+        for (int i = startInclusive; i < endExclusive; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (isValidPlaceableStack(stack)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private boolean selectThrowawayBlock(LocalPlayer player, BlockPos targetPos) {
+        BlockPos lookupPos = targetPos != null ? targetPos
+                : (hazardSourcePos != null ? hazardSourcePos : player.blockPosition());
+
+        // 1. Próba wyboru przez wbudowany menedżer Baritone (obsługuje też przełożenie
+        // ze slotów 9-35)
+        if (baritone.getInventoryBehavior().selectThrowawayForLocation(true, lookupPos.getX(), lookupPos.getY(),
+                lookupPos.getZ())) {
+            if (ctx.playerController() != null) {
+                ctx.playerController().syncHeldItem();
+            }
+            if (isHoldingValidPlaceableBlock(player)) {
+                return true;
+            }
+        }
+
+        // 2. Fallback: skanowanie hotbara (0-8)
+        int hotbarSlot = findValidBlockInRange(player, 0, 9);
+        if (hotbarSlot != -1) {
+            if (player.getInventory().selected != hotbarSlot) {
+                player.getInventory().selected = hotbarSlot;
+                if (ctx.playerController() != null) {
+                    ctx.playerController().syncHeldItem();
+                }
+            }
+            return true;
+        }
+
+        // 3. Fallback: skanowanie głównego ekwipunku (9-35) i swap do slotu 8 na
+        // hotbarze
+        int invSlot = findValidBlockInRange(player, 9, 36);
+        if (invSlot != -1 && ctx.playerController() != null) {
+            int targetHotbarSlot = 8;
+            ctx.playerController().windowClick(
+                    player.inventoryMenu.containerId,
+                    invSlot,
+                    targetHotbarSlot,
+                    ClickType.SWAP,
+                    player);
+            player.getInventory().selected = targetHotbarSlot;
+            ctx.playerController().syncHeldItem();
+            return isHoldingValidPlaceableBlock(player);
+        }
+
+        return false;
+    }
+
+    private boolean selectThrowawayBlock(LocalPlayer player) {
+        return selectThrowawayBlock(player, hazardSourcePos);
     }
 
     private PathingCommand handleSealingHazard(LocalPlayer player, Level level) {
-        if (hazardSourcePos == null || level.getFluidState(hazardSourcePos).isEmpty() || sealFailedAttempts >= MAX_SEAL_ATTEMPTS) {
+        BlockPos feet = player.blockPosition();
+        stopMovementInputs();
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+
+        if (this.hazardSourcePos == null
+                || !level.getBlockState(this.hazardSourcePos).canBeReplaced()
+                || this.sealFailedAttempts >= MAX_SEAL_ATTEMPTS) {
+            boolean stillHazardous = this.hazardSourcePos != null && isLavaFluid(level, this.hazardSourcePos);
             this.hazardSourcePos = null;
             this.sealFailedAttempts = 0;
-            this.sealCooldownTicks = 2;
             this.state = State.TUNNELING;
-            baritone.getInputOverrideHandler().clearAllKeys();
+
+            if (stillHazardous) {
+                return handleLavaOrObstacleEncounter(player, level, feet);
+            }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // Jeśli stoimy niebezpiecznie blisko (< 1.15 bloku), cofnij się klawiszem S bez obrotu kamery o 180°
-        if (player.position().distanceTo(Vec3.atCenterOf(hazardSourcePos)) < 1.15D) {
-            retreatStepBackward(player, primaryMiningDir);
+        if (player.getBoundingBox().intersects(new AABB(this.hazardSourcePos))) {
+            this.hazardSourcePos = null;
+            return executeRetreatBackward(player, level, feet,
+                    this.primaryMiningDir != null ? this.primaryMiningDir : Direction.SOUTH);
         }
 
-        if (!selectThrowawayBlock(player)) {
-            sealFailedAttempts++;
-            if (sealFailedAttempts >= MAX_SEAL_ATTEMPTS) {
-                this.hazardSourcePos = null;
-                this.state = State.TUNNELING;
-            }
+        if (!selectThrowawayBlock(player, this.hazardSourcePos)) {
+            this.hazardSourcePos = null;
+            this.state = State.TUNNELING;
+            return handleLavaOrObstacleEncounter(player, level, feet);
+        }
+
+        if (this.placeCooldownTicks > 0) {
+            this.placeCooldownTicks--;
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
         double reach = getEffectiveReach();
+        Optional<PlacementCandidate> candidateOpt = findBestPlacementCandidate(player, level, this.hazardSourcePos,
+                reach);
+
+        if (candidateOpt.isEmpty()) {
+            this.sealFailedAttempts++;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        PlacementCandidate candidate = candidateOpt.get();
+        baritone.getLookBehavior().updateTarget(candidate.rotation(), true);
+
         Vec3 eyePos = player.getEyePosition(1.0F);
+        Vec3 currentLook = RotationUtils.calcLookDirectionFromRotation(ctx.playerRotations());
+        BlockHitResult liveHit = level.clip(new ClipContext(
+                eyePos,
+                eyePos.add(currentLook.scale(reach)),
+                ClipContext.Block.OUTLINE,
+                ClipContext.Fluid.NONE,
+                player));
 
-        // Szukamy litego oparcia wokół komory lawy: tył, dół, boki, góra
-        BlockPos supportPos = null;
-        Direction hitFace = null;
-        Direction[] searchOrder = {
-            primaryMiningDir, Direction.DOWN,
-            primaryMiningDir.getClockWise(), primaryMiningDir.getCounterClockWise(),
-            Direction.UP
-        };
+        float yawDelta = Math.abs(Mth.wrapDegrees(player.getYRot() - candidate.rotation().getYaw()));
+        float pitchDelta = Math.abs(player.getXRot() - candidate.rotation().getPitch());
 
-        for (Direction dir : searchOrder) {
-            BlockPos neighbor = hazardSourcePos.relative(dir);
-            BlockState neighborState = level.getBlockState(neighbor);
-            if (!neighborState.canBeReplaced() && neighborState.getFluidState().isEmpty() && neighborState.isSolid()) {
-                supportPos = neighbor;
-                hitFace = dir.getOpposite(); // Ścianka skierowana w stronę hazardSourcePos
-                break;
-            }
-        }
+        boolean exactMatch = liveHit.getType() == HitResult.Type.BLOCK
+                && liveHit.getBlockPos().equals(candidate.supportPos())
+                && liveHit.getDirection() == candidate.placeFace();
 
-        if (supportPos != null && hitFace != null) {
-            Vec3 hitVec = Vec3.atCenterOf(supportPos).add(
-                hitFace.getStepX() * 0.49D,
-                hitFace.getStepY() * 0.49D,
-                hitFace.getStepZ() * 0.49D
-            );
-
-            if (eyePos.distanceToSqr(hitVec) <= reach * reach) {
-                Rotation raw = calcRotationFromVec3d(eyePos, hitVec, player.getYRot());
-                Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), raw.getYaw(), raw.getPitch());
-                baritone.getLookBehavior().updateTarget(gcdRot, true);
-                baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
-
-                float yawDiff = Math.abs(Mth.wrapDegrees(player.getYRot() - gcdRot.getYaw()));
-                float pitchDiff = Math.abs(player.getXRot() - gcdRot.getPitch());
-                if (yawDiff < 6.0F && pitchDiff < 6.0F) {
-                    BlockHitResult hitResult = new BlockHitResult(hitVec, hitFace, supportPos, false);
-                    ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, hitResult);
-                    player.swing(InteractionHand.MAIN_HAND);
-                    this.sealCooldownTicks = 3;
-                    this.sealFailedAttempts = 0;
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                }
-            }
-        }
-
-        // Fallback do standardowego szukania rotacji
-        Optional<Rotation> placeRot = findPlacementRotationForBreach(player, level, hazardSourcePos, reach);
-        if (placeRot.isPresent()) {
-            baritone.getLookBehavior().updateTarget(placeRot.get(), true);
-            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
-            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-            sealCooldownTicks = 2;
-            sealFailedAttempts = 0;
+        if (exactMatch && yawDelta <= 8.0F && pitchDelta <= 8.0F && isHoldingValidPlaceableBlock(player)) {
+            ctx.playerController().processRightClickBlock(player, ctx.world(), InteractionHand.MAIN_HAND, liveHit);
+            player.swing(InteractionHand.MAIN_HAND);
+            this.placeCooldownTicks = 3;
+            this.sealFailedAttempts = 0;
+            this.sealCooldownTicks = 3;
         } else {
-            sealFailedAttempts++;
-            if (sealFailedAttempts >= MAX_SEAL_ATTEMPTS) {
-                this.hazardSourcePos = null;
-                this.state = State.TUNNELING;
-            }
-            sealCooldownTicks = 2;
+            this.sealFailedAttempts++;
         }
 
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-    }
-
-    private Optional<Rotation> findPlacementRotationForBreach(LocalPlayer player, Level level, BlockPos breachPos, double maxReach) {
-        Vec3 eyePos = player.getEyePosition(1.0F);
-        float currentYaw = player.getYRot();
-        float currentPitch = player.getXRot();
-
-        for (Direction dir : Direction.values()) {
-            BlockPos neighbor = breachPos.relative(dir);
-            BlockState neighborState = level.getBlockState(neighbor);
-            if (!neighborState.isSolid() || neighborState.canBeReplaced()) {
-                continue;
-            }
-            Direction targetFace = dir.getOpposite();
-
-            Vec3 faceCenter = Vec3.atCenterOf(neighbor).add(
-                    targetFace.getStepX() * 0.49D,
-                    targetFace.getStepY() * 0.49D,
-                    targetFace.getStepZ() * 0.49D
-            );
-
-            if (eyePos.distanceToSqr(faceCenter) > maxReach * maxReach) {
-                continue;
-            }
-
-            Rotation raw = calcRotationFromVec3d(eyePos, faceCenter, currentYaw);
-            Rotation gcdRot = applyGrimGcd(currentYaw, currentPitch, raw.getYaw(), raw.getPitch());
-
-            Vec3 lookVec = Vec3.directionFromRotation(gcdRot.getPitch(), gcdRot.getYaw());
-            Vec3 rayEnd = eyePos.add(lookVec.scale(maxReach));
-            BlockHitResult hit = level.clip(new ClipContext(
-                    eyePos, rayEnd, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player
-            ));
-
-            if (hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(neighbor)) {
-                return Optional.of(gcdRot);
-            }
-        }
-
-        // Fallback: Baritone standard reachable rotation to solid neighbor
-        for (Direction dir : Direction.values()) {
-            BlockPos neighbor = breachPos.relative(dir);
-            BlockState neighborState = level.getBlockState(neighbor);
-            if (!neighborState.isSolid() || neighborState.canBeReplaced()) {
-                continue;
-            }
-            Optional<Rotation> reachRot = RotationUtils.reachable(ctx, neighbor, maxReach);
-            if (reachRot.isPresent()) {
-                Rotation gcdRot = applyGrimGcd(currentYaw, currentPitch, reachRot.get().getYaw(), reachRot.get().getPitch());
-                return Optional.of(gcdRot);
-            }
-        }
-
-        return Optional.empty();
-    }
-
-    private boolean selectThrowawayBlock(LocalPlayer player) {
-        if (hazardSourcePos != null && baritone.getInventoryBehavior().selectThrowawayForLocation(true, hazardSourcePos.getX(), hazardSourcePos.getY(), hazardSourcePos.getZ())) {
-            return true;
-        }
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = player.getInventory().getItem(i);
-            if (!stack.isEmpty() && stack.getItem() instanceof BlockItem blockItem) {
-                Block b = blockItem.getBlock();
-                if (b == Blocks.COBBLESTONE || b == Blocks.COBBLED_DEEPSLATE || b == Blocks.DEEPSLATE
-                        || b == Blocks.TUFF || b == Blocks.DIRT || b == Blocks.STONE
-                        || b == Blocks.ANDESITE || b == Blocks.DIORITE || b == Blocks.GRANITE) {
-                    player.getInventory().selected = i;
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     private boolean hasDirectLavaAboveOrBehind(Level level, BlockPos orePos) {
@@ -1931,12 +2704,23 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         return false;
     }
 
-    private boolean isSolidSupport(Level level, BlockPos floorPos) {
+    public static boolean hasStableFloorSupport(Level level, BlockPos floorPos) {
+        if (level == null || floorPos == null)
+            return false;
         BlockState state = level.getBlockState(floorPos);
-        return !state.isAir()
-                && level.getFluidState(floorPos).isEmpty()
-                && !(state.getBlock() instanceof FallingBlock)
-                && state.isFaceSturdy(level, floorPos, Direction.UP);
+        if (!state.getFluidState().isEmpty() || state.canBeReplaced() || state.isAir()) {
+            return false;
+        }
+        if (state.getBlock() instanceof FallingBlock) {
+            // Żwir/piasek jest stabilny, jeśli blok pod nim nie pozwala na zapadnięcie
+            BlockState belowState = level.getBlockState(floorPos.below());
+            return !FallingBlock.isFree(belowState);
+        }
+        return state.isFaceSturdy(level, floorPos, Direction.UP);
+    }
+
+    private boolean isSolidSupport(Level level, BlockPos floorPos) {
+        return hasStableFloorSupport(level, floorPos);
     }
 
     private boolean isPassable(Level level, BlockPos pos) {
@@ -1949,11 +2733,15 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     public static boolean isBedrockOrUnbreakable(Level level, BlockPos pos) {
-        if (pos == null || level == null) return true;
-        if (pos.getY() <= -64) return true;
+        if (pos == null || level == null)
+            return true;
+        if (pos.getY() <= -64)
+            return true;
         BlockState state = level.getBlockState(pos);
-        if (state.is(Blocks.BEDROCK)) return true;
-        if (state.getDestroySpeed(level, pos) < 0.0F) return true;
+        if (state.is(Blocks.BEDROCK))
+            return true;
+        if (state.getDestroySpeed(level, pos) < 0.0F)
+            return true;
         return false;
     }
 
@@ -2004,8 +2792,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     /**
      * Zabezpieczenie przed bieganiem po starych/wykopanych tunelach:
-     * W normalnym kopaniu dziewiczej skały blok 2 kroki w przód ZAWSZE jest litą skałą.
-     * Jeśli 2 kolejne kroki w profilu 1x2 to pusta przestrzeń -> bot patrzy w stary korytarz lub jaskinię!
+     * W normalnym kopaniu dziewiczej skały blok 2 kroki w przód ZAWSZE jest litą
+     * skałą.
+     * Jeśli 2 kolejne kroki w profilu 1x2 to pusta przestrzeń -> bot patrzy w stary
+     * korytarz lub jaskinię!
      */
     private boolean isLookingDownExistingTunnel(Level level, BlockPos feet, Direction dir) {
         BlockPos oneStepFeet = feet.relative(dir);
@@ -2018,7 +2808,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     /**
-     * Wybiera kierunek w litą skałę (lewo/prawo), eliminując puste przestrzenie i zapętlenia.
+     * Wybiera kierunek w litą skałę (lewo/prawo), eliminując puste przestrzenie i
+     * zapętlenia.
      */
     private Direction selectUntouchedBranchDirection(Level level, BlockPos feet, Direction forward) {
         Direction left = forward.getCounterClockWise();
@@ -2041,8 +2832,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         }
 
         // 2. Jeśli obie były w historii, ale nadal są litą skałą do wykopania
-        if (leftMineable) return left;
-        if (rightMineable) return right;
+        if (leftMineable)
+            return left;
+        if (rightMineable)
+            return right;
 
         return null;
     }
@@ -2078,99 +2871,141 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     private boolean tryBridgeFloor(LocalPlayer player, Level level, BlockPos floorPos, BlockPos defaultSupport) {
         if (!level.getBlockState(floorPos).canBeReplaced()) {
-            return false;
+            return false; // Blok został już postawiony
         }
 
-        if (!selectThrowawayBlock(player)) {
-            return false;
-        }
-
-        double reach = getEffectiveReach();
-        Vec3 eyePos = player.getEyePosition(1.0F);
-
-        // 1. Znajdź blok oparcia: domyślnie defaultSupport (np. feet.below()), a jeśli brak to ściany boczne lub spód
-        BlockPos supportPos = null;
-        Direction placeFace = null;
-
-        if (defaultSupport != null && isSolidSupport(level, defaultSupport)) {
-            supportPos = defaultSupport;
-            for (Direction d : Direction.values()) {
-                if (defaultSupport.relative(d).equals(floorPos)) {
-                    placeFace = d;
-                    break;
-                }
-            }
-        }
-
-        if (supportPos == null || placeFace == null) {
-            for (Direction dir : Direction.values()) {
-                if (dir == Direction.UP) continue;
-                BlockPos neighbor = floorPos.relative(dir);
-                if (level.getBlockState(neighbor).isSolid() && !level.getBlockState(neighbor).canBeReplaced()) {
-                    supportPos = neighbor;
-                    placeFace = dir.getOpposite();
-                    break;
-                }
-            }
-        }
-
-        if (supportPos == null || placeFace == null) {
-            return false;
-        }
-
-        // 2. Punkt celowania na ściance placeFace bloku supportPos (y+0.85 na ściankach poziomych ułatwia trafienie z góry)
-        Vec3 hitVec = new Vec3(
-                supportPos.getX() + 0.5D + placeFace.getStepX() * 0.5D,
-                supportPos.getY() + (placeFace.getAxis().isHorizontal() ? 0.85D : 0.5D + placeFace.getStepY() * 0.5D),
-                supportPos.getZ() + 0.5D + placeFace.getStepZ() * 0.5D
-        );
-
-        if (eyePos.distanceToSqr(hitVec) > reach * reach) {
-            return false;
-        }
-
-        // 3. Obliczenie rotacji z Grim GCD
-        Rotation rawRot = calcRotationFromVec3d(eyePos, hitVec, player.getYRot());
-        Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), rawRot.getYaw(), rawRot.getPitch());
-        baritone.getLookBehavior().updateTarget(gcdRot, true);
+        stopMovementInputs();
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
 
-        // 4. Raycast weryfikacyjny pod GrimAC
-        Vec3 lookVec = Vec3.directionFromRotation(gcdRot.getPitch(), gcdRot.getYaw());
-        Vec3 rayEnd = eyePos.add(lookVec.scale(reach));
-        BlockHitResult raycast = level.clip(new ClipContext(
-                eyePos,
-                rayEnd,
-                ClipContext.Block.OUTLINE,
-                ClipContext.Fluid.NONE,
-                player
-        ));
+        // 1. Ochrona przed postawieniem bloku we własnym hitboxie (cofnięcie na środek
+        // defaultSupport)
+        AABB targetBlockBox = new AABB(floorPos);
+        if (player.getBoundingBox().inflate(-1.0E-4).intersects(targetBlockBox)) {
+            if (defaultSupport != null && hasStableFloorSupport(level, defaultSupport)) {
+                stepTowardsPointWithSneak(player, Vec3.atBottomCenterOf(defaultSupport.above()));
+                return true;
+            }
+            return false;
+        }
 
-        boolean validHit = raycast.getType() == HitResult.Type.BLOCK
-                && raycast.getBlockPos().equals(supportPos)
-                && raycast.getDirection() == placeFace;
+        // 2. Wybór i synchronizacja bloku budowlanego (z syncHeldItem)
+        if (!selectThrowawayBlock(player, floorPos)) {
+            return false;
+        }
 
-        BlockPos feet = player.blockPosition();
-        Direction forward = primaryMiningDir;
-        Vec3 edgeCenter = Vec3.atBottomCenterOf(feet).add(forward.getStepX() * 0.38D, 0.0D, forward.getStepZ() * 0.38D);
-        double distToEdge = player.position().distanceTo(edgeCenter);
-
-        if (!validHit && distToEdge > 0.08D) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        // 3. Odczekanie na zatwierdzenie poprzedniego postawienia przez serwer (3-4
+        // ticki)
+        if (this.placeCooldownTicks > 0) {
+            this.placeCooldownTicks--;
             return true;
         }
 
-        // 5. Postawienie bloku
-        if (validHit || distToEdge <= 0.12D) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
-            BlockHitResult finalHit = validHit ? raycast : new BlockHitResult(hitVec, placeFace, supportPos, false);
-            ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, finalHit);
-            player.swing(InteractionHand.MAIN_HAND);
-            this.sealCooldownTicks = 2;
+        double reach = getEffectiveReach();
+        Optional<PlacementCandidate> candidateOpt = findBestPlacementCandidate(player, level, floorPos, reach);
+
+        // 4. Gdy ścianka oparcia jest widoczna: celowanie Grim GCD -> weryfikacja clip
+        // -> pakiet PPM
+        if (candidateOpt.isPresent()) {
+            PlacementCandidate candidate = candidateOpt.get();
+            baritone.getLookBehavior().updateTarget(candidate.rotation(), true);
+
+            Vec3 eyePos = player.getEyePosition(1.0F);
+            Vec3 currentLook = RotationUtils.calcLookDirectionFromRotation(ctx.playerRotations());
+            BlockHitResult liveHit = level.clip(new ClipContext(
+                    eyePos,
+                    eyePos.add(currentLook.scale(reach)),
+                    ClipContext.Block.OUTLINE,
+                    ClipContext.Fluid.NONE,
+                    player));
+
+            float yawDelta = Math.abs(Mth.wrapDegrees(player.getYRot() - candidate.rotation().getYaw()));
+            float pitchDelta = Math.abs(player.getXRot() - candidate.rotation().getPitch());
+
+            boolean exactMatch = liveHit.getType() == HitResult.Type.BLOCK
+                    && liveHit.getBlockPos().equals(candidate.supportPos())
+                    && liveHit.getDirection() == candidate.placeFace();
+
+            if (exactMatch && yawDelta <= 8.0f && pitchDelta <= 8.0f && isHoldingValidPlaceableBlock(player)) {
+                ctx.playerController().processRightClickBlock(player, ctx.world(), InteractionHand.MAIN_HAND, liveHit);
+                player.swing(InteractionHand.MAIN_HAND);
+                this.placeCooldownTicks = 4;
+                this.sealCooldownTicks = 4;
+            }
+            return true;
         }
 
-        return true;
+        // 5. Gdy górna ścianka defaultSupport zasłania przednią: podkradnięcie ze SNEAK
+        // do krawędzi (offset 0.44)
+        BlockPos supportBase = (defaultSupport != null && hasStableFloorSupport(level, defaultSupport))
+                ? defaultSupport
+                : player.blockPosition().below();
+
+        if (!hasStableFloorSupport(level, supportBase)) {
+            return false;
+        }
+
+        double dirX = Math.clamp(floorPos.getX() - supportBase.getX(), -1, 1);
+        double dirZ = Math.clamp(floorPos.getZ() - supportBase.getZ(), -1, 1);
+        if (dirX == 0 && dirZ == 0) {
+            return false;
+        }
+
+        // Punkt na krawędzi bloku oparcia, z którego otwiera się kąt widzenia na
+        // ściankę boczną
+        Vec3 safeEdgePos = new Vec3(
+                supportBase.getX() + 0.5 + dirX * 0.44,
+                supportBase.getY() + 1.0,
+                supportBase.getZ() + 0.5 + dirZ * 0.44);
+
+        // Obracamy kamerę w dół w stronę docelowej luki i podchodzimy ze SNEAK
+        Rotation lookDownAtGap = calcRotationFromVec3d(
+                player.getEyePosition(1.0F),
+                new Vec3(floorPos.getX() + 0.5, floorPos.getY() + 0.85, floorPos.getZ() + 0.5),
+                player.getYRot());
+        Rotation gcdLook = applyGrimGcd(player.getYRot(), player.getXRot(), lookDownAtGap.getYaw(),
+                lookDownAtGap.getPitch());
+        baritone.getLookBehavior().updateTarget(gcdLook, true);
+
+        double distSqToEdge = (player.getX() - safeEdgePos.x) * (player.getX() - safeEdgePos.x)
+                + (player.getZ() - safeEdgePos.z) * (player.getZ() - safeEdgePos.z);
+
+        if (distSqToEdge > 0.008) {
+            stepTowardsPointWithSneak(player, safeEdgePos);
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Przemieszcza gracza ze SNEAK w kierunku punktu docelowego, dobierając klawisz
+     * ruchu (W/S/A/D)
+     * względem aktualnego kąta kamery, bez wymuszania gwałtownego obrotu o 180
+     * stopni.
+     */
+    private void stepTowardsPointWithSneak(LocalPlayer player, Vec3 targetPoint) {
+        double dx = targetPoint.x - player.getX();
+        double dz = targetPoint.z - player.getZ();
+        if (dx * dx + dz * dz < 0.002) {
+            return;
+        }
+
+        float desiredYaw = (float) (Mth.atan2(dz, dx) * (180.0 / Math.PI)) - 90.0f;
+        float relAngle = Mth.wrapDegrees(desiredYaw - player.getYRot());
+
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+
+        if (Math.abs(relAngle) <= 65.0f) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        } else if (Math.abs(relAngle) >= 115.0f) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+        } else if (relAngle < 0) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, true);
+        } else {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, true);
+        }
     }
 
     private void moveSafelyTowards(LocalPlayer player, Vec3 targetCenter) {
@@ -2184,18 +3019,43 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         }
 
         // 2. Normalny ruch lądowy
-        Rotation moveRot = calcRotationFromVec3d(player.getEyePosition(1.0F), targetCenter.add(0, player.getEyeHeight(), 0), player.getYRot());
+        Rotation moveRot = calcRotationFromVec3d(player.getEyePosition(1.0F),
+                targetCenter.add(0, player.getEyeHeight(), 0), player.getYRot());
         Rotation gcdMoveRot = applyGrimGcd(player.getYRot(), player.getXRot(), moveRot.getYaw(), 0.0F);
+
+        float yawDelta = Math.abs(Mth.wrapDegrees(player.getYRot() - gcdMoveRot.getYaw()));
+
+        // ROZDZIELENIE OBROTU OD RUCHU POD GRIMAC:
+        // Jeśli kamera wymaga korekty > 2.5 stopnia, w tym ticku TYLKO obracamy kamerę
+        // (MOVE_FORWARD = false).
+        if (yawDelta > 2.5f) {
+            baritone.getLookBehavior().updateTarget(gcdMoveRot, true);
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
+            return;
+        }
+
+        // Gdy kamera jest już ustawiona w cel (yawDelta <= 2.5f), wciskamy MOVE_FORWARD
         baritone.getLookBehavior().updateTarget(gcdMoveRot, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        boolean allowSprint = isFastPickaxeActive(player) && player.getFoodData().getFoodLevel() > 6;
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, allowSprint);
+        if (allowSprint) {
+            player.setSprinting(true);
+        }
 
         // KATEGORYCZNY ZAKAZ STRAFE (A/D) W TUNELU:
-        // W korytarzu 1x2 jakiekolwiek trzymanie A/D powoduje tarcie o ścianę i flagi GrimAC Simulation!
-        // Centrowanie w osi korytarza odbywa się wyłącznie wektorem patrzenia (gcdMoveRot wprost na targetCenter).
+        // W korytarzu 1x2 jakiekolwiek trzymanie A/D powoduje tarcie o ścianę i flagi
+        // GrimAC Simulation!
+        // Centrowanie w osi korytarza odbywa się wyłącznie wektorem patrzenia
+        // (gcdMoveRot wprost na targetCenter).
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
 
-        // 3. Early Ascend Assist (skok dozwolony WYŁĄCZNIE przy fizycznym schodku w górę +1Y i wolnym suficie)
+        // 3. Early Ascend Assist (skok dozwolony WYŁĄCZNIE przy fizycznym schodku w
+        // górę +1Y i wolnym suficie)
         Direction moveDir = tunnelDir != null ? tunnelDir : primaryMiningDir;
         boolean hasHeadroom = isPassable(level, feet.above(2));
         if (hasHeadroom && shouldEarlyJump(player, level, targetCenter, moveDir)) {
@@ -2238,9 +3098,11 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     private boolean shouldEarlyJump(LocalPlayer player, Level level, Vec3 targetCenter, Direction dir) {
-        if (!player.onGround()) return false;
+        if (!player.onGround())
+            return false;
 
-        // Skacz TYLKO jeśli cel jest fizycznie powyżej stóp (stopień/schodki w górę +1Y)
+        // Skacz TYLKO jeśli cel jest fizycznie powyżej stóp (stopień/schodki w górę
+        // +1Y)
         if (targetCenter.y <= player.getY() + 0.35D) {
             return false;
         }
@@ -2269,7 +3131,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             this.lastTrackedMovementPos = player.position();
         }
 
-        // Nigdy nie skacz w tunelu 1x2 (uderzenie głową w sufit flaguje Simulation 0.098)
+        // Nigdy nie skacz w tunelu 1x2 (uderzenie głową w sufit flaguje Simulation
+        // 0.098)
         if (this.movementStuckTicks >= 20) {
             BlockPos ceiling = player.blockPosition().above(2);
             if (!level.getBlockState(ceiling).isAir() && !isBedrockOrUnbreakable(level, ceiling)) {
@@ -2295,16 +3158,19 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     // =========================================================================
 
     private boolean isPickaxe(ItemStack stack) {
-        if (stack.isEmpty()) return false;
+        if (stack.isEmpty())
+            return false;
         return stack.is(ItemTags.PICKAXES) || stack.isCorrectToolForDrops(Blocks.STONE.defaultBlockState());
     }
 
     private boolean isToolUsable(ItemStack stack) {
-        return isPickaxe(stack) && (!stack.isDamageableItem() || (stack.getMaxDamage() - stack.getDamageValue()) > MIN_TOOL_DURABILITY);
+        return isPickaxe(stack)
+                && (!stack.isDamageableItem() || (stack.getMaxDamage() - stack.getDamageValue()) > MIN_TOOL_DURABILITY);
     }
 
     /**
-     * Sprawdza czy gracz ma jakikolwiek sprawny kilof (drewniany/kamienny/żelazny/diamentowy/netheritowy).
+     * Sprawdza czy gracz ma jakikolwiek sprawny kilof
+     * (drewniany/kamienny/żelazny/diamentowy/netheritowy).
      * Jeśli kilof jest w głównym ekwipunku (sloty 9..35), przenosi go na hotbar.
      */
     private boolean ensureUsablePickaxe(LocalPlayer player) {
@@ -2323,8 +3189,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                             i,
                             targetHotbarSlot,
                             ClickType.SWAP,
-                            player
-                    );
+                            player);
                     return true;
                 }
             }
@@ -2332,30 +3197,93 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         return false;
     }
 
-    private void equipBestTool(LocalPlayer player, BlockState state) {
-        int bestSlot = -1;
-        float bestScore = -1.0F;
+    private boolean equipBestTool(LocalPlayer player, BlockState state) {
+        if (state.isAir() || !state.getFluidState().isEmpty()) {
+            return false;
+        }
 
-        for (int i = 0; i < 9; i++) {
+        boolean requiresTool = state.requiresCorrectToolForDrops();
+        int currentSlot = player.getInventory().selected;
+
+        int bestHotbarSlot = findBestToolInRange(player, state, 0, 9, requiresTool);
+
+        // Jeśli w hotbarze brakuje wymaganego narzędzia (np. kilofa na Deepslate),
+        // poszukaj w głównym ekwipunku (9-35)
+        if (bestHotbarSlot == -1 && requiresTool) {
+            int invToolSlot = findBestToolInRange(player, state, 9, 36, true);
+            if (invToolSlot != -1 && ctx.playerController() != null) {
+                int targetHotbarSlot = 1; // Slot na kilof
+                ctx.playerController().windowClick(
+                        player.inventoryMenu.containerId,
+                        invToolSlot,
+                        targetHotbarSlot,
+                        ClickType.SWAP,
+                        player);
+                bestHotbarSlot = targetHotbarSlot;
+            }
+        }
+
+        if (bestHotbarSlot != -1 && bestHotbarSlot != currentSlot) {
+            player.getInventory().selected = bestHotbarSlot;
+            if (ctx.playerController() != null) {
+                ctx.playerController().syncHeldItem();
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    private int findBestToolInRange(LocalPlayer player, BlockState state, int startSlot, int endSlot,
+            boolean mustBeCorrectTool) {
+        int bestSlot = -1;
+        float bestScore = -1.0f;
+
+        for (int i = startSlot; i < endSlot; i++) {
             ItemStack stack = player.getInventory().getItem(i);
-            if (stack.isEmpty()) continue;
+            if (stack.isEmpty()) {
+                continue;
+            }
+
+            // Ochrona przed zniszczeniem narzędzia o niskiej wytrzymałości
             if (stack.isDamageableItem() && (stack.getMaxDamage() - stack.getDamageValue()) <= MIN_TOOL_DURABILITY) {
                 continue;
             }
 
-            float speed = stack.getDestroySpeed(state);
-            boolean drops = stack.isCorrectToolForDrops(state);
-            float score = (drops ? 1000.0F : (isPickaxe(stack) ? 100.0F : 0.0F)) + speed;
+            boolean isCorrect = stack.isCorrectToolForDrops(state);
+            if (mustBeCorrectTool && !isCorrect) {
+                continue;
+            }
+
+            float baseSpeed = stack.getDestroySpeed(state);
+            float score = baseSpeed;
+
+            // Bonus Efficiency liczy się w MC tylko wtedy, gdy narzędzie faktycznie
+            // przyspiesza kopanie danego bloku (baseSpeed > 1.0f)
+            if (baseSpeed > 1.0f) {
+                int effLevel = FastBreakHelper.getEfficiencyLevel(stack);
+                if (effLevel > 0) {
+                    score += (float) (effLevel * effLevel + 1);
+                }
+            }
+
+            if (isCorrect) {
+                score += 1000.0f; // Absolutny priorytet dla właściwego narzędzia (kilof na skały/rudy, łopata na
+                                  // ziemię/żwir)
+            }
+
+            // Unikaj kopania bloków mieczem
+            if (stack.getItem() instanceof net.minecraft.world.item.SwordItem) {
+                score -= 500.0f;
+            }
+
             if (score > bestScore) {
                 bestScore = score;
                 bestSlot = i;
             }
         }
 
-        if (bestSlot != -1 && player.getInventory().selected != bestSlot) {
-            player.getInventory().selected = bestSlot;
-            ctx.playerController().syncHeldItem();
-        }
+        return bestSlot;
     }
 
     private void updateStuckWatchdog(LocalPlayer player) {
@@ -2379,7 +3307,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     /**
-     * Cel podejścia do rudy gwarantujący dystans oczu <= 2.65m (zawsze w zasięgu reach <= 3.5m).
+     * Cel podejścia do rudy gwarantujący dystans oczu <= 2.65m (zawsze w zasięgu
+     * reach <= 3.5m).
      * Wyklucza pozycje, z których raycast zawiódł (zapobiega deadlockowi 0.0 bps).
      */
     private static final class GoalStrictOreApproach implements Goal, IGoalRenderPos {
@@ -2399,7 +3328,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             if (excludedFeet.contains(new BlockPos(x, y, z))) {
                 return false;
             }
-            // Dystans z oczu gracza (y + 1.62) do środka rudy (ox + 0.5, oy + 0.5, oz + 0.5) <= 2.65m
+            // Dystans z oczu gracza (y + 1.62) do środka rudy (ox + 0.5, oy + 0.5, oz +
+            // 0.5) <= 2.65m
             double dx = (x + 0.5D) - (ox + 0.5D);
             double dy = (y + 1.62D) - (oy + 0.5D);
             double dz = (z + 0.5D) - (oz + 0.5D);
@@ -2421,8 +3351,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         @Override
         public boolean equals(Object o) {
-            if (this == o) return true;
-            if (!(o instanceof GoalStrictOreApproach that)) return false;
+            if (this == o)
+                return true;
+            if (!(o instanceof GoalStrictOreApproach that))
+                return false;
             return ox == that.ox && oy == that.oy && oz == that.oz && Objects.equals(excludedFeet, that.excludedFeet);
         }
 
@@ -2433,7 +3365,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         @Override
         public String toString() {
-            return String.format("GoalStrictOreApproach{ore=(%d,%d,%d), excludedCount=%d}", ox, oy, oz, excludedFeet.size());
+            return String.format("GoalStrictOreApproach{ore=(%d,%d,%d), excludedCount=%d}", ox, oy, oz,
+                    excludedFeet.size());
         }
     }
 
@@ -2447,13 +3380,26 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.active = false;
         this.activeOreTarget = null;
         this.currentBreakingBlock = null;
-        this.currentBreakingBlockTicks = 0;
+        this.activeMiningTicks = 0;
+        this.aimStallTicks = 0;
+        this.blockedDirsByNode.clear();
+        this.pendingTurnDir = null;
+        this.turnCooldownTicks = 0;
+        this.placeCooldownTicks = 0;
         this.blockedForwardDir = null;
-        this.lastTurnBlockedDir = null;
         this.lateralDetourRemaining = 0;
         this.lateralOffsetDir = null;
         this.turnCommitCooldown = 0;
         this.consecutiveStraightBlocks = 0;
+        this.toolSwitchCooldownTicks = 0;
+        this.postPlaceMineDelayTicks = 0;
+        this.lockedMiningRotation = null;
+        this.lostSightGraceTicks = 0;
+        this.turnBrakeTicks = 0;
+        this.protectedSealBlocks.clear();
+        Baritone.settings().autoTool.value = this.originalAutoTool;
+        Baritone.settings().allowPlace.value = this.originalAllowPlace;
+        resetMiningState();
         baritone.getInputOverrideHandler().clearAllKeys();
         if (ctx.playerController() != null) {
             ctx.playerController().resetBlockRemoving();
@@ -2466,17 +3412,55 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     // Gettery dla HUD, Lua i zewnętrznych modułów
-    public BlockPos getCurrentBreakingBlock() { return currentBreakingBlock; }
-    public BlockPos getCurrentTargetBlock() { return activeOreTarget != null ? activeOreTarget : currentBreakingBlock; }
-    public BypassConfig getConfig() { return config; }
-    public State getState() { return state; }
-    public String getPhase() { return state.name().toLowerCase(Locale.ROOT); }
-    public Direction getTunnelDirection() { return tunnelDir; }
-    public int getOresMined() { return oresMined; }
-    public int getDiamondCount() { return diamondCount; }
-    public int getGoldCount() { return goldCount; }
-    public long getStartTime() { return startTime; }
-    public List<String> getTargetOres() { return Collections.unmodifiableList(targetOresList); }
-    public Set<String> getTargetDropItems() { return Collections.unmodifiableSet(targetDropItems); }
-    public BypassLuaEngine getLuaEngine() { return luaEngine; }
+    public BlockPos getCurrentBreakingBlock() {
+        return currentBreakingBlock;
+    }
+
+    public BlockPos getCurrentTargetBlock() {
+        return activeOreTarget != null ? activeOreTarget : currentBreakingBlock;
+    }
+
+    public BypassConfig getConfig() {
+        return config;
+    }
+
+    public State getState() {
+        return state;
+    }
+
+    public String getPhase() {
+        return state.name().toLowerCase(Locale.ROOT);
+    }
+
+    public Direction getTunnelDirection() {
+        return tunnelDir;
+    }
+
+    public int getOresMined() {
+        return oresMined;
+    }
+
+    public int getDiamondCount() {
+        return diamondCount;
+    }
+
+    public int getGoldCount() {
+        return goldCount;
+    }
+
+    public long getStartTime() {
+        return startTime;
+    }
+
+    public List<String> getTargetOres() {
+        return Collections.unmodifiableList(targetOresList);
+    }
+
+    public Set<String> getTargetDropItems() {
+        return Collections.unmodifiableSet(targetDropItems);
+    }
+
+    public BypassLuaEngine getLuaEngine() {
+        return luaEngine;
+    }
 }
