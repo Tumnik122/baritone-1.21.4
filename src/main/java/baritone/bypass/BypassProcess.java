@@ -3,1608 +3,2238 @@ package baritone.bypass;
 import baritone.Baritone;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
+import baritone.api.pathing.goals.GoalComposite;
 import baritone.api.pathing.goals.GoalGetToBlock;
 import baritone.api.pathing.goals.GoalTwoBlocks;
+import baritone.api.pathing.goals.GoalYLevel;
 import baritone.api.process.IBaritoneProcess;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.api.utils.BetterBlockPos;
-import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
-import baritone.api.utils.RayTraceUtils;
-import baritone.api.utils.ObstructionHelper;
 import baritone.api.utils.input.Input;
-import baritone.bypass.mine.FaceAimSolver;
-import baritone.bypass.mine.ObstructionResolver;
-import baritone.bypass.mine.RotationGrid;
-import baritone.bypass.mine.SafetyGate;
-import baritone.bypass.mine.Eyes;
+import baritone.api.utils.interfaces.IGoalRenderPos;
 import baritone.bypass.scripting.BypassLuaEngine;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.ContinuousBreakController;
-import baritone.utils.FastBreakHelper;
-import baritone.pathing.movement.MovementHelper;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.multiplayer.PlayerInfo;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.network.chat.Component;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.tags.BlockTags;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.tags.ItemTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.ItemEntity;
-import net.minecraft.world.entity.monster.Enemy;
+import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.FallingBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.level.material.Fluids;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
-import java.nio.file.Path;
 import java.util.*;
-import java.util.concurrent.ThreadLocalRandom;
-import java.util.function.Supplier;
 
 /**
- * Główny proces wydobywczy #bypass pod kątem GrimAC.
- *
- * Realizuje:
- * 1. DESCENDING_STAIRCASE: bezpośrednie bezpieczne schodki w dół do Y=-55 (BEZ Baritone pathfinding).
- * 2. TUNNELING: bezpośrednie kopanie korytarzy 1x2 i branch mining (BEZ Baritone pathfinding).
- * 3. MINING_ORE: wydobycie pobliskich rud ze skanera (płynna rotacja, krótkie cele).
- * 4. RETREATING_MOB: natychmiastowe proste cofanie przed mobem (bez pathfindingu).
- * 5. PATHFINDING_RETURN: powrót do zapisanej pozycji z krótkimi segmentami (max 10-12 bloków).
- * 6. Safety check: emergency disconnect przy niskim zdrowiu i wrogim mobie.
- * 7. WATCHDOG: jeśli bot nie zmienił pozycji przez 3 sekundy -> force reset (przerwij wszystko,
- *    blacklist rudę jeśli był w MINING_ORE, zmień kierunek jeśli TUNNELING, wróć do kopania).
- * 8. BREAK_TIMEOUT = 5000ms: jeśli blok nie jest wykopany w 5s -> skip, następny blok.
- * 9. Podchodzenie do dropu po zniszczeniu rudy: sprawdza ItemEntity w promieniu 2.5 bloka,
- *    płynnie podchodzi w zasięg podniesienia (1.5 bloka) z 2-sekundowym timeoutem.
- * 10. Statystyki HUD: liczniki Diamond, Gold, całkowitych rud i czasu pracy.
+ * Czysty rdzeń procesu #bypass (Argon 4 & dj architecture):
+ * 1. Bezpieczne schodki w dół z prześwitem 3 bloków do poziomu docelowego (domyślnie Y = -50).
+ * 2. Kopanie tunelu 1x2 przed siebie z kontrolą dystansu (~1.15m) bez wbiegania w ściany.
+ * 3. Aktywne omijanie zagrożeń: lawa, woda, gravel/sand nad głową, dziury/jaskinie bez podłoża.
+ * 4. Ciągły skan 5 bloków w każdą stronę w poszukiwaniu diamentów/rud (kostka 11x11x11) + Vein Mining 3x3x3.
+ * 5. Ścisły reach <= 3.5m (GrimAC safe reach limit):
+ *    - Jeśli ruda w zasięgu <= 3.5m: 1-tick GrimSnap GCD i natychmiastowe wykopanie.
+ *    - Jeśli ruda dalej lub za ścianą: podejście przez Baritone Pathing (GoalOreMining / GoalGetToBlock) jak w #mine.
+ * 6. Automatyczne zbieranie dropu i powrót do tunelowania na Y=-50.
  */
-public class BypassProcess extends BaritoneProcessHelper implements IBaritoneProcess {
+public final class BypassProcess extends BaritoneProcessHelper implements IBaritoneProcess {
+
+    public static final double STRICT_REACH = 3.5D;
+    private static final double GOAL_APPROACH_EYE_REACH = 2.65D;
+    private static final double WALL_STOP_DISTANCE = 1.15D;
+    private static final int ORE_SCAN_RADIUS = 3; // Ściśle 3 bloki w każdą stronę wokół gracza (kostka 7x7x7)
+    public static final int DEFAULT_TARGET_Y = -50;
+    public static final int MIN_SAFE_BEDROCK_Y = -54;
+    private static final int MIN_TOOL_DURABILITY = 5;
 
     public enum State {
-        DESCENDING_STAIRCASE,   // schodki w dół — bez pathfinding, bezpośrednie kopanie
-        ASCENDING_STAIRCASE,    // schodki w górę do Y=-55 — bezpośrednie kopanie
-        TUNNELING,              // tunele — bez pathfinding, bezpośrednie kopanie
-        MINING_ORE,             // kopie rudę znalezioną przez OreScanner
-        COLLECTING_DROP,        // podchodzenie do upuszczonego itemu rudy
-        RETREATING_MOB,         // cofanie przed mobem — proste cofanie, nie pathfinding
-        PATHFINDING_RETURN,     // reconnect — pathfind do zapisanej pozycji (krótkie segmenty)
+        DESCENDING_STAIRCASE,
+        ASCENDING_STAIRCASE,
+        TUNNELING,
+        MINING_ORE,
+        COLLECTING_DROP,
+        SEALING_HAZARD,
+        RETREATING_MOB,
+        PATHFINDING_RETURN,
         DISCONNECTED,
         IDLE
     }
 
+    private static final Map<String, Set<Block>> ORE_BLOCK_MAP = Map.of(
+            "diamond", Set.of(Blocks.DIAMOND_ORE, Blocks.DEEPSLATE_DIAMOND_ORE),
+            "gold", Set.of(Blocks.GOLD_ORE, Blocks.DEEPSLATE_GOLD_ORE, Blocks.NETHER_GOLD_ORE),
+            "iron", Set.of(Blocks.IRON_ORE, Blocks.DEEPSLATE_IRON_ORE),
+            "copper", Set.of(Blocks.COPPER_ORE, Blocks.DEEPSLATE_COPPER_ORE),
+            "coal", Set.of(Blocks.COAL_ORE, Blocks.DEEPSLATE_COAL_ORE),
+            "lapis", Set.of(Blocks.LAPIS_ORE, Blocks.DEEPSLATE_LAPIS_ORE),
+            "redstone", Set.of(Blocks.REDSTONE_ORE, Blocks.DEEPSLATE_REDSTONE_ORE),
+            "emerald", Set.of(Blocks.EMERALD_ORE, Blocks.DEEPSLATE_EMERALD_ORE),
+            "debris", Set.of(Blocks.ANCIENT_DEBRIS)
+    );
+
+    private static final Map<String, Set<Item>> ORE_ITEM_MAP = Map.of(
+            "diamond", Set.of(Items.DIAMOND, Items.DIAMOND_ORE, Items.DEEPSLATE_DIAMOND_ORE),
+            "gold", Set.of(Items.RAW_GOLD, Items.GOLD_INGOT, Items.GOLD_NUGGET),
+            "iron", Set.of(Items.RAW_IRON, Items.IRON_INGOT),
+            "copper", Set.of(Items.RAW_COPPER, Items.COPPER_INGOT),
+            "coal", Set.of(Items.COAL),
+            "lapis", Set.of(Items.LAPIS_LAZULI),
+            "redstone", Set.of(Items.REDSTONE),
+            "emerald", Set.of(Items.EMERALD),
+            "debris", Set.of(Items.ANCIENT_DEBRIS, Items.NETHERITE_SCRAP)
+    );
+
+    public static String normalizeOreKey(String key) {
+        if (key == null) return "diamond";
+        String s = key.toLowerCase(Locale.ROOT).trim();
+        if (s.equals("diamonds") || s.equals("diax") || s.equals("diaxy") || s.equals("diamond_ore")) return "diamond";
+        if (s.equals("gold_ore") || s.equals("zloto")) return "gold";
+        if (s.equals("iron_ore") || s.equals("zelazo")) return "iron";
+        if (s.equals("copper_ore") || s.equals("miedz")) return "copper";
+        if (s.equals("coal_ore") || s.equals("wegiel")) return "coal";
+        if (s.equals("lapis_ore") || s.equals("lazuryt") || s.equals("lapis_lazuli")) return "lapis";
+        if (s.equals("redstone_ore") || s.equals("czerwony")) return "redstone";
+        if (s.equals("emerald_ore") || s.equals("szmaragd") || s.equals("emeralds")) return "emerald";
+        if (s.equals("ancient_debris") || s.equals("netherite")) return "debris";
+        if (s.endsWith("_ore")) s = s.substring(0, s.length() - 4);
+        return s;
+    }
+
     private final BypassConfig config = new BypassConfig();
-    private final List<String> targetOres = new ArrayList<>();
-    private final Set<Block> targetOreBlocks = new HashSet<>();
+    private final BypassLuaEngine luaEngine;
 
     private boolean active = false;
-    private final BypassStateMachine stateMachine;
+    private int targetY = DEFAULT_TARGET_Y;
+    private State state = State.IDLE;
+    private Direction tunnelDir = Direction.NORTH;
+
+    private BlockPos tunnelAnchorPos = null;
+    private BlockPos activeOreTarget = null;
+    private BlockPos currentBreakingBlock = null;
+    private final Deque<BlockPos> veinQueue = new ArrayDeque<>();
+    private final Set<BlockPos> blacklistedOres = new HashSet<>();
+    private final Set<BlockPos> invalidStandingPositions = new HashSet<>();
+    private final List<String> targetOresList = new ArrayList<>(List.of("diamond"));
+    private final Set<String> targetDropItems = new HashSet<>(Set.of("diamond", "raw_iron", "raw_gold", "ancient_debris"));
+
+    // Pola stanu dla COLLECTING_DROP (odzyskiwanie dropu i rozkopywanie wnęk)
+    private final Map<Integer, Long> ignoredDropIds = new HashMap<>();
+    private int currentDropId = -1;
+    private int dropCollectTicks = 0;
+    private int dropStuckTicks = 0;
+    private double lastDistToDropSq = Double.MAX_VALUE;
+    private Goal lastDropGoal = null;
+
+    // Pola stanu dla SEALING_HAZARD (WaterSealer - zatykanie wycieków wody/lawy)
+    private BlockPos hazardSourcePos = null;
+    private int sealCooldownTicks = 0;
+    private int sealFailedAttempts = 0;
+    private static final int MAX_SEAL_ATTEMPTS = 5;
+
+    // Pola dla unikania pustych / wykopanych tuneli oraz Dominant Mining Vector (Argon 4 & dj)
+    private Direction primaryMiningDir = Direction.NORTH;
+    private final it.unimi.dsi.fastutil.longs.LongSet dugColumns2D = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+    private int lateralDetourRemaining = 0;
+    private Direction lateralOffsetDir = null;
+    private static final int MIN_PARALLEL_SPACING = 3;
+    private final Set<Long> minedCorridorFeet = new HashSet<>();
+
+    // Płynność ruchu, skoki Early Ascend i nawigacja wodna (Argon 4 & dj)
+    private Vec3 lastTrackedMovementPos = Vec3.ZERO;
+    private int movementStuckTicks = 0;
+
+    private int stuckTicks = 0;
+    private int oreStagnationTicks = 0;
+    private int oreAttemptTicks = 0;
+    private int returnStuckTicks = 0;
+    private BlockPos lastPlayerPos = null;
     private int oresMined = 0;
     private int diamondCount = 0;
     private int goldCount = 0;
     private long startTime = 0L;
 
-    private Direction tunnelDirection = Direction.NORTH;
-    private int segmentLength = 0;
-    private int targetSegmentLength = 20;
-
-    // Odgałęzienie boczne (branch mining)
-    private boolean inSideBranch = false;
-    private Direction sideBranchDirection = Direction.EAST;
-    private int sideBranchLength = 0;
-    private int targetSideBranchLength = 7;
-    private BlockPos branchStartPos = null;
-
-    private BlockPos currentTargetBlock = null;
-    private int varianceCooldownTicks = 0;
-
-    // Watchdog pozycji (6 sekund) — resetuje tylko gdy bot stoi bezczynnie (nie niszczy bloku)
-    private Vec3 lastWatchdogPos = null;
-    private long lastPositionChangeTime = 0L;
-    private static final long WATCHDOG_TIMEOUT_MS = 6000L;
-
-    // The ore target and the obstruction currently being broken are separate.
-    private final BypassBreakTracker breakTracker = new BypassBreakTracker();
-    private BlockPos breakingBlock = null;
-    private long breakStartTime = 0L;
-    private BypassStaircaseStep staircaseStep;
-    private BlockPos tunnelStepTarget;
-    private BlockPos placementTarget;
-    private int placementRetryTicks;
-    private int oreApproachTicks;
-    private boolean pathCalculationFailed;
-    private boolean navigationActive;
-    private int orphanDropScanTicks;
-    private final Map<BlockPos, Long> deferredDrops = new HashMap<>();
-
-    // Podchodzenie do dropu po zniszczeniu rudy
-    private BlockPos pendingDropPos = null;
-    private BypassDropTracker dropTracker;
-    private final Set<String> targetDropItems = new HashSet<>();
-    private int dropTargetId = -1;
-
-    // Kolejka bloków żyły rudy (Vein Mining)
-    private final LinkedList<BlockPos> activeVeinQueue = new LinkedList<>();
-    private final Set<BlockPos> veinDiscovered = new HashSet<>();
-
-    // Watchdog utknięcia na przeszkodach
-    private BlockPos lastPlayerPos = null;
-    private int stuckTicks = 0;
-
-    // Cooldown po watchdog resecie z MINING_ORE — bot kopie tunel przez N ticków zanim znów szuka rud
-    private int miningCooldownTicks = 0;
-    private static final int MINING_COOLDOWN_AFTER_STUCK = 30; // ~1.5 sekundy — wystarczy żeby odsunąć się od problematycznej rudy
-
-    // Watchdog timeoutu pathfindingu (dla PATHFINDING_RETURN)
-    private boolean isPathfinding = false;
-    private long pathStartTime = 0L;
-    private static final long PATH_TIMEOUT_MS = 3000L;
-    private BlockPos savedReconnectTarget = null;
-
-    // ESP Player Detection (GrimAC-safe: cicha detekcja)
-    private long lastPlayerWarningTime = 0L;
-
-    // Silnik skryptowy Lua (hot-reloading, automatyzacje)
-    private final BypassLuaEngine luaEngine;
+    public double getEffectiveReach() {
+        Minecraft mc = ctx.minecraft();
+        if (mc != null && mc.hasSingleplayerServer()) {
+            return 4.5D;
+        }
+        return STRICT_REACH;
+    }
 
     public BypassProcess(Baritone baritone) {
         super(baritone);
         this.luaEngine = new BypassLuaEngine(baritone, this);
-        this.stateMachine = new BypassStateMachine(ctx, config, Map.of(
-                State.DESCENDING_STAIRCASE, controller(State.DESCENDING_STAIRCASE, this::handleDescendingStaircase),
-                State.ASCENDING_STAIRCASE, controller(State.ASCENDING_STAIRCASE, this::handleAscendingStaircase),
-                State.TUNNELING, controller(State.TUNNELING, this::handleTunneling),
-                State.MINING_ORE, controller(State.MINING_ORE, this::handleMiningOre),
-                State.COLLECTING_DROP, controller(State.COLLECTING_DROP, this::handleCollectingDrop),
-                State.RETREATING_MOB, controller(State.RETREATING_MOB,
-                        () -> new PathingCommand(null, PathingCommandType.REQUEST_PAUSE)),
-                State.PATHFINDING_RETURN, controller(State.PATHFINDING_RETURN, this::handlePathfindingReturn)
-        ));
     }
 
-    private IBypassSubController controller(State phase, Supplier<PathingCommand> tick) {
-        return new IBypassSubController() {
-            @Override
-            public void onEnter(IPlayerContext context, BypassConfig settings) {
-                RotationEngine.reset();
-            }
+    public void start(int customTargetY, List<String> ores) {
+        this.active = true;
+        this.targetY = customTargetY;
+        this.config.yLevel = customTargetY;
+        this.veinQueue.clear();
+        this.blacklistedOres.clear();
+        this.invalidStandingPositions.clear();
+        this.oreStagnationTicks = 0;
+        this.oreAttemptTicks = 0;
+        this.returnStuckTicks = 0;
+        this.activeOreTarget = null;
+        this.tunnelAnchorPos = null;
+        this.stuckTicks = 0;
+        this.ignoredDropIds.clear();
+        this.currentDropId = -1;
+        this.dropCollectTicks = 0;
+        this.dropStuckTicks = 0;
+        this.lastDistToDropSq = Double.MAX_VALUE;
+        this.lastDropGoal = null;
+        this.hazardSourcePos = null;
+        this.sealCooldownTicks = 0;
+        this.sealFailedAttempts = 0;
+        this.minedCorridorFeet.clear();
+        this.dugColumns2D.clear();
+        this.lateralDetourRemaining = 0;
+        this.lateralOffsetDir = null;
+        this.lastTrackedMovementPos = Vec3.ZERO;
+        this.movementStuckTicks = 0;
+        this.startTime = System.currentTimeMillis();
 
-            @Override
-            public PathingCommand onTick(IPlayerContext context, BypassConfig settings) {
-                return tick.get();
-            }
+        // Wymuszenie uprawnień Baritone do podbudowywania się (MovementPillar) i przebijania ścian
+        Baritone.settings().allowPlace.value = true;
+        Baritone.settings().allowBreak.value = true;
+        Baritone.settings().allowParkour.value = false;
 
-            @Override
-            public void onExit(IPlayerContext context) {
-                stopNavigation();
-                releaseActions();
-                RotationEngine.reset();
-                breakingBlock = null;
-                breakStartTime = 0L;
-                breakTracker.reset();
-                staircaseStep = null;
-                tunnelStepTarget = null;
-                placementTarget = null;
-                oreApproachTicks = 0;
-                if (phase == State.COLLECTING_DROP) {
-                    pendingDropPos = null;
-                    dropTracker = null;
-                    dropTargetId = -1;
-                }
+        // Rejestracja bloków z poziomu Y=-50 jako budulca do pillaringu
+        List<Item> throwaway = Baritone.settings().acceptableThrowawayItems.value;
+        for (Item item : List.of(
+                Items.COBBLESTONE, Items.COBBLED_DEEPSLATE, Items.DEEPSLATE,
+                Items.TUFF, Items.STONE, Items.ANDESITE, Items.DIORITE,
+                Items.GRANITE, Items.DIRT, Items.NETHERRACK
+        )) {
+            if (!throwaway.contains(item)) {
+                throwaway.add(item);
             }
+        }
 
-            @Override
-            public boolean isFinished() {
-                return stateMachine.state() != phase;
-            }
+        this.targetOresList.clear();
+        if (ores != null && !ores.isEmpty()) {
+            this.targetOresList.addAll(ores);
+        } else {
+            this.targetOresList.add("diamond");
+        }
 
-            @Override
-            public boolean requiresImmediateHalt() {
-                return !active || ctx.player() == null || ctx.world() == null;
+        LocalPlayer player = ctx.player();
+        if (player != null) {
+            this.tunnelDir = player.getDirection();
+            if (this.tunnelDir.getAxis().isVertical()) {
+                this.tunnelDir = Direction.NORTH;
             }
-        };
+            this.primaryMiningDir = this.tunnelDir;
+            int currentY = player.blockPosition().getY();
+            this.state = currentY > targetY ? State.DESCENDING_STAIRCASE : State.TUNNELING;
+            logDirect(String.format("§a[Bypass] Uruchomiono! Poziom docelowy: Y=%d, autostrada: %s, rudy: %s",
+                    targetY, primaryMiningDir, targetOresList));
+        } else {
+            this.primaryMiningDir = Direction.NORTH;
+            this.tunnelDir = Direction.NORTH;
+            this.state = State.DESCENDING_STAIRCASE;
+        }
     }
 
-    public void syncConfigFromSettings() {
-        try {
-            baritone.api.Settings s = Baritone.settings();
-            if (s == null) return;
-            config.autoDropTrash = s.autoDropTrash.value;
-            config.autoLockSlots = s.autoLockResource.value;
-            config.reachLimit = s.blockReachDistance.value;
-            config.waterAvoid = s.mineAvoidWater.value;
-            config.lavaAvoid = s.mineAvoidLava.value;
-            config.checkCombatLog = s.autoEatPauseInCombat.value;
-            config.rotationSpeed = s.maxRotationSpeedPerTick.value;
-            config.healthThreshold = s.disconnectHealthHearts.value != null ? s.disconnectHealthHearts.value * 2.0 : 12.0;
-            if (s.anarchiaMode.value && config.healthThreshold < 12.0) {
-                config.healthThreshold = 12.0;
-            }
-        } catch (Throwable ignored) {}
+    public void start(int customTargetY) {
+        start(customTargetY, List.of("diamond"));
+    }
+
+    public void start() {
+        start(DEFAULT_TARGET_Y, List.of("diamond"));
     }
 
     public void startMining(List<String> ores) {
-        syncConfigFromSettings();
-        resetSession();
-        this.targetOres.clear();
-        this.targetOres.addAll(ores);
-        resolveTargetBlocks();
-
-        if (ctx.player() != null) {
-            this.tunnelDirection = ctx.player().getDirection();
-        } else {
-            this.tunnelDirection = Direction.NORTH;
-        }
-
-        this.segmentLength = 0;
-        this.targetSegmentLength = config.minLengthBeforeTurn +
-                ThreadLocalRandom.current().nextInt(config.maxLengthBeforeTurn - config.minLengthBeforeTurn + 1);
-        this.inSideBranch = false;
-        this.branchStartPos = null;
-        this.currentTargetBlock = null;
-        this.breakingBlock = null;
-        this.breakStartTime = 0L;
-        this.pendingDropPos = null;
-        this.dropTracker = null;
-        this.active = true;
-        this.isPathfinding = false;
-        this.stuckTicks = 0;
-        this.lastPlayerPos = null;
-        this.lastWatchdogPos = null;
-        this.lastPositionChangeTime = System.currentTimeMillis();
-        this.startTime = System.currentTimeMillis();
-
-        int currentY = ctx.playerFeet() != null ? ctx.playerFeet().getY() : 64;
-        if (currentY > config.yLevel) {
-            stateMachine.transition(State.DESCENDING_STAIRCASE);
-            logDirect(String.format("§a[Bypass] Uruchomiono schodzenie do Y=%d (obecny Y=%d, kierunek=%s)",
-                    config.yLevel, currentY, tunnelDirection));
-        } else if (currentY < config.yLevel) {
-            stateMachine.transition(State.ASCENDING_STAIRCASE);
-            logDirect(String.format("§a[Bypass] Gracz poniżej Y=%d (obecny Y=%d). Uruchomiono wchodzenie po schodkach w górę do Y=%d.",
-                    config.yLevel, currentY, config.yLevel));
-        } else {
-            stateMachine.transition(State.TUNNELING);
-            logDirect(String.format("§a[Bypass] Uruchomiono tunelowanie na Y=%d (kierunek=%s)",
-                    currentY, tunnelDirection));
-        }
+        int configuredY = (config != null) ? config.yLevel : DEFAULT_TARGET_Y;
+        int y = Math.max(configuredY, MIN_SAFE_BEDROCK_Y);
+        start(y, ores);
     }
 
     public void resumeFromData(ReconnectData data) {
         if (data == null) return;
-        syncConfigFromSettings();
-        resetSession();
-        this.targetOres.clear();
-        if (data.ores != null) {
-            this.targetOres.addAll(data.ores);
-        }
-        resolveTargetBlocks();
-        try {
-            this.tunnelDirection = Direction.valueOf(data.tunnel_direction);
-        } catch (Exception e) {
-            this.tunnelDirection = Direction.NORTH;
-        }
-        if (tunnelDirection.getAxis().isVertical()) {
-            this.tunnelDirection = Direction.NORTH;
-        }
-        this.oresMined = data.ores_mined;
-        this.active = true;
-        this.currentTargetBlock = null;
-        this.breakingBlock = null;
-        this.breakStartTime = 0L;
-        this.pendingDropPos = null;
-        this.dropTracker = null;
-        this.stuckTicks = 0;
-        this.lastWatchdogPos = null;
-        this.lastPositionChangeTime = System.currentTimeMillis();
-        this.startTime = System.currentTimeMillis();
-
-        BlockPos savedPos = new BlockPos((int) Math.floor(data.x), (int) Math.floor(data.y), (int) Math.floor(data.z));
-        BlockPos feet = ctx.playerFeet();
-        if (feet != null && feet.distSqr(savedPos) > 25.0) { // > 5 bloków
-            stateMachine.transition(State.PATHFINDING_RETURN);
-            this.savedReconnectTarget = savedPos;
-            this.isPathfinding = true;
-            this.pathStartTime = System.currentTimeMillis();
-            logDirect(String.format("§a[Bypass] Wznowiono! Powrót do pozycji %s (krótkie segmenty)...", savedPos));
-        } else {
-            int currentY = feet != null ? feet.getY() : (int) Math.floor(data.y);
-            stateMachine.transition(travelState(currentY, config.yLevel));
-            logDirect(String.format("§a[Bypass] Wznowiono sesję! Wykopano wcześniej: %d rud.", oresMined));
-        }
+        this.targetY = (int) Math.round(data.y);
+        start(this.targetY, data.ores != null ? data.ores : List.of("diamond"));
     }
 
-    /**
-     * Zatrzymuje proces #bypass, anuluje wszystkie akcje, czyści kolejki i blacklistę, resetuje watchdog.
-     */
     public void stop() {
-        this.active = false;
-        stateMachine.transition(State.IDLE);
-        this.currentTargetBlock = null;
-        this.breakingBlock = null;
-        this.breakStartTime = 0L;
-        this.pendingDropPos = null;
-        this.dropTracker = null;
-        this.breakTracker.reset();
-        this.staircaseStep = null;
-        this.tunnelStepTarget = null;
-        this.placementTarget = null;
-        this.isPathfinding = false;
-        this.inSideBranch = false;
-        this.branchStartPos = null;
-        this.savedReconnectTarget = null;
-        this.lastWatchdogPos = null;
-        this.lastPositionChangeTime = System.currentTimeMillis();
-
-        // Czyści blacklistę i liczniki prób
-        OreScanner.clearBlacklist();
-
-        // Reset rotacji
-        RotationEngine.cancel();
-
-        // Anuluj aktywne kopanie i klawisze
-        baritone.getInputOverrideHandler().clearAllKeys();
-        baritone.getInputOverrideHandler().getBlockBreakHelper().stopBreakingBlock();
-        try {
-            Minecraft.getInstance().options.keyAttack.setDown(false);
-            Minecraft.getInstance().options.keyUse.setDown(false);
-        } catch (Throwable ignored) {}
-
-        // Anuluj pathfinding
-        baritone.getCustomGoalProcess().setGoal(null);
-        baritone.getPathingBehavior().cancelEverything();
-
-        logDirect("§e[BYPASS] Stopped.");
-    }
-
-    public void cancel() {
-        stop();
+        onLostControl();
+        logDirect("§e[Bypass] Zatrzymano proces.");
     }
 
     @Override
     public boolean isActive() {
-        return active;
+        return this.active && ctx.player() != null && ctx.world() != null;
     }
 
     @Override
     public PathingCommand onTick(boolean calcFailed, boolean isSafeToCancel) {
-        if (!active || ctx.player() == null || ctx.world() == null) {
-            return null;
-        }
-        syncConfigFromSettings();
-        pathCalculationFailed = calcFailed;
-
-        // Lua tick hook
-        luaEngine.fireTick();
-        if (!active || ctx.player() == null || ctx.world() == null) {
+        LocalPlayer player = ctx.player();
+        Level level = ctx.world();
+        if (player == null || level == null) {
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
-        // Cooldown po watchdog resecie — blokuje powrót do MINING_ORE przez N ticków
-        if (miningCooldownTicks > 0) {
-            miningCooldownTicks--;
+        if (!ensureUsablePickaxe(player)) {
+            logDirect("§c[Bypass] Brak jakiegokolwiek sprawnego kilofa w ekwipunku. Zatrzymywanie.");
+            onLostControl();
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
-        BetterBlockPos playerFeetPos = ctx.playerFeet();
-        if (playerFeetPos == null) {
+        updateStuckWatchdog(player);
+
+        if (sealCooldownTicks > 0) {
+            sealCooldownTicks--;
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
-        int currentY = playerFeetPos.getY();
 
-        // 4. KRYTYCZNA OCHRONA: Cicha detekcja graczy ESP (GrimAC-safe: brak obracania celownika!)
-        PlayerEspDetector.PlayerThreat primaryThreat = PlayerEspDetector.getPrimaryThreat(ctx, config);
-        if (primaryThreat != null) {
-            luaEngine.firePlayerDetected(primaryThreat.player().getScoreboardName(), primaryThreat.distance());
-            boolean inCombat = config.checkCombatLog && CombatLogDetector.isPlayerInCombat();
+        // 0. WaterSealer: Detekcja wycieku wody/lawy zagrażającego graczowi i natychmiastowe zatkanie
+        BlockPos breachPos = findWaterBreachSource(level, player.blockPosition());
+        if (breachPos != null) {
+            this.hazardSourcePos = breachPos;
+            this.state = State.SEALING_HAZARD;
+            return handleSealingHazard(player, level);
+        } else if (state == State.SEALING_HAZARD) {
+            this.state = State.TUNNELING;
+            this.hazardSourcePos = null;
+        }
 
-            if (primaryThreat.isDangerous()) {
-                luaEngine.fireDanger(String.format(Locale.ROOT, "Player threat: %s (dist: %.1fm, mace: %b)",
-                        primaryThreat.player().getScoreboardName(), primaryThreat.distance(), primaryThreat.hasMace()));
-                if (inCombat) {
-                    if (System.currentTimeMillis() - lastPlayerWarningTime > 3000L) {
-                        logDirect(String.format(Locale.ROOT,
-                                "§c[Bypass ESP Alert] Gracz %s w pobliżu (%.1fm)! TRWA WALKA (CombatLog na BossBarze)! Odwrót zamiast rozłączenia!",
-                                primaryThreat.player().getScoreboardName(), primaryThreat.distance()));
-                        lastPlayerWarningTime = System.currentTimeMillis();
-                    }
-                    stateMachine.transition(State.RETREATING_MOB);
-                } else {
-                    logDirect(String.format(Locale.ROOT,
-                            "§c[Bypass ESP] ZAGROŻENIE: Wykryto gracza %s w odległości %.1f bloków (Mace: %s)! Rozłączam bezpiecznie...",
-                            primaryThreat.player().getScoreboardName(), primaryThreat.distance(), primaryThreat.hasMace() ? "TAK" : "NIE"));
-                    Path savePath = baritone.getDirectory().resolve(config.saveFile);
-                    ReconnectData.save(savePath, ctx.player(), new ArrayList<>(targetOres), tunnelDirection.name(), getState().name(), oresMined);
-                    stateMachine.transition(State.DISCONNECTED);
-                    stop();
-                    if (ctx.player().connection != null && ctx.player().connection.getConnection() != null) {
-                        ctx.player().connection.getConnection().disconnect(Component.literal("§c[Bypass ESP] Auto-disconnect: gracz w pobliżu (" + primaryThreat.player().getScoreboardName() + ")"));
-                    } else {
-                        ctx.world().disconnect();
-                    }
-                    return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        // 1. Priorytet: Ciągłe skanowanie 3 kratek wokół gracza (kostka 7x7x7)
+        if (state != State.MINING_ORE) {
+            BlockPos foundOre = findNearestOre(player, level);
+            if (foundOre != null) {
+                if (tunnelAnchorPos == null && state == State.TUNNELING) {
+                    tunnelAnchorPos = player.blockPosition();
                 }
-            } else if (primaryThreat.distance() <= config.playerWarningRadius) {
-                if (System.currentTimeMillis() - lastPlayerWarningTime > 10000L) {
-                    logDirect(String.format(Locale.ROOT,
-                            "§e[Bypass ESP] Uwaga: gracz %s w odległości %.1f bloków. (Cicha detekcja ESP - GrimAC safe)",
-                            primaryThreat.player().getScoreboardName(), primaryThreat.distance()));
-                    lastPlayerWarningTime = System.currentTimeMillis();
+                activeOreTarget = foundOre;
+                invalidStandingPositions.clear();
+                oreStagnationTicks = 0;
+                oreAttemptTicks = 0;
+                enqueueConnectedVein(level, foundOre);
+                state = State.MINING_ORE;
+            }
+        }
+
+        // 2. Zbieranie leżącego dropu diamentów/surowców w pobliżu
+        if (state != State.MINING_ORE) {
+            ItemEntity drop = findNearbyValuableDrop(player, level);
+            if (drop != null) {
+                if (tunnelAnchorPos == null && state == State.TUNNELING) {
+                    tunnelAnchorPos = player.blockPosition();
+                }
+                state = State.COLLECTING_DROP;
+                PathingCommand collectCmd = handleCollectingDrop(player, level, drop);
+                if (collectCmd != null) {
+                    return collectCmd;
+                }
+            } else if (state == State.COLLECTING_DROP) {
+                resetDropCollectionState();
+                if (tunnelAnchorPos == null || player.blockPosition().distManhattan(tunnelAnchorPos) <= 2) {
+                    tunnelAnchorPos = null;
+                    int diff = player.blockPosition().getY() - targetY;
+                    state = Math.abs(diff) > 1 ? (diff > 0 ? State.DESCENDING_STAIRCASE : State.ASCENDING_STAIRCASE) : State.TUNNELING;
+                } else {
+                    state = State.PATHFINDING_RETURN;
                 }
             }
         }
 
-        // 5. KRYTYCZNA OCHRONA (Moby i niskie HP)
-        float health = ctx.player().getHealth();
-        Entity nearestEnemy = ctx.entitiesStream()
-                .filter(e -> e instanceof Enemy)
-                .filter(e -> e.isAlive() && !e.isSpectator())
-                .min(Comparator.comparingDouble(e -> e.distanceToSqr(ctx.player())))
-                .orElse(null);
+        return switch (state) {
+            case DESCENDING_STAIRCASE -> tickDescending(player, level);
+            case ASCENDING_STAIRCASE -> tickAscending(player, level);
+            case TUNNELING -> tickTunneling(player, level);
+            case MINING_ORE -> tickMiningOre(player, level, calcFailed, isSafeToCancel);
+            case COLLECTING_DROP -> {
+                ItemEntity drop = findNearbyValuableDrop(player, level);
+                PathingCommand cmd = handleCollectingDrop(player, level, drop);
+                yield cmd != null ? cmd : new PathingCommand(null, PathingCommandType.DEFER);
+            }
+            case SEALING_HAZARD -> handleSealingHazard(player, level);
+            case PATHFINDING_RETURN -> tickReturningToTunnel(player, level, calcFailed);
+            default -> new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        };
+    }
 
-        double enemyDist = nearestEnemy != null ? nearestEnemy.distanceTo(ctx.player()) : Double.MAX_VALUE;
+    /**
+     * KROK 1: Bezpieczne schodki 1x3 w dół do targetY (Y = -50) z planowaniem A* i blokadą Bedrocka.
+     * Czyszczenie pełnej wysokości 3 bloków zapobiega blokowaniu głowy o sufit.
+     */
+    private PathingCommand tickDescending(LocalPlayer player, Level level) {
+        BlockPos feet = player.blockPosition();
+        if (feet.getY() <= targetY || feet.getY() <= MIN_SAFE_BEDROCK_Y) {
+            state = State.TUNNELING;
+            tunnelAnchorPos = feet;
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
 
-        if (health <= config.healthThreshold && enemyDist <= config.mobDcDistance) {
-            luaEngine.fireDanger(String.format(Locale.ROOT, "Low health (%.1f HP) and enemy mob nearby (%.1fm)", health, enemyDist));
-            boolean inCombat = config.checkCombatLog && CombatLogDetector.isPlayerInCombat();
-            if (inCombat) {
-                logDirect(String.format(Locale.ROOT,
-                        "§c[Bypass Alert] Niskie HP (%.1f), mob w pobliżu (%.1fm), ale trwa WALKA (BossBar)! Wycofuję się!",
-                        health, enemyDist));
-                stateMachine.transition(State.RETREATING_MOB);
-                // Skip the generic mob-retreat re-check — we already committed to RETREATING.
-                return stateMachine.onTick();
-            } else {
-                logDirect(String.format(Locale.ROOT,
-                        "§c[Bypass] ZAGROŻENIE ŻYCIA: %.1f HP, wrogi mob w odległości %.1f bloków! Zapisuję sesję i natychmiast rozłączam...",
-                        health, enemyDist));
-                Path savePath = baritone.getDirectory().resolve(config.saveFile);
-                ReconnectData.save(savePath, ctx.player(), new ArrayList<>(targetOres), tunnelDirection.name(), getState().name(), oresMined);
-                stateMachine.transition(State.DISCONNECTED);
-                stop();
-                if (ctx.player().connection != null && ctx.player().connection.getConnection() != null) {
-                    ctx.player().connection.getConnection().disconnect(Component.literal("§c[Bypass] Auto-disconnect: low health & mob nearby"));
-                } else {
-                    ctx.world().disconnect();
+        // ZAWSZE schodzimy wzdłuż głównego kierunku marszu (primaryMiningDir)
+        Direction descendDir = this.primaryMiningDir != null ? this.primaryMiningDir : this.tunnelDir;
+        this.tunnelDir = descendDir;
+
+        BlockPos frontHead = feet.relative(descendDir).above();
+        BlockPos frontFeet = feet.relative(descendDir);
+        BlockPos stepDown = frontFeet.below();
+        BlockPos stepFloor = stepDown.below();
+
+        // 1. Zabezpieczenie przed Bedrockiem:
+        // Jeśli stopień w dół (stepDown) lub przód to bedrock, nie możemy zejść niżej.
+        // Zamiast obracać się o 180° w tył (co powodowało spadek z bloku), adaptujemy obecny poziom Y jako bezpieczną podłogę!
+        if (stepDown.getY() <= MIN_SAFE_BEDROCK_Y || isBedrockOrUnbreakable(level, stepDown) || isBedrockOrUnbreakable(level, frontFeet)) {
+            this.targetY = feet.getY();
+            this.state = State.TUNNELING;
+            this.tunnelDir = this.primaryMiningDir;
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        // 2. Zagrożenie na przodzie (lawa / woda / brak podłoża pod docelowym stopniem)
+        if (isHazardNear(level, frontHead) || isHazardNear(level, frontFeet) || isHazardNear(level, stepDown)
+                || !isSolidSupport(level, stepFloor)) {
+            if (!isSolidSupport(level, stepFloor) && tryBridgeFloor(player, level, stepFloor, feet.below())) {
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            return resolveObstacleDeadlock(player, level, feet);
+        }
+
+        // Kolejność kopania schodków 1x3: sufit nad głową -> przód góra -> przód dół -> docelowy stopień
+        List<BlockPos> stairBlocks = List.of(
+                feet.above(2),
+                frontHead,
+                frontFeet,
+                stepDown
+        );
+
+        for (BlockPos target : stairBlocks) {
+            if (isBedrockOrUnbreakable(level, target)) {
+                this.targetY = feet.getY();
+                this.state = State.TUNNELING;
+                this.tunnelDir = this.primaryMiningDir;
+                return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+            }
+            if (!isPassable(level, target)) {
+                return mineBlockSafely(player, level, target);
+            }
+        }
+
+        // Wszystkie bloki schodka są czyste -> płynny krok w przód i w dół bez spamu A*
+        tunnelAnchorPos = stepDown;
+        moveSafelyTowards(player, Vec3.atBottomCenterOf(stepDown));
+        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+    }
+
+    /**
+     * Schodki 1x3 w górę z omijaniem Bedrocka i lawy powracające na targetY (np. Y = -50).
+     */
+    private PathingCommand tickAscending(LocalPlayer player, Level level) {
+        BlockPos feet = player.blockPosition();
+        if (feet.getY() >= targetY) {
+            baritone.getInputOverrideHandler().clearAllKeys();
+            if (this.currentBreakingBlock != null) {
+                this.currentBreakingBlock = null;
+                ctx.playerController().resetBlockRemoving();
+            }
+            state = State.TUNNELING;
+            tunnelAnchorPos = feet;
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        // Sprawdź, czy kierunek schodków w górę jest wolny od bedrocka i lawy/wody
+        if (!isAscendingDirectionClear(level, feet, tunnelDir)) {
+            rotateAscendingDirectionSafe(level, feet);
+            if (!isAscendingDirectionClear(level, feet, tunnelDir)) {
+                // BEZWZGLĘDNY ZAKAZ cofania się do starej dziury w suficie przez GoalYLevel!
+                if (feet.getY() >= MIN_SAFE_BEDROCK_Y) {
+                    this.targetY = feet.getY();
+                    this.state = State.TUNNELING;
+                    this.tunnelDir = this.primaryMiningDir;
+                    return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
                 }
+                BlockPos forwardAscendTarget = feet.relative(primaryMiningDir, 4).atY(Math.min(targetY, MIN_SAFE_BEDROCK_Y));
+                return new PathingCommand(new baritone.api.pathing.goals.GoalBlock(forwardAscendTarget), PathingCommandType.SET_GOAL_AND_PATH);
+            }
+        }
+
+        BlockPos headClearance = feet.above(2);
+        BlockPos nextStepFeet  = feet.relative(tunnelDir).above(1);
+        BlockPos nextStepHead  = feet.relative(tunnelDir).above(2);
+
+        // Bloki do wykopania w profilu 1x3 w górę (sufit nad głową -> głowa stopnia -> stopy stopnia)
+        List<BlockPos> ascendBlocks = List.of(headClearance, nextStepHead, nextStepFeet);
+        for (BlockPos target : ascendBlocks) {
+            if (isBedrockOrUnbreakable(level, target)) {
+                rotateAscendingDirectionSafe(level, feet);
+                return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+            }
+            if (!isPassable(level, target)) {
+                return mineBlockSafely(player, level, target);
+            }
+        }
+
+        // Profil jest czysty -> wchodzimy na stopień
+        if (this.currentBreakingBlock != null) {
+            this.currentBreakingBlock = null;
+            ctx.playerController().resetBlockRemoving();
+        }
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+
+        BlockPos stepBase = feet.relative(tunnelDir);
+        if (!isSolidSupport(level, stepBase)) {
+            if (!tryBridgeFloor(player, level, stepBase, feet.below())) {
+                if (feet.getY() >= MIN_SAFE_BEDROCK_Y) {
+                    this.targetY = feet.getY();
+                    this.state = State.TUNNELING;
+                    this.tunnelDir = this.primaryMiningDir;
+                    return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+                }
+                BlockPos forwardAscendTarget = feet.relative(primaryMiningDir, 4).atY(Math.min(targetY, MIN_SAFE_BEDROCK_Y));
+                return new PathingCommand(new baritone.api.pathing.goals.GoalBlock(forwardAscendTarget), PathingCommandType.SET_GOAL_AND_PATH);
+            }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        tunnelAnchorPos = nextStepFeet;
+        moveSafelyTowards(player, Vec3.atBottomCenterOf(nextStepFeet));
+        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, player.horizontalCollision || player.onGround());
+        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+    }
+
+    private boolean isAscendingDirectionClear(Level level, BlockPos feet, Direction dir) {
+        BlockPos headClearance = feet.above(2);
+        BlockPos nextStepFeet  = feet.relative(dir).above(1);
+        BlockPos nextStepHead  = feet.relative(dir).above(2);
+
+        if (isBedrockOrUnbreakable(level, headClearance) || isBedrockOrUnbreakable(level, nextStepFeet) || isBedrockOrUnbreakable(level, nextStepHead)) {
+            return false;
+        }
+        if (isHazardNear(level, headClearance) || isHazardNear(level, nextStepFeet) || isHazardNear(level, nextStepHead)) {
+            return false;
+        }
+        return true;
+    }
+
+    private void rotateAscendingDirectionSafe(Level level, BlockPos feet) {
+        Direction left = tunnelDir.getCounterClockWise();
+        Direction right = tunnelDir.getClockWise();
+
+        if (isAscendingDirectionClear(level, feet, right)) {
+            tunnelDir = right;
+        } else if (isAscendingDirectionClear(level, feet, left)) {
+            tunnelDir = left;
+        } else {
+            // ZAKAZ obracania się o 180° i kopania tunelu wstecz
+            tunnelDir = this.primaryMiningDir;
+        }
+    }
+
+    private static long to2DKey(int x, int z) {
+        return (((long) x) << 32) | (z & 0xFFFFFFFFL);
+    }
+
+    private void markTunnelDug(BlockPos pos) {
+        if (pos != null) {
+            this.dugColumns2D.add(to2DKey(pos.getX(), pos.getZ()));
+            if (this.minedCorridorFeet.size() > 5000) {
+                this.minedCorridorFeet.clear();
+            }
+            this.minedCorridorFeet.add(pos.asLong());
+        }
+    }
+
+    /**
+     * KROK 2 i 3: Kopanie prostej autostrady 1x2 wzdłuż Dominant Mining Vector (primaryMiningDir)
+     * z omijaniem bedrocka w pionie (step up) i bezpiecznym objazdem bocznym (MIN_PARALLEL_SPACING = 3).
+     */
+    private PathingCommand tickTunneling(LocalPlayer player, Level level) {
+        BlockPos feet = player.blockPosition();
+
+        if (feet.getY() > targetY + 1 && feet.getY() > MIN_SAFE_BEDROCK_Y) {
+            state = State.DESCENDING_STAIRCASE;
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+        if (feet.getY() < targetY) {
+            // Adaptacja poziomu jaskini: jeśli wpadliśmy do jaskini powyżej bedrocka (-54),
+            // kontynuuj autostradę na nowym poziomie bez cofania się do starej dziury!
+            if (feet.getY() >= MIN_SAFE_BEDROCK_Y) {
+                this.targetY = feet.getY();
+            } else {
+                state = State.ASCENDING_STAIRCASE;
                 return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
             }
         }
 
+        markTunnelDug(feet);
 
-        // 5. Reakcja na moby (RETREATING_MOB / PAUSE)
-        if (enemyDist <= config.mobRetreat) {
-            stateMachine.transition(State.RETREATING_MOB);
+        // 1. Obsługa aktywnego objazdu bocznego (lateral detour)
+        if (this.lateralDetourRemaining > 0 && this.lateralOffsetDir != null) {
+            return tickLateralDetour(player, level, feet);
         }
 
-        if (getState() == State.RETREATING_MOB) {
-            if (enemyDist > config.mobRetreat + 3.0) {
-                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
-                BetterBlockPos feet = ctx.playerFeet();
-                currentY = feet != null ? feet.getY() : (config != null ? config.yLevel : -55);
-                stateMachine.transition(travelState(currentY, config.yLevel));
-            } else {
-                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        // Zawsze wracaj do głównego wektora autostrady (np. NORTH)
+        this.tunnelDir = this.primaryMiningDir;
+
+        // 2. Zabezpieczenie przed równoległym korytarzem w odległości < 3 bloków
+        if (isTooCloseToOldTunnel(feet, primaryMiningDir)) {
+            return forceLateralCorrection(player, level, feet);
+        }
+
+        BlockPos frontFeet = feet.relative(primaryMiningDir);
+        BlockPos frontHead = frontFeet.above();
+        BlockPos ceilingAboveFront = frontHead.above();
+        BlockPos floorBelowFront = frontFeet.below();
+
+        // 3. PRIORYTET LAVA PLUGGING: Zatykanie lawy/wody budulcem wprost przed botem bez uciekania i obracania!
+        BlockPos breachPos = findBreachInFront(level, feet, primaryMiningDir);
+        if (breachPos == null) {
+            // Sprawdź czy wokół frontFeet lub frontHead nie ma bezpośredniej lawy do zatkania
+            breachPos = findAnyLavaHazardNear(level, frontHead);
+            if (breachPos == null) {
+                breachPos = findAnyLavaHazardNear(level, frontFeet);
             }
         }
 
-        if (enemyDist <= config.mobStop) {
-            releaseActions();
-            lastPositionChangeTime = System.currentTimeMillis();
-            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        if (breachPos != null) {
+            if (selectThrowawayBlock(player)) {
+                this.hazardSourcePos = breachPos;
+                this.state = State.SEALING_HAZARD;
+                return handleSealingHazard(player, level);
+            }
+            return resolveObstacleDeadlock(player, level, feet);
         }
 
-        // Observe the previous tick's interaction BEFORE choosing another ore or block.
-        observeBrokenBlock();
-        if (!active) {
+        // 4. Sprawdź przeszkody w osi głównej (Bedrock / Lawa)
+        boolean feetBedrock = isBedrockOrUnbreakable(level, frontFeet);
+        boolean headBedrock = isBedrockOrUnbreakable(level, frontHead);
+        boolean feetHazard = isHazardNear(level, frontFeet);
+        boolean headHazard = isHazardNear(level, frontHead);
+
+        if (feetBedrock || headBedrock || feetHazard || headHazard) {
+            // Próba pokonania w pionie (step up Y+1 na garb bedrocka) bez skręcania w bok
+            if (canShiftVertical(level, feet, primaryMiningDir)) {
+                return executeVerticalStep(player, level, feet, primaryMiningDir);
+            }
+
+            // Brak przejścia w pionie -> kontrolowany objazd w bok o MIN_PARALLEL_SPACING w litą skałę
+            return initiateLateralDetour(player, level, feet);
+        }
+
+        // 5. Detekcja braku podłoża przed botem (przepaść / jaskinia)
+        if (!isSolidSupport(level, floorBelowFront)) {
+            if (!tryBridgeFloor(player, level, floorBelowFront, feet.below())) {
+                return initiateLateralDetour(player, level, feet);
+            }
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
-        // Collection has its own progress timer; a stationary pickup must not be
-        // thrown away by the general movement watchdog.
-        Vec3 currentPos = ctx.player().position();
-        if (breakingBlock != null || getState() == State.COLLECTING_DROP
-                || (baritone.getAutoEatProcess() != null && baritone.getAutoEatProcess().isEating())
-                || (baritone.getAutoDropProcess() != null && baritone.getAutoDropProcess().isActive())) {
-            lastPositionChangeTime = System.currentTimeMillis();
-            lastWatchdogPos = currentPos;
-        } else if (lastWatchdogPos == null || currentPos.distanceToSqr(lastWatchdogPos) > 0.04D) {
-            lastWatchdogPos = currentPos;
-            lastPositionChangeTime = System.currentTimeMillis();
-        } else if (System.currentTimeMillis() - lastPositionChangeTime >= WATCHDOG_TIMEOUT_MS) {
-            triggerWatchdogReset(currentPos);
-            return pause();
-        }
+        // 6. Obsługa Gravelu / Sandu: jeśli nad frontHead wisi blok opadający, nie wbiegaj pod niego
+        boolean fallingAbove = isFallingBlock(level.getBlockState(ceilingAboveFront));
 
-        // The drop phase must pass through threat checks on every tick. In particular,
-        // do not return early to collect an item when a player or hostile mob arrives.
-        if (getState() == State.COLLECTING_DROP) {
-            return stateMachine.onTick();
-        }
+        // 7. Kopanie korytarza 1x2 przed nami
+        boolean headBlocked = !isPassable(level, frontHead);
+        boolean feetBlocked = !isPassable(level, frontFeet);
 
-        // 6. Wariancja czasowa kopania (0-50ms)
-        if (varianceCooldownTicks > 0) {
-            varianceCooldownTicks--;
-            releaseActions();
-            return pause();
-        }
+        if (headBlocked || feetBlocked) {
+            BlockPos blockToMine = headBlocked ? frontHead : frontFeet;
 
-        // 7. OBSŁUGA MASZYNY STANÓW
-        return stateMachine.onTick();
-    }
-
-    /**
-     * Zabezpieczenie WATCHDOG: force reset jeśli bot stoi w miejscu >= 3 sekundy.
-     */
-    private void triggerWatchdogReset(Vec3 currentPos) {
-        logDirect("§c[Bypass Watchdog] Brak postępu przez 6s. Ponawiam bezpieczny ruch...");
-        lastWatchdogPos = currentPos;
-        lastPositionChangeTime = System.currentTimeMillis();
-
-        baritone.getInputOverrideHandler().clearAllKeys();
-        RotationEngine.reset();
-        breakingBlock = null;
-        breakStartTime = 0L;
-        pendingDropPos = null;
-        dropTracker = null;
-        varianceCooldownTicks = 0;
-
-        if (getState() == State.MINING_ORE || getState() == State.COLLECTING_DROP) {
-            if (currentTargetBlock != null) {
-                int attempts = OreScanner.recordFailedAttempt(currentTargetBlock);
-                logDirect("§e[Bypass Watchdog] Niepowodzenie podejścia do rudy: " + currentTargetBlock + " (próba " + attempts + "/3)");
-            }
-            currentTargetBlock = null;
-            // Cooldown — nie szukaj rud przez ~5 sekund, kopie tunel żeby uciec z obszaru
-            miningCooldownTicks = MINING_COOLDOWN_AFTER_STUCK;
-            logDirect("§e[Bypass Watchdog] Cooldown kopania rud: " + MINING_COOLDOWN_AFTER_STUCK + " ticków (~1.5s). Wracam na trasę...");
-            int currentY = ctx.playerFeet() != null ? ctx.playerFeet().getY() : 64;
-            stateMachine.transition(travelState(currentY, config.yLevel));
-        } else if (getState() == State.TUNNELING) {
-            turnTunnel();
-            inSideBranch = false;
-            branchStartPos = null;
-            sideBranchLength = 0;
-        } else if (getState() == State.DESCENDING_STAIRCASE) {
-            tunnelDirection = tunnelDirection.getClockWise();
-            logDirect("§6[Bypass Watchdog] Schodki w dół zablokowane. Zmiana kierunku na: " + tunnelDirection);
-        } else if (getState() == State.ASCENDING_STAIRCASE) {
-            tunnelDirection = tunnelDirection.getClockWise();
-            logDirect("§6[Bypass Watchdog] Schodki w górę zablokowane. Zmiana kierunku na: " + tunnelDirection);
-        } else if (getState() == State.PATHFINDING_RETURN) {
-            isPathfinding = false;
-            baritone.getCustomGoalProcess().setGoal(null);
-            int currentY = ctx.playerFeet() != null ? ctx.playerFeet().getY() : 64;
-            stateMachine.transition(travelState(currentY, config.yLevel));
-        }
-
-        logDirect("§a[Bypass Watchdog] Reset ukończony, wznawiam fazę: " + getState());
-    }
-
-    /**
-     * Obsługa zniszczenia bloku rudy — inicjuje podchodzenie do dropu oraz
-     * uruchamia algorytm Vein Mining (flood-fill BFS) w poszukiwaniu sąsiednich rud z żyły.
-     */
-    public void onOreBroken(BlockPos orePos, BlockState stateBeforeBreak) {
-        if (!active || stateBeforeBreak == null) return;
-        oresMined++;
-        String oreName = BuiltInRegistries.BLOCK.getKey(stateBeforeBreak.getBlock()).getPath();
-        if (oreName.contains("diamond")) diamondCount++;
-        if (oreName.contains("gold")) goldCount++;
-        logDirect(String.format("§a[Bypass] Wykopano rudę! Łącznie: %d (Diament: %d, Złoto: %d)",
-                oresMined, diamondCount, goldCount));
-        currentTargetBlock = null;
-
-        // Odkrywanie sąsiednich bloków żyły (Vein Mining)
-        discoverVein(orePos, stateBeforeBreak.getBlock());
-
-        BlockPos nextReachable = getNextReachableVeinOre();
-        if (nextReachable != null) {
-            // Kontynuacja żyły bezpośrednio bez przerywania na podchodzenie do dropu
-            currentTargetBlock = nextReachable;
-            if (pendingDropPos == null) {
-                pendingDropPos = orePos.immutable();
-            }
-            logDirect("§a[Bypass Vein] Ciągłe kopanie żyły: kolejny blok " + nextReachable);
-            stateMachine.transition(State.MINING_ORE);
-        } else if (!activeVeinQueue.isEmpty()) {
-            BlockPos nextVein = getNextVeinOre();
-            if (nextVein != null) {
-                currentTargetBlock = nextVein;
-                if (pendingDropPos == null) {
-                    pendingDropPos = orePos.immutable();
-                }
-                logDirect("§a[Bypass Vein] Kontynuacja żyły (podejście/odsłonięcie): kolejny cel " + nextVein);
-                stateMachine.transition(State.MINING_ORE);
+            double horizDist = horizontalDistanceToCenter(player.position(), frontFeet);
+            if (horizDist > WALL_STOP_DISTANCE) {
+                moveTowardsWithoutSprint(player, Vec3.atBottomCenterOf(frontFeet));
             } else {
-                beginCollectingDrop(pendingDropPos != null ? pendingDropPos : orePos, BypassDropTracker.itemsForOre(oreName));
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
             }
-        } else {
-            beginCollectingDrop(pendingDropPos != null ? pendingDropPos : orePos, BypassDropTracker.itemsForOre(oreName));
+
+            return mineBlockSafely(player, level, blockToMine);
         }
-        // Scripts may stop/restart the process; don't overwrite their decision afterwards.
-        luaEngine.fireOreBroken(oreName, oresMined);
+
+        // 8. Zabezpieczenie przed bieganiem po starych tunelach
+        if (isLookingDownExistingTunnel(level, feet, primaryMiningDir)) {
+            BlockPos bridgeStep = frontFeet.below();
+            if (!isSolidSupport(level, bridgeStep) && !tryBridgeFloor(player, level, bridgeStep, feet.below())) {
+                return initiateLateralDetour(player, level, feet);
+            }
+        }
+
+        // Korytarz czysty -> płynny krok naprzód
+        tunnelAnchorPos = frontFeet;
+        moveSafelyTowards(player, Vec3.atBottomCenterOf(frontFeet));
+        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
     }
 
-    private void discoverVein(BlockPos origin, Block oreBlock) {
-        if (!config.veinMining || origin == null || oreBlock == null || ctx.world() == null) return;
-        Level world = ctx.world();
-        Queue<BlockPos> queue = new ArrayDeque<>();
-        queue.add(origin);
-        veinDiscovered.add(origin);
+    private BlockPos findBreachInFront(Level level, BlockPos feet, Direction forward) {
+        BlockPos frontFeet = feet.relative(forward);
+        BlockPos frontHead = frontFeet.above();
 
-        int maxSearch = config.veinMaxSize;
-        while (!queue.isEmpty() && activeVeinQueue.size() < maxSearch) {
-            BlockPos current = queue.poll();
-            for (Direction dir : Direction.values()) {
-                BlockPos neighbor = current.relative(dir);
-                if (veinDiscovered.contains(neighbor) || OreScanner.isBlacklisted(neighbor)) {
-                    continue;
-                }
-                veinDiscovered.add(neighbor);
+        FluidState headFluid = level.getFluidState(frontHead);
+        if (!headFluid.isEmpty() && (headFluid.is(FluidTags.LAVA) || headFluid.isSource())) {
+            return frontHead.immutable();
+        }
 
-                BlockState state = world.getBlockState(neighbor);
-                if (state.getBlock() == oreBlock || targetOreBlocks.contains(state.getBlock())) {
-                    if (LiquidDetector.isSafeToMine(world, neighbor)) {
-                        activeVeinQueue.add(neighbor.immutable());
-                        queue.add(neighbor);
-                        if (activeVeinQueue.size() >= maxSearch) break;
-                    }
-                }
-            }
+        FluidState feetFluid = level.getFluidState(frontFeet);
+        if (!feetFluid.isEmpty() && (feetFluid.is(FluidTags.LAVA) || feetFluid.isSource())) {
+            return frontFeet.immutable();
         }
-        if (!activeVeinQueue.isEmpty()) {
-            logDirect("§a[Bypass Vein] Wykryto żyłę! Dodano " + activeVeinQueue.size() + " sąsiednich rud do kolejki.");
-        }
-    }
 
-    private BlockPos getNextReachableVeinOre() {
-        if (!config.veinMining || ctx.world() == null || ctx.player() == null) return null;
-        Level world = ctx.world();
-        double reach = Math.min(config.reachLimit, ctx.playerController().getBlockReachDistance());
-        Iterator<BlockPos> it = activeVeinQueue.iterator();
-        while (it.hasNext()) {
-            BlockPos candidate = it.next();
-            if (candidate == null || OreScanner.isBlacklisted(candidate)) {
-                it.remove();
-                continue;
-            }
-            BlockState state = world.getBlockState(candidate);
-            if (targetOreBlocks.contains(state.getBlock()) && LiquidDetector.isSafeToMine(world, candidate)) {
-                if (RotationUtils.reachable(ctx, candidate, reach).isPresent()) {
-                    it.remove();
-                    return candidate;
-                }
-            }
+        BlockPos twoStepsFeet = frontFeet.relative(forward);
+        BlockPos twoStepsHead = twoStepsFeet.above();
+
+        FluidState head2Fluid = level.getFluidState(twoStepsHead);
+        if (!head2Fluid.isEmpty() && (head2Fluid.is(FluidTags.LAVA) || head2Fluid.isSource())) {
+            return twoStepsHead.immutable();
         }
+
+        FluidState feet2Fluid = level.getFluidState(twoStepsFeet);
+        if (!feet2Fluid.isEmpty() && (feet2Fluid.is(FluidTags.LAVA) || feet2Fluid.isSource())) {
+            return twoStepsFeet.immutable();
+        }
+
         return null;
     }
 
-    private BlockPos getNextVeinOre() {
-        if (!config.veinMining || ctx.world() == null) return null;
-        Level world = ctx.world();
-        while (!activeVeinQueue.isEmpty()) {
-            BlockPos candidate = activeVeinQueue.poll();
-            if (candidate == null || OreScanner.isBlacklisted(candidate)) continue;
-            BlockState state = world.getBlockState(candidate);
-            if (targetOreBlocks.contains(state.getBlock()) && LiquidDetector.isSafeToMine(world, candidate)) {
-                return candidate;
+    /**
+     * Sprawdza, czy w odległości 1..2 bloków prostopadle do wektora znajduje się już wykopany tunel.
+     */
+    private boolean isTooCloseToOldTunnel(BlockPos feet, Direction forward) {
+        Direction right = forward.getClockWise();
+        Direction left = forward.getCounterClockWise();
+
+        for (int offset = 1; offset < MIN_PARALLEL_SPACING; offset++) {
+            BlockPos checkRight = feet.relative(right, offset);
+            BlockPos checkLeft = feet.relative(left, offset);
+
+            if (dugColumns2D.contains(to2DKey(checkRight.getX(), checkRight.getZ()))
+                    || dugColumns2D.contains(to2DKey(checkLeft.getX(), checkLeft.getZ()))) {
+                return true;
             }
         }
-        return null;
+        return false;
     }
 
-    private int getEffectiveOreRadius() {
-        int base = config.oreRadius;
-        if (!config.dynamicOreRadius || ctx.player() == null) return base;
-        ItemStack mainHand = ctx.player().getMainHandItem();
-        if (mainHand.isEmpty()) return base;
-        try {
-            int eff = 0;
-            for (var entry : mainHand.getEnchantments().entrySet()) {
-                String enchantName = entry.getKey().unwrapKey().map(k -> k.location().getPath()).orElse("");
-                if (enchantName.contains("efficiency")) {
-                    eff = entry.getIntValue();
-                    break;
-                }
-            }
-            return Math.min(base + (eff / 2), 8);
-        } catch (Throwable t) {
-            return base;
-        }
+    private PathingCommand forceLateralCorrection(LocalPlayer player, Level level, BlockPos feet) {
+        Direction right = primaryMiningDir.getClockWise();
+        Direction left = primaryMiningDir.getCounterClockWise();
+
+        boolean rightBlocked = dugColumns2D.contains(to2DKey(feet.relative(right).getX(), feet.relative(right).getZ()));
+        Direction escapeSide = rightBlocked ? left : right;
+
+        this.lateralOffsetDir = escapeSide;
+        this.lateralDetourRemaining = MIN_PARALLEL_SPACING;
+        return tickLateralDetour(player, level, feet);
     }
 
-    private void beginCollectingDrop(BlockPos pos, Set<String> acceptedItems) {
-        stateMachine.transition(State.COLLECTING_DROP);
-        pendingDropPos = pos.immutable();
-        dropTracker = new BypassDropTracker(acceptedItems);
-        dropTargetId = -1;
-        varianceCooldownTicks = 0;
-        lastPositionChangeTime = System.currentTimeMillis();
-        lastWatchdogPos = ctx.player().position();
-    }
+    private boolean canShiftVertical(Level level, BlockPos feet, Direction forward) {
+        if (feet.getY() >= -50) return false;
 
-    private PathingCommand handleCollectingDrop() {
-        if (pendingDropPos == null || dropTracker == null) {
-            finishCollectingDrop();
-            return pause();
-        }
-        List<ItemEntity> drops = ctx.world().getEntitiesOfClass(ItemEntity.class,
-                new AABB(pendingDropPos).inflate(6.0D),
-                entity -> entity.isAlive() && !entity.getItem().isEmpty()
-                        && dropTracker.accepts(BuiltInRegistries.ITEM.getKey(entity.getItem().getItem()).getPath()));
-        ItemEntity closest = drops.stream()
-                .min(Comparator.<ItemEntity>comparingInt(e -> e.getId() == dropTargetId ? 0 : 1)
-                        .thenComparingDouble(e -> e.distanceToSqr(ctx.player())))
-                .orElse(null);
-        BypassDropTracker.Result result = dropTracker.tick(closest == null ? -1 : closest.getId(),
-                closest == null ? Double.POSITIVE_INFINITY : closest.distanceToSqr(ctx.player()));
-        if (result != BypassDropTracker.Result.CONTINUE) {
-            if (result == BypassDropTracker.Result.TIMED_OUT) {
-                logDirect("§e[Bypass] Nie udało się dojść do dropu. Spróbuję ponownie po obejściu przeszkody.");
-                deferDrop();
-            }
-            finishCollectingDrop();
-            return pause();
-        }
-        if (closest == null) {
-            // Wait for delayed spawn/removal packets, without walking along a stale path.
-            stopNavigation();
-            releaseActions();
-            return pause();
-        }
-        dropTargetId = closest.getId();
-        if (!LiquidDetector.isSafeToMine(ctx.world(), closest.blockPosition())) {
-            deferDrop();
-            finishCollectingDrop();
-            return pause();
-        }
-        if (!InventoryCleaner.canFit(ctx, closest.getItem())) {
-            boolean cleaned = InventoryCleaner.cleanIfFull(ctx, config, targetDropItems);
-            if (!cleaned && !InventoryCleaner.canFit(ctx, closest.getItem())) {
-                logDirect("§c[Bypass] Brak miejsca na rudę. Zwolnij miejsce w ekwipunku; zatrzymuję kopanie.");
-                stop();
-                return pause();
-            }
-            releaseActions();
-            return pause();
-        }
-        Goal goal = new GoalTwoBlocks(closest.blockPosition());
-        if (pathCalculationFailed && navigationActive) {
-            deferDrop();
-            finishCollectingDrop();
-            return pause();
-        }
-        if (goal.isInGoal(ctx.playerFeet())) {
-            stopNavigation();
-            // A goal cell is not proof of pickup: move to the item's horizontal
-            // position and wait for the matching entity to disappear.
-            boolean shouldJump = closest.position().y > ctx.player().getY() + 0.35D;
-            walkTowards(closest.position(), shouldJump);
-            return pause();
-        }
-        return navigateTo(goal);
-    }
+        BlockPos stepUpFeet = feet.above().relative(forward);
+        BlockPos stepUpHead = stepUpFeet.above();
+        BlockPos ceilingAboveHead = feet.above(2);
 
-    private void deferDrop() {
-        if (pendingDropPos != null) {
-            deferredDrops.put(pendingDropPos, System.currentTimeMillis() + 15000L);
-        }
-    }
+        if (isBedrockOrUnbreakable(level, ceilingAboveHead)) return false;
+        if (isBedrockOrUnbreakable(level, stepUpFeet) || isBedrockOrUnbreakable(level, stepUpHead)) return false;
+        if (isHazardNear(level, stepUpFeet) || isHazardNear(level, stepUpHead)) return false;
 
-    private void finishCollectingDrop() {
-        currentTargetBlock = null;
-        lastPositionChangeTime = System.currentTimeMillis();
-        BlockPos nextOre = getNextVeinOre();
-        BetterBlockPos feet = ctx.playerFeet();
-        int currentY = feet != null ? feet.getY() : (config != null ? config.yLevel : -55);
-        if (nextOre == null && miningCooldownTicks <= 0 && feet != null) {
-            nextOre = findBestOreNearby(feet, getEffectiveOreRadius());
-        }
-        stateMachine.transition(nextOre == null ? travelState(currentY, config.yLevel) : State.MINING_ORE);
-        currentTargetBlock = nextOre;
-    }
-
-    /** Revisit ore drops missed during path movement, without chasing discarded cobblestone. */
-    private boolean collectNearbyOreDrop() {
-        if (++orphanDropScanTicks < 10 || targetDropItems.isEmpty()) return false;
-        orphanDropScanTicks = 0;
-        long now = System.currentTimeMillis();
-        deferredDrops.entrySet().removeIf(e -> e.getValue() <= now);
-        ItemEntity drop = ctx.world().getEntitiesOfClass(ItemEntity.class,
-                ctx.player().getBoundingBox().inflate(6.0D), e -> e.isAlive() && !e.getItem().isEmpty()
-                        && targetDropItems.contains(BuiltInRegistries.ITEM.getKey(e.getItem().getItem()).getPath())
-                        && deferredDrops.keySet().stream().noneMatch(pos -> pos.distSqr(e.blockPosition()) <= 36D))
-                .stream().min(Comparator.comparingDouble(e -> e.distanceToSqr(ctx.player()))).orElse(null);
-        if (drop == null) return false;
-        beginCollectingDrop(drop.blockPosition(), targetDropItems);
         return true;
     }
 
-    private PathingCommand handleDescendingStaircase() {
-        return handleStaircase(false);
+    private PathingCommand executeVerticalStep(LocalPlayer player, Level level, BlockPos feet, Direction forward) {
+        BlockPos aboveHead = feet.above(2);
+        if (!isPassable(level, aboveHead)) {
+            return mineBlockSafely(player, level, aboveHead);
+        }
+
+        BlockPos stepUpFeet = feet.above().relative(forward);
+        BlockPos stepUpHead = stepUpFeet.above();
+
+        if (!isPassable(level, stepUpHead)) {
+            return mineBlockSafely(player, level, stepUpHead);
+        }
+        if (!isPassable(level, stepUpFeet)) {
+            return mineBlockSafely(player, level, stepUpFeet);
+        }
+
+        tunnelAnchorPos = stepUpFeet;
+        moveSafelyTowards(player, Vec3.atBottomCenterOf(stepUpFeet));
+        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
     }
 
-    private PathingCommand handleStaircase(boolean ascending) {
-        BlockPos feet = ctx.playerFeet();
-        if (feet == null || ctx.player() == null || ctx.world() == null) return pause();
-        releaseMovement();
-        if (staircaseStep != null && staircaseStep.hasLanded(feet, ctx.player().onGround())) {
-            staircaseStep = null;
-            placementTarget = null;
-            lastPositionChangeTime = System.currentTimeMillis();
-        }
-        if (staircaseStep == null) {
-            if (!ctx.player().onGround()) return pause();
-            State needed = travelState(feet.getY(), config.yLevel);
-            if (needed != getState()) {
-                stateMachine.transition(needed);
-                return pause();
-            }
-            // Prefer an already usable staircase before excavating another one.
-            for (Direction dir : List.of(tunnelDirection, tunnelDirection.getClockWise(),
-                    tunnelDirection.getCounterClockWise(), tunnelDirection.getOpposite())) {
-                BypassStaircaseStep candidate = BypassStaircaseStep.create(feet, dir, ascending);
-                if (hasSupport(candidate.support()) && candidate.clearance().stream()
-                        .allMatch(pos -> isPassable(ctx.world(), pos) && LiquidDetector.isSafeToMine(ctx.world(), pos))) {
-                    tunnelDirection = dir;
-                    break;
-                }
-            }
-            staircaseStep = BypassStaircaseStep.create(feet, tunnelDirection, ascending);
-        }
-        // Don't recompute from airborne feet: that used to move the ceiling/step
-        // one block up in the middle of a jump and cancel the jump itself.
-        if (ctx.player().onGround() && !feet.equals(staircaseStep.source())
-                && !feet.equals(staircaseStep.destination())) {
-            staircaseStep = null;
-            return pause();
-        }
-        for (BlockPos pos : staircaseStep.clearance()) {
-            if (!LiquidDetector.isSafeToMine(ctx.world(), pos) || isUnbreakable(ctx.world(), pos)) {
-                turnStaircase();
-                return pause();
-            }
-        }
-        for (BlockPos pos : staircaseStep.clearance()) {
-            if (!isPassable(ctx.world(), pos)) {
-                mineBlockDirect(pos);
-                return pause();
-            }
-        }
-        if (!hasSupport(staircaseStep.support())) {
-            // No walking/jumping until a real, safe support block is observed.
-            placeStepIfAir(staircaseStep.support());
-            return pause();
-        }
-        walkTowards(Vec3.atBottomCenterOf(staircaseStep.destination()), ascending);
-        return pause();
+    private PathingCommand initiateLateralDetour(LocalPlayer player, Level level, BlockPos feet) {
+        return resolveObstacleDeadlock(player, level, feet);
     }
 
-    private void turnStaircase() {
-        releaseActions();
-        breakTracker.reset();
-        breakingBlock = null;
-        staircaseStep = null;
-        placementTarget = null;
-        tunnelDirection = tunnelDirection.getClockWise();
-        RotationEngine.reset();
+    private PathingCommand tickLateralDetour(LocalPlayer player, Level level, BlockPos feet) {
+        BlockPos targetFeet = feet.relative(lateralOffsetDir);
+        BlockPos targetHead = targetFeet.above();
+
+        if (isBedrockOrUnbreakable(level, targetFeet) || isBedrockOrUnbreakable(level, targetHead)
+                || isHazardNear(level, targetFeet) || isHazardNear(level, targetHead)) {
+            // ZAKAZ inwersji opposite()! Zamiast obrotu o 180° rozwiązujemy deadlock
+            this.lateralDetourRemaining = 0;
+            this.lateralOffsetDir = null;
+            return resolveObstacleDeadlock(player, level, feet);
+        }
+
+        if (!isPassable(level, targetHead)) {
+            return mineBlockSafely(player, level, targetHead);
+        }
+        if (!isPassable(level, targetFeet)) {
+            return mineBlockSafely(player, level, targetFeet);
+        }
+
+        markTunnelDug(targetFeet);
+        moveSafelyTowards(player, Vec3.atBottomCenterOf(targetFeet));
+        this.lateralDetourRemaining--;
+
+        if (this.lateralDetourRemaining <= 0) {
+            this.lateralDetourRemaining = 0;
+            this.lateralOffsetDir = null;
+            this.tunnelDir = this.primaryMiningDir;
+        }
+
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
-    private PathingCommand handleTunneling() {
-        Level world = ctx.world();
-        BlockPos feet = ctx.playerFeet();
-        if (feet == null || ctx.player() == null || world == null) return pause();
-        if (ctx.player().onGround() && feet.getY() != config.yLevel) {
-            stateMachine.transition(travelState(feet.getY(), config.yLevel));
-            return pause();
-        }
-        if (collectNearbyOreDrop()) return pause();
-        if (miningCooldownTicks <= 0 && breakingBlock == null) {
-            BlockPos ore = getNextVeinOre();
-            if (ore == null) {
-                ore = findBestOreNearby(feet, getEffectiveOreRadius());
-            }
-            if (ore != null) {
-                stateMachine.transition(State.MINING_ORE);
-                currentTargetBlock = ore;
-                return pause();
-            }
-        }
-        if (inSideBranch && sideBranchLength >= targetSideBranchLength) {
-            if (branchStartPos != null && !feet.equals(branchStartPos)) {
-                if (pathCalculationFailed && navigationActive) {
-                    turnTunnel();
-                    stopNavigation();
-                    return pause();
-                }
-                return navigateTo(new GoalBlock(branchStartPos));
-            }
-            stopNavigation();
-            inSideBranch = false;
-            branchStartPos = null;
-            sideBranchLength = 0;
-            tunnelStepTarget = null;
-        }
-        if (tunnelStepTarget != null && feet.equals(tunnelStepTarget) && ctx.player().onGround()) {
-            tunnelStepTarget = null;
-            if (inSideBranch) {
-                sideBranchLength++;
-                if (sideBranchLength >= targetSideBranchLength) return pause();
-            } else {
-                segmentLength++;
-                checkBranchTriggers(feet);
-            }
-        }
-        Direction dir = inSideBranch ? sideBranchDirection : tunnelDirection;
-        if (tunnelStepTarget == null) tunnelStepTarget = feet.relative(dir).immutable();
-        BlockPos front = tunnelStepTarget;
-        if (!hasSupport(front.below()) || !LiquidDetector.isSafeToMine(world, front)
-                || !LiquidDetector.isSafeToMine(world, front.above())
-                || isUnbreakable(world, front) || isUnbreakable(world, front.above())) {
-            releaseActions();
-            turnTunnel();
-            return pause();
-        }
-        // Gdy bot kopie szybkim kilofem:
-        // Trzymamy celownik zablokowany prosto w korytarzu (yaw = dir, pitch = 11.5°),
-        // biegniemy prosto na sprincie i kopiemy ciągle bez zatrzymywania!
-        boolean fastPickaxe = FastBreakHelper.isFastPickaxe(ctx);
-        if (fastPickaxe) {
-            AutoToolManager.selectBestTool(ctx, front.above(), config);
-            double distH = Math.hypot(ctx.player().getX() - (front.getX() + 0.5D), ctx.player().getZ() - (front.getZ() + 0.5D));
-            float pitch = 11.5f;
-            if (!isPassable(world, front) && distH < 0.95) {
-                pitch = 26.0f; // Szybkie rozbicie bloku tuż pod nogami
-            }
-            Rotation straightRot = new Rotation(dir.toYRot(), pitch);
-            RotationEngine.apply(ctx.player(), straightRot, baritone.settings(), true);
+    private PathingCommand resolveObstacleDeadlock(LocalPlayer player, Level level, BlockPos feet) {
+        Direction right = primaryMiningDir.getClockWise();
+        Direction left = primaryMiningDir.getCounterClockWise();
 
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
-            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
-            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+        boolean rightSafe = isDetourRouteSafe(level, feet, right);
+        boolean leftSafe = isDetourRouteSafe(level, feet, left);
 
-            HitResult mouseOver = ctx.objectMouseOver();
-            if (mouseOver instanceof BlockHitResult bhr && bhr.getType() == HitResult.Type.BLOCK) {
-                breakTracker.attacked();
-                ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(bhr.getBlockPos()));
-            }
-            return pause();
+        if (rightSafe) {
+            this.lateralOffsetDir = right;
+            this.lateralDetourRemaining = MIN_PARALLEL_SPACING;
+            return tickLateralDetour(player, level, feet);
+        }
+        if (leftSafe) {
+            this.lateralOffsetDir = left;
+            this.lateralDetourRemaining = MIN_PARALLEL_SPACING;
+            return tickLateralDetour(player, level, feet);
         }
 
-        // Head first prevents starting to walk underneath a low ceiling.
-        for (BlockPos pos : List.of(front.above(), front)) {
-            if (!isPassable(world, pos)) {
-                double distH = Math.hypot(ctx.player().getX() - (front.getX() + 0.5D), ctx.player().getZ() - (front.getZ() + 0.5D));
-                if (distH > 0.82) {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        // Deadlock boczny: próba przeskoku w pionie (Y+1)
+        if (canShiftVertical(level, feet, primaryMiningDir)) {
+            return executeVerticalStep(player, level, feet, primaryMiningDir);
+        }
+
+        // Ostateczny krok w tył w osi tunelu (cofanie klawiszem S BEZ obracania kamery o 180°!)
+        BlockPos backPos = feet.relative(primaryMiningDir.getOpposite());
+        if (isPassable(level, backPos) && isPassable(level, backPos.above())) {
+            retreatStepBackward(player, primaryMiningDir);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    private boolean isDetourRouteSafe(Level level, BlockPos origin, Direction dir) {
+        BlockPos sideFeet = origin.relative(dir);
+        BlockPos sideHead = sideFeet.above();
+
+        if (isBedrockOrUnbreakable(level, sideFeet) || isBedrockOrUnbreakable(level, sideHead)) {
+            return false;
+        }
+        if (isHazardNear(level, sideFeet) || isHazardNear(level, sideHead)) {
+            return false;
+        }
+        return !dugColumns2D.contains(to2DKey(sideFeet.getX(), sideFeet.getZ()));
+    }
+
+    private record MiningAction(BlockPos targetPos, Rotation snapRotation) {}
+
+    /**
+     * KROK 4 i 5: Wykrywanie rud, ścisły reach <= 3.5 bloka (GrimSnap) oraz podejście przez Baritone jak w #mine.
+     */
+    private PathingCommand tickMiningOre(LocalPlayer player, Level level, boolean calcFailed, boolean isSafeToCancel) {
+        while (activeOreTarget == null || !isTargetOre(level.getBlockState(activeOreTarget)) || blacklistedOres.contains(activeOreTarget)) {
+            this.invalidStandingPositions.clear();
+            this.oreStagnationTicks = 0;
+            this.oreAttemptTicks = 0;
+            if (veinQueue.isEmpty()) {
+                BlockPos nextInRadius = findNearestOre(player, level);
+                if (nextInRadius != null) {
+                    activeOreTarget = nextInRadius;
+                    enqueueConnectedVein(level, nextInRadius);
                 } else {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+                    activeOreTarget = null;
+                    this.currentBreakingBlock = null;
+                    baritone.getInputOverrideHandler().clearAllKeys();
+                    state = State.COLLECTING_DROP;
+                    return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
                 }
-                mineBlockDirect(pos);
-                return pause();
+            } else {
+                activeOreTarget = veinQueue.pollFirst();
             }
         }
-        walkTowards(Vec3.atBottomCenterOf(front), false);
-        return pause();
+
+        enqueueConnectedVein(level, activeOreTarget);
+
+        double effectiveReach = getEffectiveReach();
+
+        // 0. Aktywny lock kopania: jeśli już niszczymy blok (np. zasłaniający lub rudę) i nadal istnieje -> kontynuuj niszczenie bez przerywania!
+        if (this.currentBreakingBlock != null) {
+            BlockState curState = level.getBlockState(this.currentBreakingBlock);
+            if (!curState.isAir() && !isBedrockOrUnbreakable(level, this.currentBreakingBlock)) {
+                Optional<Rotation> curSnap = findVerifiedGrimSnapRotation(player, level, this.currentBreakingBlock, effectiveReach);
+                if (curSnap.isEmpty()) {
+                    curSnap = RotationUtils.reachable(ctx, this.currentBreakingBlock, effectiveReach);
+                }
+                if (curSnap.isPresent()) {
+                    equipBestTool(player, curState);
+                    baritone.getLookBehavior().updateTarget(curSnap.get(), true);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+                    ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(this.currentBreakingBlock));
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+            } else {
+                this.currentBreakingBlock = null;
+            }
+        }
+
+        // 1. Sprawdź czy ruda (lub blok bezpośrednio ją zasłaniający) ma czysty raycast GrimSnap
+        Optional<MiningAction> directAction = findMiningAction(player, level, activeOreTarget, effectiveReach);
+        if (directAction.isPresent()) {
+            this.invalidStandingPositions.clear();
+            this.oreStagnationTicks = 0;
+            this.oreAttemptTicks = 0;
+            MiningAction action = directAction.get();
+            this.currentBreakingBlock = action.targetPos();
+            equipBestTool(player, level.getBlockState(action.targetPos()));
+            baritone.getLookBehavior().updateTarget(action.snapRotation(), true);
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+            ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(action.targetPos()));
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // Zwiększ licznik prób dotarcia do tej rudy
+        if (++this.oreAttemptTicks > 40) {
+            // Po 40 tickach (~2s) bez możliwości wykopania lub podejścia: pomijamy tę rudę, aby nie blokować bota
+            blacklistedOres.add(activeOreTarget);
+            activeOreTarget = null;
+            this.oreAttemptTicks = 0;
+            this.invalidStandingPositions.clear();
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        // 2. Brak bezpośredniego strzału z obecnej pozycji:
+        // Sprawdź czy bot może bezpiecznie wykonać krok w stronę rudy (jeśli stoi na stabilnym podłożu i ruda jest blisko < 4.2m)
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        double distSqToOre = eyePos.distanceToSqr(Vec3.atCenterOf(activeOreTarget));
+        if (distSqToOre <= 4.2D * 4.2D && !isHazardNear(level, activeOreTarget)) {
+            double dx = activeOreTarget.getX() + 0.5D - player.getX();
+            double dz = activeOreTarget.getZ() + 0.5D - player.getZ();
+            if (Math.abs(dx) > 0.3D || Math.abs(dz) > 0.3D) {
+                Direction stepDir = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? Direction.EAST : Direction.WEST) : (dz > 0 ? Direction.SOUTH : Direction.NORTH);
+                BlockPos stepCheck = player.blockPosition().relative(stepDir);
+                if (isSolidSupport(level, stepCheck.below()) && isPassable(level, stepCheck) && isPassable(level, stepCheck.above())) {
+                    baritone.getInputOverrideHandler().clearAllKeys();
+                    moveTowardsWithoutSprint(player, Vec3.atBottomCenterOf(activeOreTarget));
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+            }
+        }
+
+        // 3. Jeśli A* już idzie w stronę rudy lub oblicza trasę -> pozwól mu działać, NIE anuluj co tick!
+        if (baritone.getPathingBehavior().isPathing()) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        if (baritone.getPathingBehavior().getInProgress().isPresent()) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        this.currentBreakingBlock = null;
+
+        // 4. Jeśli A* nie potrafi wyznaczyć ścieżki do rudy -> czarna lista i przejście dalej
+        if (calcFailed) {
+            blacklistedOres.add(activeOreTarget);
+            activeOreTarget = null;
+            this.invalidStandingPositions.clear();
+            this.oreStagnationTicks = 0;
+            this.oreAttemptTicks = 0;
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        // 5. Podejście przez Baritone ze ścisłym limitem reach <= 2.65m i wykluczeniem martwych pozycji
+        Goal goal = new GoalStrictOreApproach(activeOreTarget, this.invalidStandingPositions);
+        return new PathingCommand(goal, PathingCommandType.SET_GOAL_AND_PATH);
     }
 
-    private PathingCommand handleMiningOre() {
-        BlockPos feet = ctx.playerFeet();
-        if (feet == null || ctx.player() == null || ctx.world() == null) return pause();
-        // Keep the vein target while breaking an obstruction. Re-scanning every
-        // frame used to replace the ore with the wall (or forget it after break).
-        if (currentTargetBlock == null || OreScanner.isBlacklisted(currentTargetBlock)
-                || !targetOreBlocks.contains(ctx.world().getBlockState(currentTargetBlock).getBlock())) {
-            currentTargetBlock = getNextVeinOre();
-            if (currentTargetBlock == null) {
-                currentTargetBlock = findBestOreNearby(feet, getEffectiveOreRadius());
-            }
-            oreApproachTicks = 0;
-        }
-        if (currentTargetBlock == null) {
-            stateMachine.transition(travelState(feet.getY(), config.yLevel));
-            return pause();
-        }
-        BlockPos ore = currentTargetBlock;
-        double reach = Math.min(config.reachLimit, ctx.playerController().getBlockReachDistance());
-        if (RotationUtils.reachable(ctx, ore, reach).isPresent()) {
-            if (!stopNavigation()) return pause();
-            mineBlockDirect(ore);
-            return pause();
-        }
-        Vec3 eye = ctx.player().getEyePosition();
-        BlockHitResult hit = ctx.world().clip(new net.minecraft.world.level.ClipContext(eye, Vec3.atCenterOf(ore),
-                net.minecraft.world.level.ClipContext.Block.OUTLINE,
-                net.minecraft.world.level.ClipContext.Fluid.NONE, ctx.player()));
-        if (hit.getType() == HitResult.Type.BLOCK) {
-            BlockPos obstruction = hit.getBlockPos();
-            if (!obstruction.equals(ore) && !obstruction.equals(feet.below())
-                    && !isPassable(ctx.world(), obstruction) && !isUnbreakable(ctx.world(), obstruction)
-                    && RotationUtils.reachable(ctx, obstruction, reach).isPresent()) {
-                if (!stopNavigation()) return pause();
-                mineBlockDirect(obstruction);
-                return pause();
-            }
+    private Optional<MiningAction> findMiningAction(LocalPlayer player, Level level, BlockPos orePos, double reach) {
+        if (isBedrockOrUnbreakable(level, orePos)) {
+            blacklistedOres.add(orePos);
+            return Optional.empty();
         }
 
-        // Sprawdź promienie do widocznych ścian bocznych rudy (jeśli środek jest zasłonięty)
-        for (Direction d : Direction.values()) {
-            Vec3 facePt = Vec3.atCenterOf(ore).add(d.getStepX() * 0.45D, d.getStepY() * 0.45D, d.getStepZ() * 0.45D);
-            BlockHitResult fHit = ctx.world().clip(new net.minecraft.world.level.ClipContext(eye, facePt,
-                    net.minecraft.world.level.ClipContext.Block.OUTLINE,
-                    net.minecraft.world.level.ClipContext.Fluid.NONE, ctx.player()));
-            if (fHit.getType() == HitResult.Type.BLOCK) {
-                BlockPos fObs = fHit.getBlockPos();
-                if (!fObs.equals(ore) && !fObs.equals(feet.below())
-                        && !isPassable(ctx.world(), fObs) && !isUnbreakable(ctx.world(), fObs)
-                        && RotationUtils.reachable(ctx, fObs, reach).isPresent()) {
-                    if (!stopNavigation()) return pause();
-                    mineBlockDirect(fObs);
-                    return pause();
+        // 1. Bezpośredni strzał w rudę <= reach (najpierw precyzyjny multipoint raycast GrimSnap)
+        Optional<Rotation> multiSnap = findVerifiedGrimSnapRotation(player, level, orePos, reach);
+        if (multiSnap.isPresent()) {
+            if (hasDirectLavaAboveOrBehind(level, orePos) && player.blockPosition().distManhattan(orePos) <= 1) {
+                blacklistedOres.add(orePos);
+                return Optional.empty();
+            }
+            return Optional.of(new MiningAction(orePos, multiSnap.get()));
+        }
+
+        // Fallback: standardowy Baritone RotationUtils.reachable z Grim GCD
+        Optional<Rotation> directOreSnap = RotationUtils.reachable(ctx, orePos, reach);
+        if (directOreSnap.isPresent()) {
+            if (hasDirectLavaAboveOrBehind(level, orePos) && player.blockPosition().distManhattan(orePos) <= 1) {
+                blacklistedOres.add(orePos);
+                return Optional.empty();
+            }
+            Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), directOreSnap.get().getYaw(), directOreSnap.get().getPitch());
+            return Optional.of(new MiningAction(orePos, gcdRot));
+        }
+
+        // 2. Jeśli ruda jest zasłonięta przez pojedynczy blok w ścianie lub podłodze na dystansie <= (reach + 0.7m) -> wykop blok przeszkadzający
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        if (eyePos.distanceToSqr(Vec3.atCenterOf(orePos)) <= (reach + 0.7D) * (reach + 0.7D)) {
+            BlockPos obstructing = findObstructingBlockInReach(player, level, orePos, reach);
+            if (obstructing != null && !isHazardNear(level, obstructing) && !isBedrockOrUnbreakable(level, obstructing)) {
+                // Nie kop podłogi pod własnymi stopami, jeśli pod nią nie ma podpory
+                if (obstructing.equals(player.blockPosition().below()) && !isSolidSupport(level, obstructing.below())) {
+                    return Optional.empty();
+                }
+                Optional<Rotation> obstructSnap = findVerifiedGrimSnapRotation(player, level, obstructing, reach);
+                if (obstructSnap.isEmpty()) {
+                    obstructSnap = RotationUtils.reachable(ctx, obstructing, reach);
+                }
+                if (obstructSnap.isPresent()) {
+                    Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), obstructSnap.get().getYaw(), obstructSnap.get().getPitch());
+                    return Optional.of(new MiningAction(obstructing, gcdRot));
                 }
             }
         }
 
-        Goal approach = new GoalGetToBlock(ore);
-        if (approach.isInGoal(feet)) {
-            // Gracz stoi bezpośrednio obok rudy (np. w ścianie tunelu, podłodze lub suficie).
-            // Zamiast bezczynnie czekać 40 ticków i rezygnować, natychmiast zlokalizuj i skop blok przeszkadzający.
-            BlockPos blocker = findInterveningBlock(feet, ore, reach);
-            if (blocker != null && RotationUtils.reachable(ctx, blocker, reach).isPresent()) {
-                if (!stopNavigation()) return pause();
-                mineBlockDirect(blocker);
-                return pause();
-            }
-            if (++oreApproachTicks >= 40) failOreApproach();
-            releaseActions();
-            return pause();
-        }
-
-        if (++oreApproachTicks >= 200 || (pathCalculationFailed && navigationActive)) {
-            failOreApproach();
-            return pause();
-        }
-        return navigateTo(approach);
+        return Optional.empty();
     }
 
-    private BlockPos findInterveningBlock(BlockPos feet, BlockPos ore, double reach) {
-        if (feet == null || ore == null || ctx.world() == null) return null;
-        Level world = ctx.world();
-        int minX = Math.min(feet.getX(), ore.getX());
-        int maxX = Math.max(feet.getX(), ore.getX());
-        int minY = Math.min(feet.getY(), ore.getY());
-        int maxY = Math.max(feet.getY() + 1, ore.getY());
-        int minZ = Math.min(feet.getZ(), ore.getZ());
-        int maxZ = Math.max(feet.getZ(), ore.getZ());
+    /**
+     * Powrót na oś głównego tunelu Y=-50 po wykopaniu całej żyły i zebraniu dropu.
+     */
+    private PathingCommand tickReturningToTunnel(LocalPlayer player, Level level, boolean calcFailed) {
+        if (tunnelAnchorPos == null || calcFailed || player.blockPosition().distManhattan(tunnelAnchorPos) <= 2 || ++returnStuckTicks > 40) {
+            tunnelAnchorPos = null;
+            returnStuckTicks = 0;
+            this.tunnelDir = this.primaryMiningDir;
+            state = (player.blockPosition().getY() - targetY > 1) ? State.DESCENDING_STAIRCASE : State.TUNNELING;
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+        if (baritone.getPathingBehavior().isPathing()) {
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        return new PathingCommand(new GoalTwoBlocks(tunnelAnchorPos), PathingCommandType.SET_GOAL_AND_PATH);
+    }
 
-        for (int x = minX; x <= maxX; x++) {
-            for (int y = minY; y <= maxY; y++) {
-                for (int z = minZ; z <= maxZ; z++) {
-                    BlockPos p = new BlockPos(x, y, z);
-                    if (p.equals(ore) || p.equals(feet) || p.equals(feet.above()) || p.equals(feet.below())) {
+    // =========================================================================
+    // GRIMAC SNAP ROTATION (GCD QUANTIZED + MULTIPOINT VOXEL RAYCAST <= 3.5M)
+    // =========================================================================
+
+    private PathingCommand mineBlockSafely(LocalPlayer player, Level level, BlockPos target) {
+        if (target == null || isBedrockOrUnbreakable(level, target)) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        this.currentBreakingBlock = target;
+        double reach = getEffectiveReach();
+
+        Optional<Rotation> snap = findVerifiedGrimSnapRotation(player, level, target, reach);
+        if (snap.isEmpty()) {
+            Optional<Rotation> fallbackSnap = RotationUtils.reachable(ctx, target, reach);
+            if (fallbackSnap.isPresent()) {
+                Rotation gcdRot = applyGrimGcd(
+                    player.getYRot(),
+                    player.getXRot(),
+                    fallbackSnap.get().getYaw(),
+                    fallbackSnap.get().getPitch()
+                );
+                snap = Optional.of(gcdRot);
+            }
+        }
+
+        if (snap.isPresent()) {
+            equipBestTool(player, level.getBlockState(target));
+            baritone.getLookBehavior().updateTarget(snap.get(), true);
+
+            // Sprawdź, czy aktualne rotacje gracza (ctx.playerRotations()) już trafiają w target
+            Vec3 eyePos = player.getEyePosition(1.0F);
+            Vec3 lookVec = RotationUtils.calcLookDirectionFromRotation(ctx.playerRotations());
+            BlockHitResult currentHit = level.clip(new ClipContext(
+                eyePos,
+                eyePos.add(lookVec.scale(reach)),
+                ClipContext.Block.OUTLINE,
+                ClipContext.Fluid.NONE,
+                player
+            ));
+
+            if (currentHit.getType() == HitResult.Type.BLOCK && currentHit.getBlockPos().equals(target)) {
+                // Celownik leży idealnie na docelowym bloku -> pozwól BlockBreakHelper przejąć kopanie
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+            } else {
+                // LookBehavior jeszcze obraca głowę w tej klatce -> wstrzymaj CLICK_LEFT na 1 tick,
+                // aby nie uderzyć w zły blok i nie zresetować sesji
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+        moveTowardsWithoutSprint(player, Vec3.atBottomCenterOf(target));
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    public static Optional<Rotation> findVerifiedGrimSnapRotation(LocalPlayer player, Level level, BlockPos pos, double maxReach) {
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        if (eyePos.distanceToSqr(Vec3.atCenterOf(pos)) > (maxReach + 1.0D) * (maxReach + 1.0D)) {
+            return Optional.empty();
+        }
+
+        BlockState state = level.getBlockState(pos);
+        VoxelShape shape = state.getShape(level, pos);
+        AABB box = shape.isEmpty() ? new AABB(0, 0, 0, 1, 1, 1) : shape.bounds();
+
+        double[] offsets = {0.5D, 0.3D, 0.7D, 0.2D, 0.8D};
+        float currentYaw = player.getYRot();
+        float currentPitch = player.getXRot();
+
+        for (double dy : offsets) {
+            for (double dx : offsets) {
+                for (double dz : offsets) {
+                    double px = pos.getX() + Mth.lerp(dx, box.minX, box.maxX);
+                    double py = pos.getY() + Mth.lerp(dy, box.minY, box.maxY);
+                    double pz = pos.getZ() + Mth.lerp(dz, box.minZ, box.maxZ);
+
+                    Vec3 targetVec = new Vec3(px, py, pz);
+                    if (eyePos.distanceToSqr(targetVec) > maxReach * maxReach) {
                         continue;
                     }
-                    if (!isPassable(world, p) && !isUnbreakable(world, p) && LiquidDetector.isSafeToMine(world, p)) {
-                        if (RotationUtils.reachable(ctx, p, reach).isPresent()) {
-                            return p;
+
+                    Rotation raw = calcRotationFromVec3d(eyePos, targetVec, currentYaw);
+                    Rotation gcdRot = applyGrimGcd(currentYaw, currentPitch, raw.getYaw(), raw.getPitch());
+
+                    if (verifyRaytraceHit(player, level, pos, gcdRot, maxReach)) {
+                        return Optional.of(gcdRot);
+                    }
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static boolean verifyRaytraceHit(LocalPlayer player, Level level, BlockPos expectedPos, Rotation rot, double maxReach) {
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        Vec3 lookVec = Vec3.directionFromRotation(rot.getPitch(), rot.getYaw());
+        Vec3 rayEnd = eyePos.add(lookVec.scale(maxReach));
+
+        BlockHitResult hit = level.clip(new ClipContext(
+                eyePos,
+                rayEnd,
+                ClipContext.Block.OUTLINE,
+                ClipContext.Fluid.NONE,
+                player
+        ));
+
+        return hit.getType() == HitResult.Type.BLOCK
+                && hit.getBlockPos().equals(expectedPos)
+                && eyePos.distanceToSqr(hit.getLocation()) <= maxReach * maxReach;
+    }
+
+    private static Rotation calcRotationFromVec3d(Vec3 orig, Vec3 dest, float currentYaw) {
+        double dx = dest.x - orig.x;
+        double dy = dest.y - orig.y;
+        double dz = dest.z - orig.z;
+        double distSq = dx * dx + dz * dz;
+        double dist = Math.sqrt(distSq);
+
+        float yaw = (float) (Mth.atan2(dz, dx) * (180.0D / Math.PI)) - 90.0F;
+        float pitch = (float) (-(Mth.atan2(dy, dist) * (180.0D / Math.PI)));
+
+        float wrappedYaw = currentYaw + Mth.wrapDegrees(yaw - currentYaw);
+        return new Rotation(wrappedYaw, Mth.clamp(pitch, -90.0F, 90.0F));
+    }
+
+    private static Rotation applyGrimGcd(float prevYaw, float prevPitch, float targetYaw, float targetPitch) {
+        Minecraft mc = Minecraft.getInstance();
+        double sensitivity = 0.5D;
+        if (mc.options != null && mc.options.sensitivity() != null) {
+            sensitivity = mc.options.sensitivity().get();
+        }
+        double f = sensitivity * 0.6D + 0.2D;
+        double gcd = f * f * f * 1.2D;
+
+        float deltaYaw = targetYaw - prevYaw;
+        float deltaPitch = targetPitch - prevPitch;
+
+        float fixedDeltaYaw = (float) (Math.round(deltaYaw / gcd) * gcd);
+        float fixedDeltaPitch = (float) (Math.round(deltaPitch / gcd) * gcd);
+
+        float finalYaw = prevYaw + fixedDeltaYaw;
+        float finalPitch = Mth.clamp(prevPitch + fixedDeltaPitch, -90.0F, 90.0F);
+        return new Rotation(finalYaw, finalPitch);
+    }
+
+    private static BlockPos findObstructingBlockInReach(LocalPlayer player, Level level, BlockPos orePos, double maxReach) {
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        Vec3 oreCenter = Vec3.atCenterOf(orePos);
+        Vec3 dir = oreCenter.subtract(eyePos).normalize();
+        Vec3 end = eyePos.add(dir.scale(maxReach));
+
+        BlockHitResult hit = level.clip(new ClipContext(
+                eyePos,
+                end,
+                ClipContext.Block.OUTLINE,
+                ClipContext.Fluid.NONE,
+                player
+        ));
+
+        if (hit.getType() == HitResult.Type.BLOCK && !hit.getBlockPos().equals(orePos)) {
+            BlockPos hitPos = hit.getBlockPos();
+            if (level.getBlockState(hitPos).getDestroySpeed(level, hitPos) >= 0) {
+                return hitPos;
+            }
+        }
+        return null;
+    }
+
+    // =========================================================================
+    // SKANOWANIE RUD (3 BLOKI W KAŻDĄ STRONĘ - KOSTKA 7x7x7) I VEIN MINING
+    // =========================================================================
+
+    private BlockPos findNearestOre(LocalPlayer player, Level level) {
+        BlockPos origin = player.blockPosition();
+        Vec3 eye = player.getEyePosition(1.0F);
+        BlockPos bestPos = null;
+        double bestScore = Double.MAX_VALUE;
+
+        for (int dx = -ORE_SCAN_RADIUS; dx <= ORE_SCAN_RADIUS; dx++) {
+            for (int dy = -ORE_SCAN_RADIUS; dy <= ORE_SCAN_RADIUS; dy++) {
+                for (int dz = -ORE_SCAN_RADIUS; dz <= ORE_SCAN_RADIUS; dz++) {
+                    BlockPos pos = origin.offset(dx, dy, dz);
+                    if (blacklistedOres.contains(pos)) continue;
+
+                    BlockState state = level.getBlockState(pos);
+                    if (isTargetOre(state)) {
+                        double distSq = eye.distanceToSqr(Vec3.atCenterOf(pos));
+                        boolean isDiamond = state.is(Blocks.DIAMOND_ORE) || state.is(Blocks.DEEPSLATE_DIAMOND_ORE);
+                        double score = isDiamond ? distSq * 0.5D : distSq;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestPos = pos.immutable();
                         }
                     }
                 }
             }
         }
-        return null;
+        return bestPos;
     }
 
-    private void failOreApproach() {
-        if (currentTargetBlock != null) OreScanner.recordFailedAttempt(currentTargetBlock);
-        currentTargetBlock = null;
-        miningCooldownTicks = MINING_COOLDOWN_AFTER_STUCK;
-        BetterBlockPos feet = ctx.playerFeet();
-        int currentY = feet != null ? feet.getY() : (config != null ? config.yLevel : -55);
-        stateMachine.transition(travelState(currentY, config.yLevel));
-    }
-
-    private PathingCommand handlePathfindingReturn() {
-        BlockPos feet = ctx.playerFeet();
-        if (feet == null || ctx.player() == null || ctx.world() == null) return pause();
-        if (savedReconnectTarget == null || feet.distSqr(savedReconnectTarget) <= 1.0
-                || (pathCalculationFailed && navigationActive)) {
-            savedReconnectTarget = null;
-            stateMachine.transition(travelState(feet.getY(), config.yLevel));
-            return pause();
-        }
-        return navigateTo(new GoalBlock(savedReconnectTarget));
-    }
-
-    /** Start an interaction; its result is consumed on a subsequent process tick. */
-    private void mineBlockDirect(BlockPos toBreak) {
-        if (!stopNavigation()) return;
-        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, false);
-        if (!FastBreakHelper.isFastPickaxe(ctx)) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-        }
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
-        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
-
-        BlockState state = ctx.world().getBlockState(toBreak);
-        if (state.isAir()) return;
-        if (isUnbreakable(ctx.world(), toBreak) || !LiquidDetector.isSafeToMine(ctx.world(), toBreak)) {
-            recoverFromBlockedTarget(toBreak);
-            return;
-        }
-        if (!toBreak.equals(breakingBlock)) {
-            boolean adjacent = breakingBlock != null && Math.sqrt(breakingBlock.distSqr(toBreak)) <= 2.0;
-            if (!adjacent) {
-                releaseActions();
-                RotationEngine.reset();
-            }
-            breakingBlock = toBreak.immutable();
-            breakStartTime = System.currentTimeMillis();
-            breakTracker.watch(toBreak, state);
-        }
-        int previousSlot = ctx.player().getInventory().selected;
-        if (!AutoToolManager.selectBestTool(ctx, toBreak, config)) {
-            logDirect("§c[Bypass] Brak sprawnego narzędzia dającego drop z tego bloku. Włóż właściwy kilof do hotbara.");
-            stop();
-            return;
-        }
-        if (previousSlot != ctx.player().getInventory().selected) {
-            releaseActions();
-            ctx.playerController().syncHeldItem();
-            RotationEngine.reset();
-            return; // Synchronize the held item before attacking on a later tick.
-        }
-        long timeout = BypassBreakTracker.timeoutMillis(state.getDestroyProgress(ctx.player(), ctx.world(), toBreak));
-        if (System.currentTimeMillis() - breakStartTime >= timeout) {
-            logDirect("§e[Bypass] Brak postępu kopania bloku " + toBreak + ". Zmieniam podejście.");
-            recoverFromBlockedTarget(toBreak);
-            return;
-        }
-        double reach = Math.min(config.reachLimit, ctx.playerController().getBlockReachDistance());
-        Optional<Rotation> reachable = RotationUtils.reachable(ctx, toBreak, reach);
-        Rotation target = reachable.orElseGet(() -> RotationEngine.lookAt(ctx.player().getEyePosition(), Vec3.atCenterOf(toBreak)));
-        RotationEngine.apply(ctx.player(), target, baritone.settings(), true);
-        HitResult fresh = RayTraceUtils.rayTraceTowards(ctx.player(), ctx.playerRotations(), reach);
-        HitResult selected = ctx.objectMouseOver();
-        int settleTicks = (Baritone.settings().fastBreak.value || (breakingBlock != null && Math.sqrt(breakingBlock.distSqr(toBreak)) <= 2.0))
-                ? 0 : config.preRotationTicks;
-
-        BlockPos freshHit = (fresh instanceof BlockHitResult f && f.getType() == HitResult.Type.BLOCK) ? f.getBlockPos() : null;
-        BlockPos selectedHit = (selected instanceof BlockHitResult c && c.getType() == HitResult.Type.BLOCK) ? c.getBlockPos() : null;
-
-        boolean isCoveringObstruction = false;
-        BlockPos obstructionHit = null;
-        if (freshHit != null && !freshHit.equals(toBreak)) {
-            BlockState fs = ctx.world().getBlockState(freshHit);
-            if (!isUnbreakable(ctx.world(), freshHit) && !freshHit.equals(ctx.playerFeet().below())
-                    && (ObstructionHelper.isClearableObstruction(fs) || ObstructionHelper.isCoveringOrAdjacent(freshHit, toBreak))) {
-                isCoveringObstruction = true;
-                obstructionHit = freshHit;
-            }
-        }
-        if (!isCoveringObstruction && selectedHit != null && !selectedHit.equals(toBreak)) {
-            BlockState ss = ctx.world().getBlockState(selectedHit);
-            if (!isUnbreakable(ctx.world(), selectedHit) && !selectedHit.equals(ctx.playerFeet().below())
-                    && (ObstructionHelper.isClearableObstruction(ss) || ObstructionHelper.isCoveringOrAdjacent(selectedHit, toBreak))) {
-                isCoveringObstruction = true;
-                obstructionHit = selectedHit;
-            }
-        }
-
-        boolean onTarget = (freshHit != null && (freshHit.equals(toBreak) || isCoveringObstruction))
-                || (selectedHit != null && (selectedHit.equals(toBreak) || isCoveringObstruction));
-        boolean aimed = onTarget && (RotationEngine.isSettled(settleTicks) || (freshHit != null && freshHit.equals(toBreak)));
-
-        if (isCoveringObstruction && obstructionHit != null) {
-            AutoToolManager.selectBestTool(ctx, obstructionHit, config);
-        }
-
-        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, aimed);
-        if (aimed) {
-            breakTracker.attacked();
-            ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(isCoveringObstruction && obstructionHit != null ? obstructionHit : toBreak));
-        }
-    }
-
-    private void observeBrokenBlock() {
-        BypassBreakTracker.BrokenBlock broken = breakTracker.poll(ctx.world()::getBlockState);
-        if (broken == null) {
-            if (breakingBlock != null && !breakTracker.isTracking()) {
-                breakingBlock = null;
-                breakStartTime = 0L;
-                releaseActions();
-            }
-            return;
-        }
-        breakingBlock = null;
-        breakStartTime = 0L;
-        oreApproachTicks = 0;
-        lastPositionChangeTime = System.currentTimeMillis();
-        OreScanner.resetAttempts(broken.pos());
-        RotationEngine.notifyBlockBroken(broken.pos());
-        if (targetOreBlocks.contains(broken.state().getBlock())) {
-            onOreBroken(broken.pos(), broken.state());
-        } else {
-            if (!Baritone.settings().fastBreak.value) {
-                applyBreakVariance();
-            } else {
-                varianceCooldownTicks = 0;
-            }
-        }
-    }
-
-    private void recoverFromBlockedTarget(BlockPos pos) {
-        releaseActions();
-        breakTracker.reset();
-        breakingBlock = null;
-        breakStartTime = 0L;
-        if (getState() == State.MINING_ORE) {
-            failOreApproach();
-        } else if (getState() == State.TUNNELING) {
-            turnTunnel();
-        } else {
-            turnStaircase();
-        }
-    }
-
-    private BlockPos calculateShortGoal(BlockPos from, BlockPos to, int maxDistance) {
-        double dx = to.getX() - from.getX();
-        double dy = to.getY() - from.getY();
-        double dz = to.getZ() - from.getZ();
-        double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (dist <= maxDistance) {
-            return to;
-        }
-        double scale = maxDistance / dist;
-        return new BlockPos(
-                (int) Math.round(from.getX() + dx * scale),
-                (int) Math.round(from.getY() + dy * scale),
-                (int) Math.round(from.getZ() + dz * scale)
-        );
-    }
-
-    private void checkBranchTriggers(BlockPos currentPos) {
-        ThreadLocalRandom rng = ThreadLocalRandom.current();
-        if (!inSideBranch && rng.nextDouble() < config.branchChance) {
-            inSideBranch = true;
-            branchStartPos = currentPos;
-            sideBranchDirection = rng.nextBoolean() ? tunnelDirection.getClockWise() : tunnelDirection.getCounterClockWise();
-            sideBranchLength = 0;
-            targetSideBranchLength = 5 + rng.nextInt(6);
-            logDirect(String.format("§b[Bypass] Rozpoczynam odnogę boczną (15%% szansy) na długość %d w kierunku: %s",
-                    targetSideBranchLength, sideBranchDirection));
-            return;
-        }
-
-        if (segmentLength >= targetSegmentLength) {
-            turnTunnel();
-        }
-    }
-
-    private void turnTunnel() {
-        releaseActions();
-        breakTracker.reset();
-        breakingBlock = null;
-        tunnelStepTarget = null;
-        ThreadLocalRandom rng = ThreadLocalRandom.current();
-        tunnelDirection = rng.nextBoolean() ? tunnelDirection.getClockWise() : tunnelDirection.getCounterClockWise();
-        segmentLength = 0;
-        targetSegmentLength = config.minLengthBeforeTurn +
-                rng.nextInt(config.maxLengthBeforeTurn - config.minLengthBeforeTurn + 1);
-        inSideBranch = false;
-        branchStartPos = null;
-        logDirect(String.format("§a[Bypass] Skręt głównego tunelu o 90° na kierunek: %s (kolejny odcinek: %d bloków)",
-                tunnelDirection, targetSegmentLength));
-    }
-
-    private void applyBreakVariance() {
-        if (Baritone.settings().fastBreak.value) {
-            this.varianceCooldownTicks = 0;
-            return;
-        }
-        int varianceMs = ThreadLocalRandom.current().nextInt(31);
-        int pingMs = 30;
-        try {
-            if (ctx.player() != null && ctx.player().connection != null) {
-                PlayerInfo info = ctx.player().connection.getPlayerInfo(ctx.player().getUUID());
-                if (info != null) {
-                    pingMs = info.getLatency();
-                }
-            }
-        } catch (Throwable ignored) {}
-
-        double totalDelayMs = varianceMs + (pingMs / 20.0D);
-        this.varianceCooldownTicks = (int) Math.round(totalDelayMs / 50.0D);
-    }
-
-    private boolean isPassable(Level world, BlockPos pos) {
-        if (world == null || pos == null || !LiquidDetector.check(world, pos)) return false;
-        BlockState state = world.getBlockState(pos);
-        if (ObstructionHelper.isClearableObstruction(state)) {
-            return false;
-        }
-        return MovementHelper.canWalkThrough(ctx, new BetterBlockPos(pos));
-    }
-
-    private BlockPos findBestOreNearby(BlockPos center, int radius) {
-        if (targetOreBlocks.isEmpty() || ctx.world() == null || center == null) return null;
-        return OreScanner.findBestOre(ctx.world(), center, targetOreBlocks, radius, config);
-    }
-
-    private void resolveTargetBlocks() {
-        targetOreBlocks.clear();
-        targetDropItems.clear();
-        for (String oreName : targetOres) {
-            List<String> names = config.getOreBlockNames(oreName);
-            for (String name : names) {
-                targetDropItems.addAll(BypassDropTracker.itemsForOre(name));
-                ResourceLocation loc = ResourceLocation.tryParse(name.contains(":") ? name : "minecraft:" + name);
-                if (loc != null) {
-                    BuiltInRegistries.BLOCK.getOptional(loc).ifPresent(targetOreBlocks::add);
+    private void enqueueConnectedVein(Level level, BlockPos center) {
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    if (dx == 0 && dy == 0 && dz == 0) continue;
+                    BlockPos neighbor = center.offset(dx, dy, dz);
+                    if (!blacklistedOres.contains(neighbor)
+                            && !veinQueue.contains(neighbor)
+                            && !neighbor.equals(activeOreTarget)
+                            && isTargetOre(level.getBlockState(neighbor))) {
+                        veinQueue.addLast(neighbor.immutable());
+                    }
                 }
             }
         }
     }
 
-    @Override
-    public boolean isTemporary() {
+    private boolean isTargetOre(BlockState state) {
+        if (state == null || state.isAir()) return false;
+        Block block = state.getBlock();
+        if (targetOresList.isEmpty()) {
+            return block == Blocks.DIAMOND_ORE || block == Blocks.DEEPSLATE_DIAMOND_ORE;
+        }
+        for (String ore : targetOresList) {
+            String norm = normalizeOreKey(ore);
+            Set<Block> allowed = ORE_BLOCK_MAP.get(norm);
+            if (allowed != null && allowed.contains(block)) {
+                return true;
+            }
+        }
         return false;
     }
 
-    @Override
-    public void onLostControl() {
-        active = false;
-        stateMachine.transition(State.IDLE);
-        currentTargetBlock = null;
-        breakingBlock = null;
-        breakStartTime = 0L;
-        pendingDropPos = null;
-        dropTracker = null;
-        breakTracker.reset();
-        staircaseStep = null;
-        tunnelStepTarget = null;
-        placementTarget = null;
-        navigationActive = false;
-        RotationEngine.reset();
-        releaseActions();
+    private ItemEntity findNearbyValuableDrop(LocalPlayer player, Level level) {
+        AABB searchBox = player.getBoundingBox().inflate(6.0D, 3.5D, 6.0D);
+        List<ItemEntity> items = level.getEntitiesOfClass(ItemEntity.class, searchBox, entity -> {
+            if (!entity.isAlive() || entity.isInLava() || ignoredDropIds.containsKey(entity.getId())) return false;
+            Item item = entity.getItem().getItem();
+            if (targetOresList.isEmpty()) {
+                return item == Items.DIAMOND || item == Items.DIAMOND_ORE || item == Items.DEEPSLATE_DIAMOND_ORE;
+            }
+            for (String ore : targetOresList) {
+                String norm = normalizeOreKey(ore);
+                Set<Item> allowed = ORE_ITEM_MAP.get(norm);
+                if (allowed != null && allowed.contains(item)) {
+                    return true;
+                }
+            }
+            return false;
+        });
+
+        return items.stream()
+                .min(Comparator.comparingDouble(player::distanceToSqr))
+                .orElse(null);
+    }
+
+    /**
+     * Aktualizuje rotację tylko wtedy, gdy różnica kątów przekracza próg czułości sieciowej.
+     * Zapobiega wysyłaniu zduplikowanych pakietów PosRot/Rot (GrimAC AimDuplicateLook).
+     */
+    private void updateRotationGrimSafe(LocalPlayer player, Rotation targetRot, boolean blockInteract) {
+        if (player == null || targetRot == null) return;
+        float yawDiff = Math.abs(Mth.wrapDegrees(targetRot.getYaw() - player.getYRot()));
+        float pitchDiff = Math.abs(targetRot.getPitch() - player.getXRot());
+
+        // Ignoruj mikro-zmiany kątów (< 0.20 stopnia), które po kwantyzacji dają duplikat pakietu rotacji (AimDuplicateLook)
+        if (yawDiff < 0.20f && pitchDiff < 0.20f) {
+            return;
+        }
+        baritone.getLookBehavior().updateTarget(targetRot, blockInteract);
+    }
+
+    /**
+     * Płynne podchodzenie w stronę dropu — zmienia tylko Yaw przy realnym odchyleniu,
+     * nie wymusza Pitch w dół na nieruchomy item.
+     */
+    private void moveSafelyTowardsDrop(LocalPlayer player, Vec3 targetPos) {
+        if (player == null || targetPos == null) return;
+        Rotation fullRot = calcRotationFromVec3d(player.getEyePosition(1.0F), targetPos, player.getYRot());
+        float yawDiff = Math.abs(Mth.wrapDegrees(fullRot.getYaw() - player.getYRot()));
+
+        if (yawDiff > 3.0f) {
+            Rotation walkRot = applyGrimGcd(player.getYRot(), player.getXRot(), fullRot.getYaw(), player.getXRot());
+            updateRotationGrimSafe(player, walkRot, false);
+        }
+
+        baritone.getInputOverrideHandler().clearAllKeys();
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+    }
+
+    /**
+     * Inteligentne zbieranie leżącego dropu surowców:
+     * 1. Wolna droga -> bezpieczny marsz.
+     * 2. Blok zasłaniający (np. we wnęce) -> rozkopanie przeszkody.
+     * 3. Trudny teren -> A* GoalBlock z REVALIDATE zamiast spamu CANCEL.
+     */
+    private PathingCommand handleCollectingDrop(LocalPlayer player, Level level, ItemEntity drop) {
+        long now = System.currentTimeMillis();
+        ignoredDropIds.entrySet().removeIf(entry -> now > entry.getValue());
+
+        if (drop == null || !drop.isAlive() || ignoredDropIds.containsKey(drop.getId())) {
+            resetDropCollectionState();
+            return null;
+        }
+
+        double distSq = player.distanceToSqr(drop);
+
+        if (drop.getId() != currentDropId) {
+            currentDropId = drop.getId();
+            dropCollectTicks = 0;
+            dropStuckTicks = 0;
+            lastDistToDropSq = distSq;
+            lastDropGoal = null;
+        }
+
+        dropCollectTicks++;
+
+        if (distSq < lastDistToDropSq - 0.03) {
+            lastDistToDropSq = distSq;
+            dropStuckTicks = 0;
+        } else {
+            dropStuckTicks++;
+        }
+
+        // Timeout bezpieczeństwa: jeśli po 100 tickach (5s) nie udało się zebrać dropu,
+        // wpisz go na 15s na czarną listę, aby bot nie utknął na stałe
+        if (dropCollectTicks > 100) {
+            ignoredDropIds.put(drop.getId(), now + 15_000L);
+            resetDropCollectionState();
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        // PRZYPADEK 1: Droga do dropu jest krótka i całkowicie wolna od kolizji
+        if (distSq <= 6.25 && dropStuckTicks < 15 && DropCollectionHelper.canWalkDirectlyToDrop(player, level, drop)) {
+            this.currentBreakingBlock = null;
+            moveSafelyTowardsDrop(player, drop.position());
+            lastDropGoal = null;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // PRZYPADEK 2: Drop jest blisko (<= 4.2m), ale zasłania go blok (np. deepslate we wnęce) — rozkop blok!
+        BlockPos obstruction = DropCollectionHelper.findObstructingBlock(player, level, drop);
+        if (obstruction != null && !isBedrockOrUnbreakable(level, obstruction)) {
+            baritone.getInputOverrideHandler().clearAllKeys();
+
+            Vec3 hitVec = Vec3.atCenterOf(obstruction);
+            Rotation breakRot = calcRotationFromVec3d(player.getEyePosition(1.0F), hitVec, player.getYRot());
+            Rotation gcdBreakRot = applyGrimGcd(player.getYRot(), player.getXRot(), breakRot.getYaw(), breakRot.getPitch());
+            updateRotationGrimSafe(player, gcdBreakRot, true);
+
+            this.currentBreakingBlock = obstruction;
+            equipBestTool(player, level.getBlockState(obstruction));
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+            ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(obstruction));
+
+            dropStuckTicks = 0;
+            lastDropGoal = null;
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // PRZYPADEK 3: Drop wymaga podejścia lub rozkopania ścieżki przez A* Baritone
+        this.currentBreakingBlock = null;
+        baritone.getInputOverrideHandler().clearAllKeys();
+
+        BlockPos targetBlockPos = drop.blockPosition();
+        if (lastDropGoal == null || !lastDropGoal.isInGoal(targetBlockPos)) {
+            lastDropGoal = new GoalBlock(targetBlockPos);
+        }
+
+        return new PathingCommand(lastDropGoal, PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+    }
+
+    private void resetDropCollectionState() {
+        currentDropId = -1;
+        dropCollectTicks = 0;
+        dropStuckTicks = 0;
+        lastDistToDropSq = Double.MAX_VALUE;
+        lastDropGoal = null;
+        this.currentBreakingBlock = null;
+        baritone.getInputOverrideHandler().clearAllKeys();
+    }
+
+    // =========================================================================
+    // DETEKCJA ZAGROŻEŃ (LAWA, WODA, JASKINIE, ŻWIR)
+    // =========================================================================
+
+    private boolean isHazardNear(Level level, BlockPos pos) {
+        // 1. Lawa w bloku lub sąsiadach to bezwzględne zagrożenie
+        if (level.getFluidState(pos).is(FluidTags.LAVA)) return true;
+        for (Direction dir : Direction.values()) {
+            BlockPos adj = pos.relative(dir);
+            if (level.getFluidState(adj).is(FluidTags.LAVA)) return true;
+        }
+
+        // 2. Źródło wody bezpośrednio w bloku lub nad nim to zagrożenie (nie kopiemy w źródło oceanu/podziemnego jeziora)
+        FluidState selfFluid = level.getFluidState(pos);
+        if (selfFluid.is(FluidTags.WATER) && selfFluid.isSource()) return true;
+        FluidState aboveFluid = level.getFluidState(pos.above());
+        if (aboveFluid.is(FluidTags.WATER) && aboveFluid.isSource()) return true;
+
+        return false;
+    }
+
+    // =========================================================================
+    // WATER SEALER (USZCZELNIANIE WYCIEKÓW WODY I LAWY POD GRIMAC)
+    // =========================================================================
+
+    private BlockPos findWaterBreachSource(Level level, BlockPos center) {
+        FluidState headFluid = level.getFluidState(center.above());
+
+        // 1. Zagrożenie życia: bot tonie w wodzie lub płonie w lawie sięgającej głowy
+        if (!headFluid.isEmpty() && (headFluid.is(FluidTags.WATER) || headFluid.is(FluidTags.LAVA))) {
+            for (BlockPos pos : BlockPos.betweenClosed(center, center.above(2))) {
+                if (level.getFluidState(pos).isSource()) {
+                    return pos.immutable();
+                }
+            }
+            return center.above().immutable();
+        }
+
+        // 2. Zagrożenie zalania tunelu: bezpośrednie źródło wody lub jakakolwiek lawa tuż przed botem w kierunku marszu
+        BlockPos frontFeet = center.relative(tunnelDir);
+        BlockPos frontHead = frontFeet.above();
+
+        FluidState frontHeadFluid = level.getFluidState(frontHead);
+        FluidState frontFeetFluid = level.getFluidState(frontFeet);
+
+        if (!frontHeadFluid.isEmpty() && (frontHeadFluid.is(FluidTags.LAVA) || frontHeadFluid.isSource())) {
+            return frontHead.immutable();
+        }
+        if (!frontFeetFluid.isEmpty() && (frontFeetFluid.is(FluidTags.LAVA) || frontFeetFluid.isSource())) {
+            return frontFeet.immutable();
+        }
+
+        // Płynąca woda na stopach (feet) lub na podłodze otwartej jaskini NIE aktywuje zatykania!
+        return null;
+    }
+
+    private void retreatStepBackward(LocalPlayer player, Direction forwardDir) {
+        baritone.getInputOverrideHandler().clearAllKeys();
+        float targetYaw = forwardDir.toYRot();
+        Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), targetYaw, player.getXRot());
+        baritone.getLookBehavior().updateTarget(gcdRot, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+    }
+
+    private BlockPos findAnyLavaHazardNear(Level level, BlockPos pos) {
+        if (level.getFluidState(pos).is(FluidTags.LAVA)) return pos.immutable();
+        for (Direction d : Direction.values()) {
+            BlockPos adj = pos.relative(d);
+            if (level.getFluidState(adj).is(FluidTags.LAVA)) return adj.immutable();
+        }
+        return null;
+    }
+
+    private PathingCommand handleSealingHazard(LocalPlayer player, Level level) {
+        if (hazardSourcePos == null || level.getFluidState(hazardSourcePos).isEmpty() || sealFailedAttempts >= MAX_SEAL_ATTEMPTS) {
+            this.hazardSourcePos = null;
+            this.sealFailedAttempts = 0;
+            this.sealCooldownTicks = 2;
+            this.state = State.TUNNELING;
+            baritone.getInputOverrideHandler().clearAllKeys();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // Jeśli stoimy niebezpiecznie blisko (< 1.15 bloku), cofnij się klawiszem S bez obrotu kamery o 180°
+        if (player.position().distanceTo(Vec3.atCenterOf(hazardSourcePos)) < 1.15D) {
+            retreatStepBackward(player, primaryMiningDir);
+        }
+
+        if (!selectThrowawayBlock(player)) {
+            sealFailedAttempts++;
+            if (sealFailedAttempts >= MAX_SEAL_ATTEMPTS) {
+                this.hazardSourcePos = null;
+                this.state = State.TUNNELING;
+            }
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        double reach = getEffectiveReach();
+        Vec3 eyePos = player.getEyePosition(1.0F);
+
+        // Szukamy litego oparcia wokół komory lawy: tył, dół, boki, góra
+        BlockPos supportPos = null;
+        Direction hitFace = null;
+        Direction[] searchOrder = {
+            primaryMiningDir, Direction.DOWN,
+            primaryMiningDir.getClockWise(), primaryMiningDir.getCounterClockWise(),
+            Direction.UP
+        };
+
+        for (Direction dir : searchOrder) {
+            BlockPos neighbor = hazardSourcePos.relative(dir);
+            BlockState neighborState = level.getBlockState(neighbor);
+            if (!neighborState.canBeReplaced() && neighborState.getFluidState().isEmpty() && neighborState.isSolid()) {
+                supportPos = neighbor;
+                hitFace = dir.getOpposite(); // Ścianka skierowana w stronę hazardSourcePos
+                break;
+            }
+        }
+
+        if (supportPos != null && hitFace != null) {
+            Vec3 hitVec = Vec3.atCenterOf(supportPos).add(
+                hitFace.getStepX() * 0.49D,
+                hitFace.getStepY() * 0.49D,
+                hitFace.getStepZ() * 0.49D
+            );
+
+            if (eyePos.distanceToSqr(hitVec) <= reach * reach) {
+                Rotation raw = calcRotationFromVec3d(eyePos, hitVec, player.getYRot());
+                Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), raw.getYaw(), raw.getPitch());
+                baritone.getLookBehavior().updateTarget(gcdRot, true);
+                baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+
+                float yawDiff = Math.abs(Mth.wrapDegrees(player.getYRot() - gcdRot.getYaw()));
+                float pitchDiff = Math.abs(player.getXRot() - gcdRot.getPitch());
+                if (yawDiff < 6.0F && pitchDiff < 6.0F) {
+                    BlockHitResult hitResult = new BlockHitResult(hitVec, hitFace, supportPos, false);
+                    ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, hitResult);
+                    player.swing(InteractionHand.MAIN_HAND);
+                    this.sealCooldownTicks = 3;
+                    this.sealFailedAttempts = 0;
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+            }
+        }
+
+        // Fallback do standardowego szukania rotacji
+        Optional<Rotation> placeRot = findPlacementRotationForBreach(player, level, hazardSourcePos, reach);
+        if (placeRot.isPresent()) {
+            baritone.getLookBehavior().updateTarget(placeRot.get(), true);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+            sealCooldownTicks = 2;
+            sealFailedAttempts = 0;
+        } else {
+            sealFailedAttempts++;
+            if (sealFailedAttempts >= MAX_SEAL_ATTEMPTS) {
+                this.hazardSourcePos = null;
+                this.state = State.TUNNELING;
+            }
+            sealCooldownTicks = 2;
+        }
+
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+    }
+
+    private Optional<Rotation> findPlacementRotationForBreach(LocalPlayer player, Level level, BlockPos breachPos, double maxReach) {
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        float currentYaw = player.getYRot();
+        float currentPitch = player.getXRot();
+
+        for (Direction dir : Direction.values()) {
+            BlockPos neighbor = breachPos.relative(dir);
+            BlockState neighborState = level.getBlockState(neighbor);
+            if (!neighborState.isSolid() || neighborState.canBeReplaced()) {
+                continue;
+            }
+            Direction targetFace = dir.getOpposite();
+
+            Vec3 faceCenter = Vec3.atCenterOf(neighbor).add(
+                    targetFace.getStepX() * 0.49D,
+                    targetFace.getStepY() * 0.49D,
+                    targetFace.getStepZ() * 0.49D
+            );
+
+            if (eyePos.distanceToSqr(faceCenter) > maxReach * maxReach) {
+                continue;
+            }
+
+            Rotation raw = calcRotationFromVec3d(eyePos, faceCenter, currentYaw);
+            Rotation gcdRot = applyGrimGcd(currentYaw, currentPitch, raw.getYaw(), raw.getPitch());
+
+            Vec3 lookVec = Vec3.directionFromRotation(gcdRot.getPitch(), gcdRot.getYaw());
+            Vec3 rayEnd = eyePos.add(lookVec.scale(maxReach));
+            BlockHitResult hit = level.clip(new ClipContext(
+                    eyePos, rayEnd, ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, player
+            ));
+
+            if (hit.getType() == HitResult.Type.BLOCK && hit.getBlockPos().equals(neighbor)) {
+                return Optional.of(gcdRot);
+            }
+        }
+
+        // Fallback: Baritone standard reachable rotation to solid neighbor
+        for (Direction dir : Direction.values()) {
+            BlockPos neighbor = breachPos.relative(dir);
+            BlockState neighborState = level.getBlockState(neighbor);
+            if (!neighborState.isSolid() || neighborState.canBeReplaced()) {
+                continue;
+            }
+            Optional<Rotation> reachRot = RotationUtils.reachable(ctx, neighbor, maxReach);
+            if (reachRot.isPresent()) {
+                Rotation gcdRot = applyGrimGcd(currentYaw, currentPitch, reachRot.get().getYaw(), reachRot.get().getPitch());
+                return Optional.of(gcdRot);
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    private boolean selectThrowawayBlock(LocalPlayer player) {
+        if (hazardSourcePos != null && baritone.getInventoryBehavior().selectThrowawayForLocation(true, hazardSourcePos.getX(), hazardSourcePos.getY(), hazardSourcePos.getZ())) {
+            return true;
+        }
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && stack.getItem() instanceof BlockItem blockItem) {
+                Block b = blockItem.getBlock();
+                if (b == Blocks.COBBLESTONE || b == Blocks.COBBLED_DEEPSLATE || b == Blocks.DEEPSLATE
+                        || b == Blocks.TUFF || b == Blocks.DIRT || b == Blocks.STONE
+                        || b == Blocks.ANDESITE || b == Blocks.DIORITE || b == Blocks.GRANITE) {
+                    player.getInventory().selected = i;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean hasDirectLavaAboveOrBehind(Level level, BlockPos orePos) {
+        for (Direction dir : Direction.values()) {
+            if (level.getFluidState(orePos.relative(dir)).is(FluidTags.LAVA)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isSolidSupport(Level level, BlockPos floorPos) {
+        BlockState state = level.getBlockState(floorPos);
+        return !state.isAir()
+                && level.getFluidState(floorPos).isEmpty()
+                && !(state.getBlock() instanceof FallingBlock)
+                && state.isFaceSturdy(level, floorPos, Direction.UP);
+    }
+
+    private boolean isPassable(Level level, BlockPos pos) {
+        BlockState state = level.getBlockState(pos);
+        return state.isAir() || state.getCollisionShape(level, pos).isEmpty();
+    }
+
+    private boolean isFallingBlock(BlockState state) {
+        return state.getBlock() instanceof FallingBlock || state.is(BlockTags.SAND);
+    }
+
+    public static boolean isBedrockOrUnbreakable(Level level, BlockPos pos) {
+        if (pos == null || level == null) return true;
+        if (pos.getY() <= -64) return true;
+        BlockState state = level.getBlockState(pos);
+        if (state.is(Blocks.BEDROCK)) return true;
+        if (state.getDestroySpeed(level, pos) < 0.0F) return true;
+        return false;
+    }
+
+    private void rotateTunnelDirectionSafe(Level level, BlockPos feet) {
+        Direction left = tunnelDir.getCounterClockWise();
+        Direction right = tunnelDir.getClockWise();
+        Direction back = tunnelDir.getOpposite();
+
+        boolean rightSafe = isTunnelDirectionClear(level, feet, right);
+        boolean leftSafe = isTunnelDirectionClear(level, feet, left);
+        boolean rightVirgin = rightSafe && isSolidMineableWall(level, feet, right);
+        boolean leftVirgin = leftSafe && isSolidMineableWall(level, feet, left);
+
+        // 1. Zdecydowany priorytet dla nowej litej skały zamiast powrotu starym tunelem
+        long rightKey = feet.relative(right).asLong();
+        long leftKey = feet.relative(left).asLong();
+
+        if (rightVirgin && !minedCorridorFeet.contains(rightKey)) {
+            minedCorridorFeet.add(rightKey);
+            tunnelDir = right;
+            return;
+        }
+        if (leftVirgin && !minedCorridorFeet.contains(leftKey)) {
+            minedCorridorFeet.add(leftKey);
+            tunnelDir = left;
+            return;
+        }
+        if (rightVirgin) {
+            tunnelDir = right;
+            return;
+        }
+        if (leftVirgin) {
+            tunnelDir = left;
+            return;
+        }
+
+        // 2. Druga kolejność: jakiekolwiek bezpieczne przejścia boczne
+        if (rightSafe) {
+            tunnelDir = right;
+        } else if (leftSafe) {
+            tunnelDir = left;
+        } else {
+            // BEZWZGLĘDNY ZAKAZ zawracania o 180° i kopania tunelu wstecz!
+            // Jeśli oba boki są zablokowane, zachowaj primaryMiningDir.
+            tunnelDir = this.primaryMiningDir;
+        }
+    }
+
+    /**
+     * Zabezpieczenie przed bieganiem po starych/wykopanych tunelach:
+     * W normalnym kopaniu dziewiczej skały blok 2 kroki w przód ZAWSZE jest litą skałą.
+     * Jeśli 2 kolejne kroki w profilu 1x2 to pusta przestrzeń -> bot patrzy w stary korytarz lub jaskinię!
+     */
+    private boolean isLookingDownExistingTunnel(Level level, BlockPos feet, Direction dir) {
+        BlockPos oneStepFeet = feet.relative(dir);
+        BlockPos oneStepHead = oneStepFeet.above();
+        BlockPos twoStepsFeet = oneStepFeet.relative(dir);
+        BlockPos twoStepsHead = twoStepsFeet.above();
+
+        return isPassable(level, oneStepFeet) && isPassable(level, oneStepHead)
+                && isPassable(level, twoStepsFeet) && isPassable(level, twoStepsHead);
+    }
+
+    /**
+     * Wybiera kierunek w litą skałę (lewo/prawo), eliminując puste przestrzenie i zapętlenia.
+     */
+    private Direction selectUntouchedBranchDirection(Level level, BlockPos feet, Direction forward) {
+        Direction left = forward.getCounterClockWise();
+        Direction right = forward.getClockWise();
+
+        boolean leftMineable = isSolidMineableWall(level, feet, left);
+        boolean rightMineable = isSolidMineableWall(level, feet, right);
+
+        long leftKey = feet.relative(left).asLong();
+        long rightKey = feet.relative(right).asLong();
+
+        // 1. Wybierz stronę, w którą jeszcze nigdy nie wchodziliśmy
+        if (leftMineable && !minedCorridorFeet.contains(leftKey)) {
+            minedCorridorFeet.add(leftKey);
+            return left;
+        }
+        if (rightMineable && !minedCorridorFeet.contains(rightKey)) {
+            minedCorridorFeet.add(rightKey);
+            return right;
+        }
+
+        // 2. Jeśli obie były w historii, ale nadal są litą skałą do wykopania
+        if (leftMineable) return left;
+        if (rightMineable) return right;
+
+        return null;
+    }
+
+    private boolean isSolidMineableWall(Level level, BlockPos feet, Direction dir) {
+        BlockPos wallFeet = feet.relative(dir);
+        BlockPos wallHead = wallFeet.above();
+
+        if (isBedrockOrUnbreakable(level, wallFeet) || isBedrockOrUnbreakable(level, wallHead)) {
+            return false;
+        }
+        if (isHazardNear(level, wallFeet) || isHazardNear(level, wallHead)) {
+            return false;
+        }
+
+        // Ściana musi być litą skałą (nie powietrzem!)
+        return !isPassable(level, wallFeet) && !isPassable(level, wallHead);
+    }
+
+    private boolean isTunnelDirectionClear(Level level, BlockPos feet, Direction dir) {
+        BlockPos targetFeet = feet.relative(dir);
+        BlockPos targetHead = targetFeet.above();
+        BlockPos floorPos = targetFeet.below();
+
+        if (isBedrockOrUnbreakable(level, targetFeet) || isBedrockOrUnbreakable(level, targetHead)) {
+            return false;
+        }
+        if (isHazardNear(level, targetFeet) || isHazardNear(level, targetHead)) {
+            return false;
+        }
+        return isSolidSupport(level, floorPos);
+    }
+
+    private boolean tryBridgeFloor(LocalPlayer player, Level level, BlockPos floorPos, BlockPos defaultSupport) {
+        if (!level.getBlockState(floorPos).canBeReplaced()) {
+            return false;
+        }
+
+        if (!selectThrowawayBlock(player)) {
+            return false;
+        }
+
+        double reach = getEffectiveReach();
+        Vec3 eyePos = player.getEyePosition(1.0F);
+
+        // 1. Znajdź blok oparcia: domyślnie defaultSupport (np. feet.below()), a jeśli brak to ściany boczne lub spód
+        BlockPos supportPos = null;
+        Direction placeFace = null;
+
+        if (defaultSupport != null && isSolidSupport(level, defaultSupport)) {
+            supportPos = defaultSupport;
+            for (Direction d : Direction.values()) {
+                if (defaultSupport.relative(d).equals(floorPos)) {
+                    placeFace = d;
+                    break;
+                }
+            }
+        }
+
+        if (supportPos == null || placeFace == null) {
+            for (Direction dir : Direction.values()) {
+                if (dir == Direction.UP) continue;
+                BlockPos neighbor = floorPos.relative(dir);
+                if (level.getBlockState(neighbor).isSolid() && !level.getBlockState(neighbor).canBeReplaced()) {
+                    supportPos = neighbor;
+                    placeFace = dir.getOpposite();
+                    break;
+                }
+            }
+        }
+
+        if (supportPos == null || placeFace == null) {
+            return false;
+        }
+
+        // 2. Punkt celowania na ściance placeFace bloku supportPos (y+0.85 na ściankach poziomych ułatwia trafienie z góry)
+        Vec3 hitVec = new Vec3(
+                supportPos.getX() + 0.5D + placeFace.getStepX() * 0.5D,
+                supportPos.getY() + (placeFace.getAxis().isHorizontal() ? 0.85D : 0.5D + placeFace.getStepY() * 0.5D),
+                supportPos.getZ() + 0.5D + placeFace.getStepZ() * 0.5D
+        );
+
+        if (eyePos.distanceToSqr(hitVec) > reach * reach) {
+            return false;
+        }
+
+        // 3. Obliczenie rotacji z Grim GCD
+        Rotation rawRot = calcRotationFromVec3d(eyePos, hitVec, player.getYRot());
+        Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), rawRot.getYaw(), rawRot.getPitch());
+        baritone.getLookBehavior().updateTarget(gcdRot, true);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
+
+        // 4. Raycast weryfikacyjny pod GrimAC
+        Vec3 lookVec = Vec3.directionFromRotation(gcdRot.getPitch(), gcdRot.getYaw());
+        Vec3 rayEnd = eyePos.add(lookVec.scale(reach));
+        BlockHitResult raycast = level.clip(new ClipContext(
+                eyePos,
+                rayEnd,
+                ClipContext.Block.OUTLINE,
+                ClipContext.Fluid.NONE,
+                player
+        ));
+
+        boolean validHit = raycast.getType() == HitResult.Type.BLOCK
+                && raycast.getBlockPos().equals(supportPos)
+                && raycast.getDirection() == placeFace;
+
+        BlockPos feet = player.blockPosition();
+        Direction forward = primaryMiningDir;
+        Vec3 edgeCenter = Vec3.atBottomCenterOf(feet).add(forward.getStepX() * 0.38D, 0.0D, forward.getStepZ() * 0.38D);
+        double distToEdge = player.position().distanceTo(edgeCenter);
+
+        if (!validHit && distToEdge > 0.08D) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+            return true;
+        }
+
+        // 5. Postawienie bloku
+        if (validHit || distToEdge <= 0.12D) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_RIGHT, true);
+            BlockHitResult finalHit = validHit ? raycast : new BlockHitResult(hitVec, placeFace, supportPos, false);
+            ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), InteractionHand.MAIN_HAND, finalHit);
+            player.swing(InteractionHand.MAIN_HAND);
+            this.sealCooldownTicks = 2;
+        }
+
+        return true;
+    }
+
+    private void moveSafelyTowards(LocalPlayer player, Vec3 targetCenter) {
+        Level level = player.level();
+        BlockPos feet = player.blockPosition();
+
+        // 1. Obsługa nawigacji w wodzie (pływanie, wynurzanie, kompensacja prądu)
+        if (player.isInWater() || !level.getFluidState(feet).isEmpty()) {
+            handleWaterNavigation(player, level, targetCenter);
+            return;
+        }
+
+        // 2. Normalny ruch lądowy
+        Rotation moveRot = calcRotationFromVec3d(player.getEyePosition(1.0F), targetCenter.add(0, player.getEyeHeight(), 0), player.getYRot());
+        Rotation gcdMoveRot = applyGrimGcd(player.getYRot(), player.getXRot(), moveRot.getYaw(), 0.0F);
+        baritone.getLookBehavior().updateTarget(gcdMoveRot, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+
+        // 3. Early Ascend Assist (skok przed kontaktem ze schodkiem/krawędzią +1Y)
+        Direction moveDir = tunnelDir != null ? tunnelDir : primaryMiningDir;
+        if (shouldEarlyJump(player, level, targetCenter, moveDir)) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+        }
+
+        // 4. Corner Feeler (mikro-strafe centrujący AABB w 1x2 korytarzu)
+        applyCornerFeeler(player, targetCenter, moveDir);
+
+        // 5. Watchdog utknięcia
+        updateMovementStuckWatchdog(player, level, moveDir);
+    }
+
+    private void handleWaterNavigation(LocalPlayer player, Level level, Vec3 targetCenter) {
+        BlockPos feet = player.blockPosition();
+        FluidState fluid = level.getFluidState(feet);
+        Vec3 flow = fluid.getFlow(level, feet);
+
+        // Kompensacja prądu wody
+        Vec3 toTarget = targetCenter.subtract(player.position()).normalize();
+        Vec3 compensated = toTarget.subtract(flow.scale(0.65D)).normalize();
+        float compensatedYaw = (float) (Math.toDegrees(Math.atan2(compensated.z, compensated.x)) - 90.0);
+
+        Rotation gcdWaterRot = applyGrimGcd(player.getYRot(), player.getXRot(), compensatedYaw, 0.0F);
+        baritone.getLookBehavior().updateTarget(gcdWaterRot, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+
+        // Aktywne utrzymywanie pływalności i wychodzenie na ląd
+        double fluidHeight = player.getFluidHeight(FluidTags.WATER);
+        boolean needAscend = targetCenter.y > player.getY() + 0.2D
+                || player.horizontalCollision
+                || player.isUnderWater()
+                || fluidHeight > 0.35D;
+
+        if (needAscend) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+        }
+    }
+
+    private boolean shouldEarlyJump(LocalPlayer player, Level level, Vec3 targetCenter, Direction dir) {
+        if (!player.onGround()) return false;
+
+        Vec3 lookAhead = player.position().add(dir.getStepX() * 0.45D, 0.0D, dir.getStepZ() * 0.45D);
+        BlockPos aheadPos = BlockPos.containing(lookAhead.x, player.getY(), lookAhead.z);
+
+        boolean stepSolid = !level.getBlockState(aheadPos).getCollisionShape(level, aheadPos).isEmpty();
+        boolean headRoomFree = isPassable(level, aheadPos.above())
+                && isPassable(level, aheadPos.above(2))
+                && isPassable(level, player.blockPosition().above(2));
+
+        return (targetCenter.y > player.getY() + 0.3D || stepSolid || player.horizontalCollision) && headRoomFree;
+    }
+
+    private void applyCornerFeeler(LocalPlayer player, Vec3 targetCenter, Direction tunnelDir) {
+        Vec3 pos = player.position();
+        double lateralError = switch (tunnelDir) {
+            case NORTH -> pos.x - targetCenter.x;
+            case SOUTH -> targetCenter.x - pos.x;
+            case EAST  -> pos.z - targetCenter.z;
+            case WEST  -> targetCenter.z - pos.z;
+            default -> 0.0D;
+        };
+
+        double threshold = player.horizontalCollision ? 0.05D : 0.15D;
+        if (lateralError > threshold) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, true);
+        } else if (lateralError < -threshold) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, true);
+        }
+    }
+
+    private void updateMovementStuckWatchdog(LocalPlayer player, Level level, Direction dir) {
+        if (player.position().distanceToSqr(this.lastTrackedMovementPos) < 0.0016D) {
+            this.movementStuckTicks++;
+        } else {
+            this.movementStuckTicks = 0;
+            this.lastTrackedMovementPos = player.position();
+        }
+
+        if (this.movementStuckTicks >= 12) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+            applyCornerFeeler(player, Vec3.atBottomCenterOf(player.blockPosition()), dir);
+
+            if (this.movementStuckTicks >= 24) {
+                BlockPos ceiling = player.blockPosition().above(2);
+                if (!level.getBlockState(ceiling).isAir() && !isBedrockOrUnbreakable(level, ceiling)) {
+                    mineBlockSafely(player, level, ceiling);
+                }
+                this.movementStuckTicks = 0;
+            }
+        }
+    }
+
+    private void moveTowardsWithoutSprint(LocalPlayer player, Vec3 targetCenter) {
+        player.setSprinting(false);
+        moveSafelyTowards(player, targetCenter);
+    }
+
+    private static double horizontalDistanceToCenter(Vec3 playerPos, BlockPos blockPos) {
+        double dx = (blockPos.getX() + 0.5D) - playerPos.x;
+        double dz = (blockPos.getZ() + 0.5D) - playerPos.z;
+        return Math.sqrt(dx * dx + dz * dz);
+    }
+
+    // =========================================================================
+    // OCHRONA KILOFÓW (AUTO-TOOL)
+    // =========================================================================
+
+    private boolean isPickaxe(ItemStack stack) {
+        if (stack.isEmpty()) return false;
+        return stack.is(ItemTags.PICKAXES) || stack.isCorrectToolForDrops(Blocks.STONE.defaultBlockState());
+    }
+
+    private boolean isToolUsable(ItemStack stack) {
+        return isPickaxe(stack) && (!stack.isDamageableItem() || (stack.getMaxDamage() - stack.getDamageValue()) > MIN_TOOL_DURABILITY);
+    }
+
+    /**
+     * Sprawdza czy gracz ma jakikolwiek sprawny kilof (drewniany/kamienny/żelazny/diamentowy/netheritowy).
+     * Jeśli kilof jest w głównym ekwipunku (sloty 9..35), przenosi go na hotbar.
+     */
+    private boolean ensureUsablePickaxe(LocalPlayer player) {
+        for (int i = 0; i < 9; i++) {
+            if (isToolUsable(player.getInventory().getItem(i))) {
+                return true;
+            }
+        }
+        for (int i = 9; i < 36; i++) {
+            if (isToolUsable(player.getInventory().getItem(i))) {
+                Minecraft mc = Minecraft.getInstance();
+                if (mc.gameMode != null) {
+                    int targetHotbarSlot = 0;
+                    mc.gameMode.handleInventoryMouseClick(
+                            player.inventoryMenu.containerId,
+                            i,
+                            targetHotbarSlot,
+                            ClickType.SWAP,
+                            player
+                    );
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void equipBestTool(LocalPlayer player, BlockState state) {
+        int bestSlot = -1;
+        float bestScore = -1.0F;
+
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (stack.isEmpty()) continue;
+            if (stack.isDamageableItem() && (stack.getMaxDamage() - stack.getDamageValue()) <= MIN_TOOL_DURABILITY) {
+                continue;
+            }
+
+            float speed = stack.getDestroySpeed(state);
+            boolean drops = stack.isCorrectToolForDrops(state);
+            float score = (drops ? 1000.0F : (isPickaxe(stack) ? 100.0F : 0.0F)) + speed;
+            if (score > bestScore) {
+                bestScore = score;
+                bestSlot = i;
+            }
+        }
+
+        if (bestSlot != -1 && player.getInventory().selected != bestSlot) {
+            player.getInventory().selected = bestSlot;
+            ctx.playerController().syncHeldItem();
+        }
+    }
+
+    private void updateStuckWatchdog(LocalPlayer player) {
+        BlockPos current = player.blockPosition();
+        if (current.equals(lastPlayerPos)) {
+            stuckTicks++;
+            if (stuckTicks > 120 && state == State.TUNNELING) {
+                Level level = ctx.world();
+                BlockPos ceiling = current.above(2);
+                if (level != null && !level.getBlockState(ceiling).isAir() && !isBedrockOrUnbreakable(level, ceiling)) {
+                    mineBlockSafely(player, level, ceiling);
+                } else if (level != null) {
+                    initiateLateralDetour(player, level, current);
+                }
+                stuckTicks = 0;
+            }
+        } else {
+            lastPlayerPos = current;
+            stuckTicks = 0;
+        }
+    }
+
+    /**
+     * Cel podejścia do rudy gwarantujący dystans oczu <= 2.65m (zawsze w zasięgu reach <= 3.5m).
+     * Wyklucza pozycje, z których raycast zawiódł (zapobiega deadlockowi 0.0 bps).
+     */
+    private static final class GoalStrictOreApproach implements Goal, IGoalRenderPos {
+        private final int ox, oy, oz;
+        private final Set<BlockPos> excludedFeet;
+        private static final double MAX_EYE_DIST_SQ = GOAL_APPROACH_EYE_REACH * GOAL_APPROACH_EYE_REACH;
+
+        public GoalStrictOreApproach(BlockPos orePos, Set<BlockPos> excludedFeet) {
+            this.ox = orePos.getX();
+            this.oy = orePos.getY();
+            this.oz = orePos.getZ();
+            this.excludedFeet = Set.copyOf(excludedFeet);
+        }
+
+        @Override
+        public boolean isInGoal(int x, int y, int z) {
+            if (excludedFeet.contains(new BlockPos(x, y, z))) {
+                return false;
+            }
+            // Dystans z oczu gracza (y + 1.62) do środka rudy (ox + 0.5, oy + 0.5, oz + 0.5) <= 2.65m
+            double dx = (x + 0.5D) - (ox + 0.5D);
+            double dy = (y + 1.62D) - (oy + 0.5D);
+            double dz = (z + 0.5D) - (oz + 0.5D);
+            return (dx * dx + dy * dy + dz * dz) <= MAX_EYE_DIST_SQ;
+        }
+
+        @Override
+        public double heuristic(int x, int y, int z) {
+            int dx = x - ox;
+            int dy = (y + 1) - oy;
+            int dz = z - oz;
+            return GoalBlock.calculate(dx, dy, dz);
+        }
+
+        @Override
+        public BlockPos getGoalPos() {
+            return new BlockPos(ox, oy, oz);
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof GoalStrictOreApproach that)) return false;
+            return ox == that.ox && oy == that.oy && oz == that.oz && Objects.equals(excludedFeet, that.excludedFeet);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(ox, oy, oz, excludedFeet);
+        }
+
+        @Override
+        public String toString() {
+            return String.format("GoalStrictOreApproach{ore=(%d,%d,%d), excludedCount=%d}", ox, oy, oz, excludedFeet.size());
+        }
     }
 
     @Override
     public double priority() {
-        return DEFAULT_PRIORITY + 2.0D;
+        return 3.0D;
+    }
+
+    @Override
+    public void onLostControl() {
+        this.active = false;
+        this.activeOreTarget = null;
+        this.currentBreakingBlock = null;
+        this.tunnelAnchorPos = null;
+        this.veinQueue.clear();
+        this.blacklistedOres.clear();
+        this.invalidStandingPositions.clear();
+        this.oreStagnationTicks = 0;
+        this.oreAttemptTicks = 0;
+        this.returnStuckTicks = 0;
+        this.hazardSourcePos = null;
+        this.sealCooldownTicks = 0;
+        this.sealFailedAttempts = 0;
+        this.minedCorridorFeet.clear();
+        this.state = State.IDLE;
+        baritone.getInputOverrideHandler().clearAllKeys();
     }
 
     @Override
     public String displayName0() {
-        return String.format("BYPASS [%s] (%d mined)", getState().name(), oresMined);
+        return "BypassProcess [" + state.name() + " | Y=" + targetY + "]";
     }
 
-    public BlockPos getCurrentBreakingBlock() {
-        return breakingBlock;
-    }
-
-    public BlockPos getCurrentTargetBlock() {
-        return currentTargetBlock;
-    }
-
-    /**
-     * Schodki w górę do poziomu Y=-55: bezpośrednie kopanie schodków do góry bez Baritone pathfinding.
-     */
-    private PathingCommand handleAscendingStaircase() {
-        return handleStaircase(true);
-    }
-
-    public static boolean isUnbreakable(Level world, BlockPos pos) {
-        if (world == null || pos == null) return false;
-        BlockState state = world.getBlockState(pos);
-        return state.getDestroySpeed(world, pos) < 0 || state.is(Blocks.BEDROCK);
-    }
-
-    private int findBuildingBlockInHotbar() {
-        if (ctx.player() == null) return -1;
-        for (int i = 0; i < 9; i++) {
-            ItemStack stack = ctx.player().getInventory().getItem(i);
-            if (!stack.isEmpty() && stack.getItem() instanceof BlockItem bi) {
-                Block b = bi.getBlock();
-                if (b == Blocks.COBBLESTONE || b == Blocks.COBBLED_DEEPSLATE || b == Blocks.DIRT ||
-                    b == Blocks.TUFF || b == Blocks.STONE || b == Blocks.DEEPSLATE || b == Blocks.NETHERRACK) {
-                    return i;
-                }
-            }
-        }
-        return -1;
-    }
-
-    private boolean placeStepIfAir(BlockPos stepPos) {
-        releaseActions();
-        if (hasSupport(stepPos)) return true;
-        if (!ctx.world().getBlockState(stepPos).canBeReplaced()
-                || !LiquidDetector.isSafeToMine(ctx.world(), stepPos)) return false;
-        if (!stepPos.equals(placementTarget)) {
-            placementTarget = stepPos.immutable();
-            placementRetryTicks = 0;
-            RotationEngine.reset();
-        }
-        if (placementRetryTicks > 0) {
-            placementRetryTicks--;
-            return false;
-        }
-        int oldSlot = ctx.player().getInventory().selected;
-        int slot = findBuildingBlockInHotbar();
-        if (slot < 0) {
-            // Reuse Baritone's inventory swapping rather than giving up when
-            // the building blocks are in the backpack instead of the hotbar.
-            boolean available = baritone.getInventoryBehavior().throwaway(true, BypassProcess::isBuildingBlock);
-            if (!available) {
-                logDirect("§c[Bypass] Brak bloków na stopień. Dodaj bruk/deepslate do hotbara; zatrzymuję się przed dziurą.");
-                stop();
-                return false;
-            }
-        } else {
-            ctx.player().getInventory().selected = slot;
-        }
-        if (oldSlot != ctx.player().getInventory().selected) {
-            ctx.playerController().syncHeldItem();
-            RotationEngine.reset();
-            return false;
-        }
-        InteractionHand hand = isBuildingBlock(ctx.player().getMainHandItem()) ? InteractionHand.MAIN_HAND : InteractionHand.OFF_HAND;
-        if (!isBuildingBlock(ctx.player().getItemInHand(hand))) return false; // wait for inventory swap
-        double reach = Math.min(config.reachLimit, ctx.playerController().getBlockReachDistance());
-        for (Direction direction : List.of(Direction.DOWN, Direction.NORTH, Direction.SOUTH,
-                Direction.EAST, Direction.WEST, Direction.UP)) {
-            BlockPos against = stepPos.relative(direction);
-            if (!MovementHelper.canPlaceAgainst(ctx, against) || !LiquidDetector.check(ctx.world(), against)) continue;
-            Direction face = direction.getOpposite();
-            Vec3 faceCenter = Vec3.atCenterOf(against).add(face.getStepX() * 0.5D, face.getStepY() * 0.5D, face.getStepZ() * 0.5D);
-            Rotation target = RotationEngine.lookAt(ctx.player().getEyePosition(), faceCenter);
-            HitResult possible = RayTraceUtils.rayTraceTowards(ctx.player(), target, reach);
-            if (!(possible instanceof BlockHitResult possibleBlock) || possible.getType() != HitResult.Type.BLOCK
-                    || !possibleBlock.getBlockPos().equals(against)
-                    || !possibleBlock.getBlockPos().relative(possibleBlock.getDirection()).equals(stepPos)) continue;
-            RotationEngine.apply(ctx.player(), target, baritone.settings(), true);
-            if (!RotationEngine.isSettled(config.preRotationTicks)) return false;
-            HitResult actual = RayTraceUtils.rayTraceTowards(ctx.player(), ctx.playerRotations(), reach);
-            if (actual instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK
-                    && hit.getBlockPos().equals(against) && hit.getBlockPos().relative(hit.getDirection()).equals(stepPos)) {
-                ctx.playerController().processRightClickBlock(ctx.player(), ctx.world(), hand, hit);
-                ctx.player().swing(hand);
-                placementRetryTicks = 4;
-            }
-            // A sent click is not a placed block. The next tick verifies the world.
-            return false;
-        }
-        return false;
-    }
-
-    private static boolean isBuildingBlock(ItemStack stack) {
-        if (stack.isEmpty() || !(stack.getItem() instanceof BlockItem item)) return false;
-        Block b = item.getBlock();
-        return b == Blocks.COBBLESTONE || b == Blocks.COBBLED_DEEPSLATE || b == Blocks.DIRT
-                || b == Blocks.TUFF || b == Blocks.STONE || b == Blocks.DEEPSLATE || b == Blocks.NETHERRACK;
-    }
-
-    private boolean hasSupport(BlockPos pos) {
-        return LiquidDetector.check(ctx.world(), pos) && MovementHelper.canWalkOn(ctx, pos);
-    }
-
-    static State travelState(int currentY, int targetY) {
-        return currentY > targetY ? State.DESCENDING_STAIRCASE
-                : currentY < targetY ? State.ASCENDING_STAIRCASE : State.TUNNELING;
-    }
-
-    private PathingCommand pause() {
-        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-    }
-
-    private PathingCommand navigateTo(Goal goal) {
-        if (!navigationActive) {
-            releaseActions();
-            breakingBlock = null;
-            breakTracker.reset();
-            RotationEngine.cancel();
-            navigationActive = true;
-        }
-        // Keep ownership in this process; starting CustomGoalProcess here would
-        // compete with the bypass state machine for control of the same player.
-        return new PathingCommand(goal, PathingCommandType.REVALIDATE_GOAL_AND_PATH);
-    }
-
-    private boolean stopNavigation() {
-        if (navigationActive) {
-            if (!baritone.getPathingBehavior().cancelSegmentIfSafe()) return false;
-            navigationActive = false;
-        }
-        return true;
-    }
-
-    private void releaseMovement() {
-        for (Input input : List.of(Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT,
-                Input.MOVE_RIGHT, Input.JUMP, Input.SNEAK, Input.SPRINT)) {
-            baritone.getInputOverrideHandler().setInputForceState(input, false);
-        }
-    }
-
-    private void releaseActions() {
-        baritone.getInputOverrideHandler().clearAllKeys();
-        baritone.getInputOverrideHandler().getBlockBreakHelper().stopBreakingBlock();
-    }
-
-    private void walkTowards(Vec3 destination, boolean ascend) {
-        if (!stopNavigation()) return;
-        Vec3 delta = destination.subtract(ctx.player().position());
-        double distance = delta.x * delta.x + delta.z * delta.z;
-        if (distance < 0.04D) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-            return;
-        }
-        float yaw = (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));
-        Rotation targetRot = new Rotation(yaw, ascend ? -10f : 0f);
-        RotationEngine.apply(ctx.player(), targetRot, baritone.settings());
-        float yawDiff = Math.abs(Mth.wrapDegrees(ctx.playerRotations().getYaw() - yaw));
-        if (yawDiff <= 25.0f || RotationEngine.isSettled(config.preRotationTicks)) {
-            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
-        }
-        // Don't jump too early from the far side of the previous step.
-        baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, ascend && distance <= 1.44D);
-    }
-
-    private void resetSession() {
-        stateMachine.transition(State.IDLE);
-        stopNavigation();
-        releaseActions();
-        breakTracker.reset();
-        breakingBlock = null;
-        currentTargetBlock = null;
-        pendingDropPos = null;
-        dropTracker = null;
-        staircaseStep = null;
-        tunnelStepTarget = null;
-        placementTarget = null;
-        savedReconnectTarget = null;
-        inSideBranch = false;
-        branchStartPos = null;
-        segmentLength = 0;
-        sideBranchLength = 0;
-        oresMined = 0;
-        diamondCount = 0;
-        goldCount = 0;
-        miningCooldownTicks = 0;
-        varianceCooldownTicks = 0;
-        orphanDropScanTicks = 0;
-        deferredDrops.clear();
-        activeVeinQueue.clear();
-        veinDiscovered.clear();
-        OreScanner.clearBlacklist();
-        RotationEngine.reset();
-    }
-
-    // Gettery do statusu i HUD
+    // Gettery dla HUD, Lua i zewnętrznych modułów
+    public BlockPos getCurrentBreakingBlock() { return currentBreakingBlock; }
+    public BlockPos getCurrentTargetBlock() { return activeOreTarget != null ? activeOreTarget : currentBreakingBlock; }
     public BypassConfig getConfig() { return config; }
-    public List<String> getTargetOres() { return Collections.unmodifiableList(targetOres); }
-    public Set<String> getTargetDropItems() { return Collections.unmodifiableSet(targetDropItems); }
+    public State getState() { return state; }
+    public String getPhase() { return state.name().toLowerCase(Locale.ROOT); }
+    public Direction getTunnelDirection() { return tunnelDir; }
     public int getOresMined() { return oresMined; }
     public int getDiamondCount() { return diamondCount; }
     public int getGoldCount() { return goldCount; }
     public long getStartTime() { return startTime; }
-    public String getPhase() { return getState().name().toLowerCase(Locale.ROOT); }
-    public State getState() { return stateMachine.state(); }
-    public Direction getTunnelDirection() { return tunnelDirection; }
+    public List<String> getTargetOres() { return Collections.unmodifiableList(targetOresList); }
+    public Set<String> getTargetDropItems() { return Collections.unmodifiableSet(targetDropItems); }
     public BypassLuaEngine getLuaEngine() { return luaEngine; }
-    public IPlayerContext getPlayerContext() { return ctx; }
 }
