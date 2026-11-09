@@ -245,7 +245,8 @@ public class BypassCommand extends Command {
             Path savePath = baritoneImpl.getDirectory().resolve(config.saveFile);
             ReconnectData data = ReconnectData.load(savePath);
             if (data == null) {
-                logDirect("§c[Bypass] Nie znaleziono pliku reconnect_data.json lub jest on pusty.");
+                logDirect("§e[Bypass] Brak zapisanego stanu w pliku. Wznawiam standardowe kopanie diamentów...");
+                process.startMining(List.of("diamond"));
                 return;
             }
             process.resumeFromData(data);
@@ -287,7 +288,7 @@ public class BypassCommand extends Command {
         } else if (filteredOres.contains("diamond")) {
             if (ctx.player() != null) {
                 int curY = ctx.player().blockPosition().getY();
-                if (curY >= -59 && curY <= -53) {
+                if (curY >= -60 && curY <= -50) {
                     activeConfig.yLevel = curY;
                     logDirect(String.format("§b[Bypass] Wykryto kopanie diamentów: automatyczny poziom Y=%d (obecny korytarz).", curY));
                 } else {
