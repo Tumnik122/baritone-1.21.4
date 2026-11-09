@@ -232,6 +232,9 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
                     mc.player, mc.level, pos, state, mc.player.onGround()
             );
 
+            // W GrimAC, aby nie było 5-tickowego opóźnienia między kolejnymi krokami kopania tego samego bloku:
+            this.destroyDelay = 0;
+
             // Dopóki nie minęła wymagana liczba ticków, trzymaj destroyProgress < 0.60f
             // ALE: jeśli destroyProgress >= 1.0f (BaritonePlayerController legalnie zezwolił na wykopanie), NIE cofaj postępu!
             if (this.argon$miningTicks < reqTicks && this.getDestroyProgress() < 1.0f) {
@@ -242,9 +245,11 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             } else {
                 // KRYTYCZNA NAPRAWA (Argon 4 & dj):
                 // Wymagana liczba ticków GrimAC minęła! Ustawiamy 1.0f, aby waniliowe continueDestroyBlock
-                // natychmiast zniszczyło blok i legalnie wysłało pakiet STOP_DESTROY_BLOCK bez zawieszania!
+                // w tym samym ticku natychmiast zniszczyło blok i legalnie wysłało pakiet STOP_DESTROY_BLOCK!
+                // UWAGA: NIE czyścimy tutaj argon$targetBlockPosLong = Long.MIN_VALUE, ponieważ spowodowałoby to
+                // natychmiastowy reset destroyProgress do 0.0f w następnej klatce przed wywołaniem destroyBlock!
+                // Czyszczenie następuje poprawnie w onBlockDestroyed.
                 this.setDestroyProgress(1.0f);
-                this.argon$targetBlockPosLong = Long.MIN_VALUE;
                 this.argon$miningTicks = 0;
             }
         } else if (baritone.utils.FastBreakHelper.canInstaBreak(pos)) {

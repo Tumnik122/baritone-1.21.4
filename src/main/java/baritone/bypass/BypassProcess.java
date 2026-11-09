@@ -88,6 +88,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private static final int ORE_SCAN_RADIUS = 3; // Ściśle 3 bloki w każdą stronę wokół gracza (kostka 7x7x7)
     public static final int DEFAULT_TARGET_Y = -58;
     public static final int MIN_SAFE_BEDROCK_Y = -58;
+    public static final float TWO_BLOCK_SEAM_PITCH = 26.8f; // Stały kąt w spoinę (Y=1.0) 2 bloków naraz bez skoków kamery
     private static final int MIN_TOOL_DURABILITY = 5;
 
     public enum State {
@@ -357,9 +358,18 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             }
             this.primaryMiningDir = this.tunnelDir;
             int currentY = player.blockPosition().getY();
-            this.state = currentY > targetY ? State.DESCENDING_STAIRCASE : State.TUNNELING;
+            // INTELIGENTNA DETEKCJA POZIOMU (Argon 4 & dj):
+            // Jeśli gracz stoi już w głębokim korytarzu diamentowym (-59..-53),
+            // kop od razu w poziomie (State.TUNNELING) na obecnym Y bez prób kopania schodów w suficie/podłodze!
+            if (targetY <= -53 && currentY >= -59 && currentY <= -53) {
+                this.targetY = currentY;
+                this.config.yLevel = currentY;
+                this.state = State.TUNNELING;
+            } else {
+                this.state = currentY > targetY ? State.DESCENDING_STAIRCASE : State.TUNNELING;
+            }
             logDirect(String.format("§a[Bypass] Uruchomiono! Poziom docelowy: Y=%d, autostrada: %s, rudy: %s",
-                    targetY, primaryMiningDir, targetOresList));
+                    this.targetY, primaryMiningDir, targetOresList));
         } else {
             this.primaryMiningDir = Direction.NORTH;
             this.tunnelDir = Direction.NORTH;
@@ -380,9 +390,9 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         LocalPlayer player = ctx.player();
         if (player != null) {
             int currentY = player.blockPosition().getY();
-            // Jeśli gracz stoi już w korytarzu na głębokim poziomie (np. -54..-58),
-            // kontynuuj tunelowanie natychmiast na obecnym Y bez próby wspinaczki!
-            if (currentY >= MIN_SAFE_BEDROCK_Y && currentY <= configuredY) {
+            // Jeśli gracz stoi już w korytarzu na głębokim poziomie (np. -59..-53),
+            // kontynuuj tunelowanie natychmiast na obecnym Y bez próby wspinaczki/schodzenia!
+            if (currentY >= -59 && currentY <= -53 && configuredY <= -53) {
                 configuredY = currentY;
             }
         }
@@ -401,6 +411,11 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.active = false;
         baritone.getPathingBehavior().cancelEverything();
         baritone.getLookBehavior().updateTarget(null, false);
+        baritone.getInputOverrideHandler().clearAllKeys();
+        if (ctx.playerController() != null) {
+            ctx.playerController().resetBlockRemoving();
+        }
+        resetMiningState();
         onLostControl();
         logDirect("§e[Bypass] Zatrzymano proces.");
     }
@@ -605,7 +620,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         resetMiningState();
         tunnelAnchorPos = stepDown;
         moveSafelyTowards(player, Vec3.atBottomCenterOf(stepDown));
-        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
     /**
@@ -689,7 +704,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         boolean canAscendJump = player.onGround() && isPassable(level, feet.above(2))
                 && nextStepFeet.getY() > player.getY() + 0.35D;
         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, canAscendJump);
-        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
     private boolean isAscendingDirectionClear(Level level, BlockPos feet, Direction dir) {
@@ -866,7 +881,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         tunnelAnchorPos = frontFeet;
         this.consecutiveStraightBlocks++;
         moveSafelyTowards(player, Vec3.atBottomCenterOf(frontFeet));
-        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
     private boolean isFastPickaxeActive(LocalPlayer player) {
@@ -985,7 +1000,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         // 2. Kąt patrzenia: stały kąt 2-blokowy 26.8° (Argon 4 & dj)
         // Przecina szew Y=1.00 w odległości ~1.2m przed graczem. Promień w biegu najpierw niszczy górny blok,
         // a po jego rozbiciu od razu płynnie penetruje dolny bez żadnych skoków kamery góra/dół!
-        float pitch = 26.8f;
+        float pitch = TWO_BLOCK_SEAM_PITCH;
         float targetYaw = primaryMiningDir.toYRot();
 
         // Delikatne centrowanie w osi korytarza bez używania klawiszy A/D (eliminacja
@@ -1007,11 +1022,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
         ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(activeBreakTarget));
 
-        // 4. Nieprzerwany sprint w przód bez zatrzymywania
+        // 4. Płynny ruch w przód (GrimAC-safe: sprint przez InputOverrideHandler, zero bezpośredniego setSprinting)
         baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
-        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
-        player.setSprinting(true);
+        boolean allowSprint = isFastPickaxeActive(player)
+                && player.getFoodData().getFoodLevel() > 6
+                && !player.horizontalCollision;
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, allowSprint);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
@@ -1264,7 +1281,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         moveSafelyTowards(player, Vec3.atBottomCenterOf(stepUpFeet));
         boolean canStepJump = player.onGround() && isPassable(level, feet.above(2));
         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, canStepJump);
-        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
     private PathingCommand initiateLateralDetour(LocalPlayer player, Level level, BlockPos feet) {
@@ -3118,45 +3135,47 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return;
         }
 
-        // 2. Normalny ruch lądowy
-        Rotation moveRot = calcRotationFromVec3d(player.getEyePosition(1.0F),
-                targetCenter.add(0, player.getEyeHeight(), 0), player.getYRot());
-        Rotation gcdMoveRot = applyGrimGcd(player.getYRot(), player.getXRot(), moveRot.getYaw(), 0.0F);
+        // 2. Normalny ruch lądowy (Argon 4 & dj: lookAhead 2.5 bloku, stały pitch 26.8°, zero flag Simulation)
+        Direction moveDir = tunnelDir != null ? tunnelDir : primaryMiningDir;
+        Vec3 dirVec = new Vec3(moveDir.getStepX(), moveDir.getStepY(), moveDir.getStepZ());
+        Vec3 lookAheadTarget = targetCenter.add(dirVec.scale(2.5D));
+
+        double dx = lookAheadTarget.x - player.getX();
+        double dz = lookAheadTarget.z - player.getZ();
+        float rawTargetYaw = (float) (Mth.atan2(dz, dx) * (180.0D / Math.PI)) - 90.0F;
+
+        Rotation gcdMoveRot = applyGrimGcd(player.getYRot(), player.getXRot(), rawTargetYaw, TWO_BLOCK_SEAM_PITCH);
+        baritone.getLookBehavior().updateTarget(gcdMoveRot, true);
 
         float yawDelta = Math.abs(Mth.wrapDegrees(player.getYRot() - gcdMoveRot.getYaw()));
 
         // ROZDZIELENIE OBROTU OD RUCHU POD GRIMAC:
-        // Jeśli kamera wymaga korekty > 2.5 stopnia, w tym ticku TYLKO obracamy kamerę
-        // (MOVE_FORWARD = false).
-        if (yawDelta > 2.5f) {
-            baritone.getLookBehavior().updateTarget(gcdMoveRot, true);
+        // Zatrzymaj ruch TYLKO przy faktycznym zakręcie 90° na węźle (> 30°), NIGDY przy mikrokorektach w tunelu (2.5° powodowało deadlock)!
+        if (yawDelta > 30.0f) {
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
             return;
         }
 
-        // Gdy kamera jest już ustawiona w cel (yawDelta <= 2.5f), wciskamy MOVE_FORWARD
-        baritone.getLookBehavior().updateTarget(gcdMoveRot, false);
+        // Gdy kamera patrzy w korytarz, wciskamy MOVE_FORWARD
         baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
-        boolean allowSprint = isFastPickaxeActive(player) && player.getFoodData().getFoodLevel() > 6;
-        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, allowSprint);
-        if (allowSprint) {
-            player.setSprinting(true);
-        }
 
         // KATEGORYCZNY ZAKAZ STRAFE (A/D) W TUNELU:
-        // W korytarzu 1x2 jakiekolwiek trzymanie A/D powoduje tarcie o ścianę i flagi
-        // GrimAC Simulation!
-        // Centrowanie w osi korytarza odbywa się wyłącznie wektorem patrzenia
-        // (gcdMoveRot wprost na targetCenter).
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
 
+        // GRIMAC FIX: Sprint dozwolony tylko gdy faktycznie idziemy prosto, nie kolidujemy poziomo ze ścianą i food > 6
+        boolean allowSprint = isFastPickaxeActive(player)
+                && player.getFoodData().getFoodLevel() > 6
+                && !player.horizontalCollision
+                && yawDelta < 15.0f;
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, allowSprint);
+
         // 3. Early Ascend Assist (skok dozwolony WYŁĄCZNIE przy fizycznym schodku w
         // górę +1Y i wolnym suficie)
-        Direction moveDir = tunnelDir != null ? tunnelDir : primaryMiningDir;
         boolean hasHeadroom = isPassable(level, feet.above(2));
         if (hasHeadroom && shouldEarlyJump(player, level, targetCenter, moveDir)) {
             baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, true);
@@ -3510,7 +3529,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     @Override
     public double priority() {
-        return 6.0D;
+        return 6.1D;
     }
 
     @Override
