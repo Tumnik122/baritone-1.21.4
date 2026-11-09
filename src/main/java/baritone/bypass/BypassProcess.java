@@ -21,6 +21,7 @@ import baritone.bypass.scripting.BypassLuaEngine;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.ContinuousBreakController;
 import baritone.utils.FastBreakHelper;
+import baritone.utils.GrimBreakValidator;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
@@ -850,7 +851,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return true;
         }
         ItemStack held = player.getMainHandItem();
-        if (isPickaxe(held)) {
+        if (isPickaxe(held) && isToolUsable(held)) {
             int eff = FastBreakHelper.getEfficiencyLevel(held);
             boolean hasHaste = player.hasEffect(MobEffects.DIG_SPEED);
             if (eff >= 8 || (eff >= 5 && hasHaste) || eff >= 10) {
@@ -859,7 +860,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         }
         for (int i = 0; i < 9; i++) {
             ItemStack stack = player.getInventory().getItem(i);
-            if (isPickaxe(stack)) {
+            if (isPickaxe(stack) && isToolUsable(stack)) {
                 int eff = FastBreakHelper.getEfficiencyLevel(stack);
                 if (eff >= 8 || (eff >= 5 && player.hasEffect(MobEffects.DIG_SPEED)) || eff >= 10) {
                     return true;
@@ -896,14 +897,49 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             BlockPos frontFeet) {
         boolean headBlocked = !isPassable(level, frontHead);
         boolean feetBlocked = !isPassable(level, frontFeet);
+        double distH = horizontalDistanceToCenter(player.position(), frontFeet);
 
-        // 1. Zapewnij kilof w ręku
-        BlockState stateToMine = headBlocked ? level.getBlockState(frontHead) : level.getBlockState(frontFeet);
-        equipBestTool(player, stateToMine);
+        // Ustal FAKTYCZNIE niszczony blok (nigdy nie pobieraj stanu z powietrza w frontHead!)
+        BlockPos activeBreakTarget = (feetBlocked && distH < 1.05D) ? frontFeet : (headBlocked ? frontHead : frontFeet);
+        BlockPos toolTargetPos = activeBreakTarget;
+
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.hitResult instanceof BlockHitResult bhr && bhr.getType() == HitResult.Type.BLOCK) {
+            BlockPos hitPos = bhr.getBlockPos();
+            if (!level.getBlockState(hitPos).isAir() && (hitPos.equals(frontFeet) || hitPos.equals(frontHead))) {
+                toolTargetPos = hitPos;
+                activeBreakTarget = hitPos;
+            }
+        }
+
+        BlockState stateToMine = level.getBlockState(toolTargetPos);
+        if (stateToMine.isAir()) {
+            stateToMine = headBlocked ? level.getBlockState(frontHead) : level.getBlockState(frontFeet);
+        }
+
+        // 1. Zapewnij właściwe narzędzie w ręku
+        ToolEquipStatus toolStatus = equipBestTool(player, stateToMine);
+        if (toolStatus == ToolEquipStatus.FAILED) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            stopMovementInputs();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        if (toolStatus == ToolEquipStatus.SWITCHED) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // Twarda straż (Hard Guard): zakaz trzymania CLICK_LEFT ze złym lub zużytym narzędziem
+        ItemStack held = player.getMainHandItem();
+        if ((stateToMine.requiresCorrectToolForDrops() && !held.isCorrectToolForDrops(stateToMine)) || !isToolUsable(held)) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            stopMovementInputs();
+            resetMiningState();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
 
         // 2. Kąt patrzenia: celujemy w linię podziału między dolną kratką 1 (stopy) a
         // górną 2 (głowa)
-        double distH = horizontalDistanceToCenter(player.position(), frontFeet);
         float pitch;
         if (feetBlocked && distH < 1.05D) {
             // Jeśli dolny blok jest tuż przed stopami (<1.05m), obniżamy celownik, aby nie
@@ -934,7 +970,6 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         // 3. Ciągły atak lewym przyciskiem myszy z powiadomieniem
         // ContinuousBreakController
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
-        BlockPos activeBreakTarget = (feetBlocked && distH < 1.05D) ? frontFeet : (headBlocked ? frontHead : frontFeet);
         ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(activeBreakTarget));
 
         // 4. Nieprzerwany sprint w przód bez zatrzymywania
@@ -1617,8 +1652,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                     curSnap = RotationUtils.reachable(ctx, this.currentBreakingBlock, effectiveReach);
                 }
                 if (curSnap.isPresent()) {
-                    boolean switched = equipBestTool(player, curState);
-                    if (switched) {
+                    ToolEquipStatus status = equipBestTool(player, curState);
+                    if (status == ToolEquipStatus.FAILED) {
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                    }
+                    if (status == ToolEquipStatus.SWITCHED) {
                         if (ctx.playerController() != null) {
                             ctx.playerController().resetBlockRemoving();
                         }
@@ -1626,8 +1665,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                         ContinuousBreakController.reset();
                         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                     }
-                    if (curState.requiresCorrectToolForDrops()
-                            && !player.getMainHandItem().isCorrectToolForDrops(curState)) {
+                    if ((curState.requiresCorrectToolForDrops()
+                            && !player.getMainHandItem().isCorrectToolForDrops(curState)) || !isToolUsable(player.getMainHandItem())) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
                         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                     }
@@ -1651,8 +1690,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             MiningAction action = directAction.get();
             this.currentBreakingBlock = action.targetPos();
             BlockState actionState = level.getBlockState(action.targetPos());
-            boolean switched = equipBestTool(player, actionState);
-            if (switched) {
+            ToolEquipStatus status = equipBestTool(player, actionState);
+            if (status == ToolEquipStatus.FAILED) {
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            if (status == ToolEquipStatus.SWITCHED) {
                 if (ctx.playerController() != null) {
                     ctx.playerController().resetBlockRemoving();
                 }
@@ -1660,8 +1703,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                 ContinuousBreakController.reset();
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
-            if (actionState.requiresCorrectToolForDrops()
-                    && !player.getMainHandItem().isCorrectToolForDrops(actionState)) {
+            if ((actionState.requiresCorrectToolForDrops()
+                    && !player.getMainHandItem().isCorrectToolForDrops(actionState)) || !isToolUsable(player.getMainHandItem())) {
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
@@ -1840,8 +1883,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         // 2. Dobór narzędzia i obsługa 1-tickowego bufora synchronizacji slota z
         // serwerem
-        boolean switchedSlot = equipBestTool(player, targetState);
-        if (switchedSlot) {
+        ToolEquipStatus toolStatus = equipBestTool(player, targetState);
+        if (toolStatus == ToolEquipStatus.FAILED) {
+            stopMovementInputs();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        if (toolStatus == ToolEquipStatus.SWITCHED) {
             if (ctx.playerController() != null) {
                 ctx.playerController().resetBlockRemoving();
             }
@@ -1859,10 +1906,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // 3. Kategoryczna ochrona GrimAC: blokada kopania skał (np. Deepslate) łopatą
-        // lub ręką!
+        // 3. Kategoryczna ochrona GrimAC: blokada kopania skał (np. Deepslate) łopatą,
+        // motyką lub zużytym narzędziem!
         ItemStack heldStack = player.getMainHandItem();
-        if (targetState.requiresCorrectToolForDrops() && !heldStack.isCorrectToolForDrops(targetState)) {
+        if ((targetState.requiresCorrectToolForDrops() && !heldStack.isCorrectToolForDrops(targetState)) || !isToolUsable(heldStack)) {
             baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
             if (ctx.playerController() != null) {
                 ctx.playerController().resetBlockRemoving();
@@ -1871,12 +1918,11 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return handleLavaOrObstacleEncounter(player, level, player.blockPosition());
         }
 
-        // 4. Dynamiczny limit ticków z dużym marginesem bezpieczeństwa (nie przerywa
-        // kopania przy lagu)
-        float destroyProgress = targetState.getDestroyProgress(player, level, target);
-        int maxExpectedTicks = destroyProgress > 0.0f
-                ? Math.max(100, (int) Math.ceil(1.0f / destroyProgress) + 60)
-                : 200;
+        // 4. Dynamiczny limit ticków zsynchronizowany z walidatorem GrimAC + bufor 20 ticków na lag
+        int reqTicks = GrimBreakValidator.getRequiredTicks(
+                player, level, target, targetState, player.onGround()
+        );
+        int maxExpectedTicks = Math.max(60, reqTicks + 20);
 
         if (this.activeMiningTicks > maxExpectedTicks) {
             if (ctx.playerController() != null) {
@@ -3157,6 +3203,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     // OCHRONA KILOFÓW (AUTO-TOOL)
     // =========================================================================
 
+    private enum ToolEquipStatus {
+        NO_CHANGE,
+        SWITCHED,
+        FAILED
+    }
+
     private boolean isPickaxe(ItemStack stack) {
         if (stack.isEmpty())
             return false;
@@ -3164,8 +3216,27 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     private boolean isToolUsable(ItemStack stack) {
-        return isPickaxe(stack)
-                && (!stack.isDamageableItem() || (stack.getMaxDamage() - stack.getDamageValue()) > MIN_TOOL_DURABILITY);
+        if (stack.isEmpty()) {
+            return false;
+        }
+        if (!stack.isDamageableItem()) {
+            return true;
+        }
+        return (stack.getMaxDamage() - stack.getDamageValue()) > MIN_TOOL_DURABILITY;
+    }
+
+    private boolean hasOnlyCriticallyDamagedTools(LocalPlayer player, BlockState state) {
+        boolean foundDamaged = false;
+        for (int i = 0; i < 36; i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && stack.isCorrectToolForDrops(state)) {
+                if (isToolUsable(stack)) {
+                    return false; // Jest przynajmniej jedno sprawne narzędzie
+                }
+                foundDamaged = true;
+            }
+        }
+        return foundDamaged;
     }
 
     /**
@@ -3175,12 +3246,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
      */
     private boolean ensureUsablePickaxe(LocalPlayer player) {
         for (int i = 0; i < 9; i++) {
-            if (isToolUsable(player.getInventory().getItem(i))) {
+            if (isPickaxe(player.getInventory().getItem(i)) && isToolUsable(player.getInventory().getItem(i))) {
                 return true;
             }
         }
         for (int i = 9; i < 36; i++) {
-            if (isToolUsable(player.getInventory().getItem(i))) {
+            if (isPickaxe(player.getInventory().getItem(i)) && isToolUsable(player.getInventory().getItem(i))) {
                 Minecraft mc = Minecraft.getInstance();
                 if (mc.gameMode != null) {
                     int targetHotbarSlot = 0;
@@ -3197,9 +3268,9 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         return false;
     }
 
-    private boolean equipBestTool(LocalPlayer player, BlockState state) {
+    private ToolEquipStatus equipBestTool(LocalPlayer player, BlockState state) {
         if (state.isAir() || !state.getFluidState().isEmpty()) {
-            return false;
+            return ToolEquipStatus.NO_CHANGE;
         }
 
         boolean requiresTool = state.requiresCorrectToolForDrops();
@@ -3223,15 +3294,33 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             }
         }
 
-        if (bestHotbarSlot != -1 && bestHotbarSlot != currentSlot) {
-            player.getInventory().selected = bestHotbarSlot;
-            if (ctx.playerController() != null) {
-                ctx.playerController().syncHeldItem();
+        if (bestHotbarSlot != -1) {
+            if (bestHotbarSlot != currentSlot) {
+                player.getInventory().selected = bestHotbarSlot;
+                if (ctx.playerController() != null) {
+                    ctx.playerController().syncHeldItem();
+                }
+                this.activeMiningTicks = 0;
+                return ToolEquipStatus.SWITCHED;
             }
-            return true;
+            return ToolEquipStatus.NO_CHANGE;
         }
 
-        return false;
+        // Krytyczna ochrona sprzętu (Argon 4 & dj):
+        // Zakaz kopania bloków wymagających narzędzia pustą ręką, łopatą lub zniszczonym kilofem!
+        if (requiresTool) {
+            baritone.getInputOverrideHandler().clearAllKeys();
+            resetMiningState();
+            if (hasOnlyCriticallyDamagedTools(player, state)) {
+                logDirect("§c[Bypass] Wszystkie kilofy/narzędzia mają krytyczną wytrzymałość (<= " + MIN_TOOL_DURABILITY + ")! Zatrzymano dla ochrony sprzętu.");
+            } else {
+                logDirect("§c[Bypass] Brak odpowiedniego narzędzia do wykopania: " + state.getBlock().getName().getString() + "! Zatrzymano.");
+            }
+            onLostControl();
+            return ToolEquipStatus.FAILED;
+        }
+
+        return ToolEquipStatus.NO_CHANGE;
     }
 
     private int findBestToolInRange(LocalPlayer player, BlockState state, int startSlot, int endSlot,
@@ -3241,12 +3330,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         for (int i = startSlot; i < endSlot; i++) {
             ItemStack stack = player.getInventory().getItem(i);
-            if (stack.isEmpty()) {
-                continue;
-            }
-
-            // Ochrona przed zniszczeniem narzędzia o niskiej wytrzymałości
-            if (stack.isDamageableItem() && (stack.getMaxDamage() - stack.getDamageValue()) <= MIN_TOOL_DURABILITY) {
+            if (!isToolUsable(stack)) {
                 continue;
             }
 

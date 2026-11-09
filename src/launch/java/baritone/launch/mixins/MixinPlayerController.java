@@ -71,6 +71,8 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
     private boolean argon$diggingActiveOnServer = false;
     @org.spongepowered.asm.mixin.Unique
     private net.minecraft.world.level.block.state.BlockState argon$targetBlockState = null;
+    @org.spongepowered.asm.mixin.Unique
+    private net.minecraft.world.item.ItemStack argon$lastMiningTool = net.minecraft.world.item.ItemStack.EMPTY;
 
     /**
      * Zeroes destroyDelay at the HEAD of startDestroyBlock so that the
@@ -172,12 +174,17 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
 
         if (isGrim) {
             long currentPosLong = pos.asLong();
+            net.minecraft.world.item.ItemStack currentTool = mc.player.getMainHandItem();
+            boolean toolChanged = !net.minecraft.world.item.ItemStack.isSameItemSameComponents(this.argon$lastMiningTool, currentTool);
+
             if (this.argon$targetBlockPosLong != currentPosLong
-                    || (this.argon$targetBlockState != null && !this.argon$targetBlockState.equals(state))) {
+                    || (this.argon$targetBlockState != null && !this.argon$targetBlockState.equals(state))
+                    || toolChanged) {
                 this.argon$targetBlockPosLong = currentPosLong;
                 this.argon$targetBlockState = state;
                 this.argon$miningTicks = 0;
                 this.argon$diggingActiveOnServer = true;
+                this.argon$lastMiningTool = currentTool.copy();
                 this.setDestroyProgress(0.0f);
             }
 
@@ -201,6 +208,13 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
                 if (this.getDestroyProgress() + vanillaDelta >= 0.60f) {
                     this.setDestroyProgress(Math.max(0.0f, 0.50f - vanillaDelta));
                 }
+            } else {
+                // KRYTYCZNA NAPRAWA (Argon 4 & dj):
+                // Wymagana liczba ticków GrimAC minęła! Ustawiamy 1.0f, aby waniliowe continueDestroyBlock
+                // natychmiast zniszczyło blok i legalnie wysłało pakiet STOP_DESTROY_BLOCK bez zawieszania!
+                this.setDestroyProgress(1.0f);
+                this.argon$targetBlockPosLong = Long.MIN_VALUE;
+                this.argon$miningTicks = 0;
             }
         } else if (baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
             this.destroyDelay = 0;
