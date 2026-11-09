@@ -285,11 +285,11 @@ public class BypassCommand extends Command {
             activeConfig.yLevel = Math.max(-58, Math.min(320, customY));
             logDirect(String.format("§a[Bypass] Ustawiono docelowy poziom wydobywczy: Y=%d", activeConfig.yLevel));
         } else if (filteredOres.contains("diamond")) {
-            activeConfig.yLevel = -54;
-            logDirect("§b[Bypass] Wykryto kopanie diamentów: automatyczny poziom Y=-54.");
+            activeConfig.yLevel = -58;
+            logDirect("§b[Bypass] Wykryto kopanie diamentów: automatyczny poziom Y=-58.");
         } else if (activeConfig.yLevel < -58) {
-            activeConfig.yLevel = -54;
-            logDirect("§b[Bypass] Korekta poziomu na bezpieczny Y=-54.");
+            activeConfig.yLevel = -58;
+            logDirect("§b[Bypass] Korekta poziomu na bezpieczny Y=-58.");
         }
 
         if (filteredOres.isEmpty()) {

@@ -94,7 +94,7 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             net.minecraft.core.Direction direction,
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
         net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
-        if (mc.level != null) {
+        if (mc.level != null && mc.player != null) {
             net.minecraft.world.level.block.state.BlockState state = mc.level.getBlockState(pos);
             if (state.isAir() || !state.getFluidState().isEmpty() || state.getDestroySpeed(mc.level, pos) < 0.0f) {
                 this.setIsHittingBlock(false);
@@ -102,6 +102,22 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
                 this.argon$targetBlockPosLong = Long.MIN_VALUE;
                 cir.setReturnValue(false);
                 return;
+            }
+
+            // KRYTYCZNA OCHRONA (Argon 4 & dj):
+            // Nigdy nie wysyłaj pakietu kopania bloku wymagającego właściwego narzędzia (np. Deepslate/kamień)
+            // złym narzędziem (np. łopatą w klatce przejściowej po gravelu)!
+            if (state.requiresCorrectToolForDrops()) {
+                net.minecraft.world.item.ItemStack held = mc.player.getMainHandItem();
+                if (!held.isCorrectToolForDrops(state)) {
+                    this.setDestroyProgress(0.0f);
+                    this.argon$miningTicks = 0;
+                    this.setIsHittingBlock(false);
+                    this.argon$diggingActiveOnServer = false;
+                    this.argon$targetBlockPosLong = Long.MIN_VALUE;
+                    cir.setReturnValue(false);
+                    return;
+                }
             }
         }
 
@@ -166,6 +182,21 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             this.argon$targetBlockPosLong = Long.MIN_VALUE;
             cir.setReturnValue(true);
             return;
+        }
+
+        // KRYTYCZNA OCHRONA (Argon 4 & dj):
+        // Jeśli blok wymaga narzędzia, a gracz trzyma łopatę/rękę (np. po gravelu), natychmiast odetnij kopanie
+        if (state.requiresCorrectToolForDrops()) {
+            net.minecraft.world.item.ItemStack held = mc.player.getMainHandItem();
+            if (!held.isCorrectToolForDrops(state)) {
+                this.setDestroyProgress(0.0f);
+                this.argon$miningTicks = 0;
+                this.setIsHittingBlock(false);
+                this.argon$diggingActiveOnServer = false;
+                this.argon$targetBlockPosLong = Long.MIN_VALUE;
+                cir.setReturnValue(false);
+                return;
+            }
         }
 
         boolean isGrim = baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value

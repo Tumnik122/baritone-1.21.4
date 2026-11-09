@@ -32,6 +32,7 @@ import net.minecraft.tags.ItemTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.item.FallingBlockEntity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.world.item.BlockItem;
@@ -85,8 +86,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private static final double GOAL_APPROACH_EYE_REACH = 2.65D;
     private static final double WALL_STOP_DISTANCE = 1.15D;
     private static final int ORE_SCAN_RADIUS = 3; // Ściśle 3 bloki w każdą stronę wokół gracza (kostka 7x7x7)
-    public static final int DEFAULT_TARGET_Y = -54;
-    public static final int MIN_SAFE_BEDROCK_Y = -54;
+    public static final int DEFAULT_TARGET_Y = -58;
+    public static final int MIN_SAFE_BEDROCK_Y = -58;
     private static final int MIN_TOOL_DURABILITY = 5;
 
     public enum State {
@@ -342,6 +343,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             this.targetOresList.add("diamond");
         }
 
+        // KRYTYCZNY RESET STANU RUCHU (Argon 4 & dj):
+        // Czyści wszelkie zablokowane klawisze, stary cel kamery i ścieżki po poprzednim #stop
+        baritone.getPathingBehavior().cancelEverything();
+        baritone.getInputOverrideHandler().clearAllKeys();
+        baritone.getLookBehavior().updateTarget(null, false);
+
         LocalPlayer player = ctx.player();
         if (player != null) {
             this.tunnelDir = player.getDirection();
@@ -370,6 +377,15 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     public void startMining(List<String> ores) {
         int configuredY = (config != null) ? config.yLevel : DEFAULT_TARGET_Y;
+        LocalPlayer player = ctx.player();
+        if (player != null) {
+            int currentY = player.blockPosition().getY();
+            // Jeśli gracz stoi już w korytarzu na głębokim poziomie (np. -54..-58),
+            // kontynuuj tunelowanie natychmiast na obecnym Y bez próby wspinaczki!
+            if (currentY >= MIN_SAFE_BEDROCK_Y && currentY <= configuredY) {
+                configuredY = currentY;
+            }
+        }
         int y = Math.max(configuredY, MIN_SAFE_BEDROCK_Y);
         start(y, ores);
     }
@@ -383,6 +399,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     public void stop() {
         this.active = false;
+        baritone.getPathingBehavior().cancelEverything();
+        baritone.getLookBehavior().updateTarget(null, false);
         onLostControl();
         logDirect("§e[Bypass] Zatrzymano proces.");
     }
@@ -808,9 +826,14 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return handleLavaOrObstacleEncounter(player, level, feet);
         }
 
-        // 6. Obsługa Gravelu / Sandu: jeśli nad frontHead wisi blok opadający, nie
-        // wbiegaj pod niego
-        boolean fallingAbove = isFallingBlock(level.getBlockState(ceilingAboveFront));
+        // 6. Obsługa Gravelu / Sandu: jeśli w kolumnie spada żwir lub wisi nad powietrzem,
+        // wstrzymaj sprint i niszczenie aż osiądzie (eliminuje uderzanie łopatą w skałę za żwirem)
+        if (isFallingBlockSettling(level, frontFeet, frontHead)) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            stopMovementInputs();
+            resetMiningState();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
 
         // 7. Kopanie korytarza 1x2 przed nami
         boolean headBlocked = !isPassable(level, frontHead);
@@ -877,6 +900,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         BlockState headState = level.getBlockState(frontHead);
         BlockState feetState = level.getBlockState(frontFeet);
 
+        // Gravel / Sand wymaga normalnego, stabilnego kopania łopatą w mineBlockSafely (zakaz sprint-miningu na żwirze)
+        if (headState.getBlock() instanceof FallingBlock || feetState.getBlock() instanceof FallingBlock
+                || isFallingBlock(headState) || isFallingBlock(feetState)) {
+            return false;
+        }
+
         // Wyklucz bedrock, obsydian i bloki o twardości > 4.5
         float headHardness = headState.getDestroySpeed(level, frontHead);
         float feetHardness = feetState.getDestroySpeed(level, frontFeet);
@@ -895,6 +924,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     private PathingCommand executeSprintMining(LocalPlayer player, Level level, BlockPos frontHead,
             BlockPos frontFeet) {
+        if (isFallingBlockSettling(level, frontFeet, frontHead)) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            stopMovementInputs();
+            resetMiningState();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
         boolean headBlocked = !isPassable(level, frontHead);
         boolean feetBlocked = !isPassable(level, frontFeet);
         double distH = horizontalDistanceToCenter(player.position(), frontFeet);
@@ -906,7 +942,15 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         Minecraft mc = Minecraft.getInstance();
         if (mc.hitResult instanceof BlockHitResult bhr && bhr.getType() == HitResult.Type.BLOCK) {
             BlockPos hitPos = bhr.getBlockPos();
-            if (!level.getBlockState(hitPos).isAir() && (hitPos.equals(frontFeet) || hitPos.equals(frontHead))) {
+            BlockState hitState = level.getBlockState(hitPos);
+            if (!hitState.isAir()) {
+                boolean frontStillBlocked = !level.getBlockState(frontHead).isAir() || !level.getBlockState(frontFeet).isAir();
+                // Ochrona celownika: jeśli przed nami wisi blok, a promień przelotowo trafił w blok za nim
+                if (frontStillBlocked && !hitPos.equals(frontHead) && !hitPos.equals(frontFeet)) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                    resetMiningState();
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
                 toolTargetPos = hitPos;
                 activeBreakTarget = hitPos;
             }
@@ -938,19 +982,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // 2. Kąt patrzenia: celujemy w linię podziału między dolną kratką 1 (stopy) a
-        // górną 2 (głowa)
-        float pitch;
-        if (feetBlocked && distH < 1.05D) {
-            // Jeśli dolny blok jest tuż przed stopami (<1.05m), obniżamy celownik, aby nie
-            // zawadzić o stopień
-            pitch = 25.5f;
-        } else {
-            // Kąt sprintu: ~12.5° w dół (dokładnie na wysokość Y+1.0 między kratką 1 a 2 z
-            // wyprzedzeniem 2-3 bloków)
-            pitch = 12.5f;
-        }
-
+        // 2. Kąt patrzenia: stały kąt 2-blokowy 26.8° (Argon 4 & dj)
+        // Przecina szew Y=1.00 w odległości ~1.2m przed graczem. Promień w biegu najpierw niszczy górny blok,
+        // a po jego rozbiciu od razu płynnie penetruje dolny bez żadnych skoków kamery góra/dół!
+        float pitch = 26.8f;
         float targetYaw = primaryMiningDir.toYRot();
 
         // Delikatne centrowanie w osi korytarza bez używania klawiszy A/D (eliminacja
@@ -2776,6 +2811,25 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     private boolean isFallingBlock(BlockState state) {
         return state.getBlock() instanceof FallingBlock || state.is(BlockTags.SAND);
+    }
+
+    private boolean isFallingBlockSettling(Level level, BlockPos frontFeet, BlockPos frontHead) {
+        AABB columnBox = new AABB(
+                frontFeet.getX(), frontFeet.getY(), frontFeet.getZ(),
+                frontFeet.getX() + 1.0, frontHead.getY() + 3.0, frontFeet.getZ() + 1.0
+        );
+        if (!level.getEntitiesOfClass(FallingBlockEntity.class, columnBox).isEmpty()) {
+            return true;
+        }
+
+        if (level.getBlockState(frontHead).isAir() && isFallingBlock(level.getBlockState(frontHead.above()))) {
+            return true;
+        }
+        if (level.getBlockState(frontFeet).isAir() && isFallingBlock(level.getBlockState(frontHead))) {
+            return true;
+        }
+
+        return false;
     }
 
     public static boolean isBedrockOrUnbreakable(Level level, BlockPos pos) {
