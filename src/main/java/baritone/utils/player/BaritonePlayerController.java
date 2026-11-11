@@ -107,6 +107,21 @@ public final class BaritonePlayerController implements IPlayerController {
         return serverDiggingPos == null || mc.level == null || mc.level.getBlockState(serverDiggingPos).isAir();
     }
 
+    public static volatile boolean isResettingBlock = false;
+
+    public static boolean isBaritoneDigging() {
+        Minecraft client = Minecraft.getInstance();
+        if (client == null || client.player == null) return false;
+        try {
+            for (IBaritone b : BaritoneAPI.getProvider().getAllBaritones()) {
+                if (b.getInputOverrideHandler() != null && b.getInputOverrideHandler().isInputForcedDown(baritone.api.utils.input.Input.CLICK_LEFT)) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return false;
+    }
+
     private BlockPos serverDiggingPos = null;
     private BlockState lastServerDiggingState = null;
     private float serverDestroyProgress = 0.0f;
@@ -128,7 +143,7 @@ public final class BaritonePlayerController implements IPlayerController {
             return clickBlock(pos, side);
         }
 
-        // BLOKADA 1: Maksymalnie jedno naliczenie postępu na jeden tick klienta (mc.player.tickCount)
+        // BLOKADA 1: Maksymalnie jedno wywołanie continue na jeden tick klienta (mc.player.tickCount)
         if (mc.player.tickCount == lastClientTick) {
             return true;
         }
@@ -136,40 +151,18 @@ public final class BaritonePlayerController implements IPlayerController {
 
         syncHeldItem();
 
-        float grimDelta = baritone.utils.GrimBreakValidator.getGrimDestroyProgress(mc.player, mc.level, pos, state, lastTickOnGround);
-        int requiredTicks = baritone.utils.GrimBreakValidator.getRequiredTicks(mc.player, mc.level, pos, state, lastTickOnGround);
-        lastTickOnGround = mc.player.onGround();
+        Direction safeFace = getSafeBreakFace(mc.player, pos, side);
+        boolean result = mc.gameMode.continueDestroyBlock(pos, safeFace);
 
-        currentBlockMiningTicks++;
-        serverDestroyProgress += grimDelta;
-
-        float vanillaDelta = state.getDestroyProgress(mc.player, mc.level, pos);
-        boolean readyToBreak = (serverDestroyProgress >= 1.0f && currentBlockMiningTicks >= requiredTicks);
-
-        if (!readyToBreak) {
-            // BLOKADA 2: Ustaw destroyProgress tak, aby PO dodaniu vanillaDelta wewnątrz continueDestroyBlock
-            // wynik wyniósł maksymalnie 0.60f (poniżej waniliowego 1.0f ORAZ poniżej progów 0.7f z FastBreak).
-            // Dzięki temu continueDestroyBlock wykona animację/dźwięk, ale NIE wyśle STOP_DESTROY_BLOCK i NIE zniszczy bloku!
-            float safePreProgress = Math.max(0.0f, Math.min(serverDestroyProgress, 0.60f) - Math.max(0.0f, vanillaDelta));
-            ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(safePreProgress);
-            mc.gameMode.continueDestroyBlock(pos, side);
-            // Po wywołaniu ponownie przypilnuj bezpiecznej wartości
-            ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(Math.min(serverDestroyProgress, 0.60f));
-            return true;
+        // KRYTYCZNA SYNCHRONIZACJA (Argon 4 & dj):
+        // Jeśli po continueDestroyBlock blok został wykopany lub isDestroying stało się false,
+        // natychmiast czyścimy stan śledzenia, aby nie blokować kolejnego bloku.
+        if (!((IPlayerControllerMP) mc.gameMode).isHittingBlock() || mc.level.getBlockState(pos).isAir()) {
+            serverDiggingPos = null;
+            lastServerDiggingState = null;
+            serverDestroyProgress = 0.0f;
+            currentBlockMiningTicks = 0;
         }
-
-        // Blok osiągnął wymaganą liczbę ticków oraz postęp >= 1.0f na serwerze:
-        // Ustaw 1.0f, aby pojedyncze wywołanie continueDestroyBlock legalnie wysłało STOP_DESTROY_BLOCK
-        ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(1.0f);
-        boolean result = mc.gameMode.continueDestroyBlock(pos, side);
-
-        // Natychmiast wyczyść flagę kopania, aby zapobiec wysłaniu ABORT_DESTROY_BLOCK (WrongBreak: last=null)
-        ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
-        ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(0.0f);
-        serverDiggingPos = null;
-        lastServerDiggingState = null;
-        serverDestroyProgress = 0.0f;
-        currentBlockMiningTicks = 0;
 
         return result;
     }
@@ -178,18 +171,24 @@ public final class BaritonePlayerController implements IPlayerController {
     public void resetBlockRemoving() {
         if (mc.gameMode == null) return;
 
-        // KRYTYCZNE przeciw WrongBreak (action=CANCELLED_DIGGING, last=null):
-        // Jeśli serwer nie ma aktywnego bloku (lub STOP_DESTROY_BLOCK już poszedł),
-        // wyłącz isDestroying PRZED stopDestroyBlock(), aby klient nie wysłał nielegalnego pakietu ABORT_DESTROY_BLOCK.
-        if (serverDiggingPos == null) {
+        isResettingBlock = true;
+        try {
+            // KRYTYCZNE przeciw WrongBreak (action=CANCELLED_DIGGING, last=null):
+            // Jeśli serwer nie ma aktywnego bloku (lub STOP_DESTROY_BLOCK już poszedł),
+            // wyłącz isDestroying PRZED stopDestroyBlock(), aby klient nie wysłał nielegalnego pakietu ABORT_DESTROY_BLOCK.
+            if (serverDiggingPos == null) {
+                ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
+            }
+            mc.gameMode.stopDestroyBlock();
+            serverDiggingPos = null;
+            lastServerDiggingState = null;
+            serverDestroyProgress = 0.0f;
+            currentBlockMiningTicks = 0;
             ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
+            ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(0.0f);
+        } finally {
+            isResettingBlock = false;
         }
-        mc.gameMode.stopDestroyBlock();
-        serverDiggingPos = null;
-        lastServerDiggingState = null;
-        serverDestroyProgress = 0.0f;
-        currentBlockMiningTicks = 0;
-        ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
     }
 
     @Override
@@ -350,7 +349,7 @@ public final class BaritonePlayerController implements IPlayerController {
         }
 
         // Jeśli zmieniamy blok w trakcie kopania poprzedniego, najpierw czysto anuluj poprzedni
-        if (serverDiggingPos != null) {
+        if (serverDiggingPos != null && !loc.equals(serverDiggingPos)) {
             resetBlockRemoving();
         }
 
@@ -367,7 +366,8 @@ public final class BaritonePlayerController implements IPlayerController {
         // Wyzeruj stan przed startDestroyBlock, aby uniknąć przeniesienia postępu
         ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(0.0f);
 
-        boolean breakResult = mc.gameMode.startDestroyBlock(loc, face);
+        Direction safeFace = getSafeBreakFace(mc.player, loc, face);
+        boolean breakResult = mc.gameMode.startDestroyBlock(loc, safeFace);
         if (breakResult) {
             lastBreakTick = mc.player.tickCount;
             markInteracted();
@@ -385,6 +385,21 @@ public final class BaritonePlayerController implements IPlayerController {
     }
 
     /**
+     * Sprawdza czy dana ściana bloku jest fizycznie zasłonięta przez lity, nieprzezroczysty blok sąsiadujący.
+     * Próba wykopania ściany zasłoniętej litym blokiem (np. ściany UP gdy nad nią wisi deepslate)
+     * natychmiast wywołuje flagę GrimAC PositionBreakA / RayTrace lub odrzucenie pakietu przez serwer.
+     */
+    public static boolean isFaceOccluded(net.minecraft.world.level.BlockGetter level, BlockPos pos, Direction face) {
+        if (level == null || pos == null || face == null) return false;
+        BlockPos neighbor = pos.relative(face);
+        BlockState neighborState = level.getBlockState(neighbor);
+        if (neighborState.isAir() || !neighborState.getFluidState().isEmpty()) {
+            return false;
+        }
+        return neighborState.isSolidRender();
+    }
+
+    /**
      * Dobiera w 100% poprawną, bezpieczną ścianę bloku (Direction) do kliknięcia/kopania,
      * tak aby nigdy nie wywołać flagi GrimAC PositionBreakA ("Tried to break a block face from an impossible eye position").
      */
@@ -393,16 +408,18 @@ public final class BaritonePlayerController implements IPlayerController {
             return requestedFace != null ? requestedFace : Direction.UP;
         }
 
-        // 1. Jeśli żądana ściana nie jest niemożliwa wg GrimAC PositionBreakA, używamy jej
-        if (requestedFace != null && !isFaceImpossible(player, pos, requestedFace)) {
+        Level level = player.level();
+
+        // 1. Jeśli żądana ściana nie jest zasłonięta litym blokiem i nie jest niemożliwa wg GrimAC, używamy jej bez zmian!
+        if (requestedFace != null && !isFaceOccluded(level, pos, requestedFace) && !isFaceImpossible(player, pos, requestedFace)) {
             return requestedFace;
         }
 
-        // 2. Sprawdzamy fizyczny celownik gracza w tej klatce
+        // 2. Sprawdzamy fizyczny celownik gracza w tej klatce (bezpośredni raycast)
         HitResult hit = player.pick(4.5D, 1.0F, false);
         if (hit instanceof BlockHitResult bhr && bhr.getBlockPos().equals(pos)) {
             Direction dir = bhr.getDirection();
-            if (!isFaceImpossible(player, pos, dir)) {
+            if (!isFaceOccluded(level, pos, dir) && !isFaceImpossible(player, pos, dir)) {
                 return dir;
             }
         }
@@ -416,7 +433,7 @@ public final class BaritonePlayerController implements IPlayerController {
                     HitResult serverHit = RayTraceUtils.rayTraceTowards(player, serverRot, 4.5D, player.isCrouching());
                     if (serverHit instanceof BlockHitResult sbhr && sbhr.getBlockPos().equals(pos)) {
                         Direction dir = sbhr.getDirection();
-                        if (!isFaceImpossible(player, pos, dir)) {
+                        if (!isFaceOccluded(level, pos, dir) && !isFaceImpossible(player, pos, dir)) {
                             return dir;
                         }
                     }
@@ -424,7 +441,7 @@ public final class BaritonePlayerController implements IPlayerController {
             }
         }
 
-        // 4. Geometryczny dobór ściany: szukamy ściany bloku najbardziej zwróconej ku oczom gracza
+        // 4. Geometryczny dobór ściany: szukamy ODSŁONIĘTEJ ściany bloku najbardziej zwróconej ku oczom gracza
         Vec3 eye = player.getEyePosition();
         Vec3 center = Vec3.atCenterOf(pos);
         double dx = eye.x - center.x;
@@ -435,7 +452,7 @@ public final class BaritonePlayerController implements IPlayerController {
         double maxDot = -Double.MAX_VALUE;
 
         for (Direction d : Direction.values()) {
-            if (!isFaceImpossible(player, pos, d)) {
+            if (!isFaceOccluded(level, pos, d) && !isFaceImpossible(player, pos, d)) {
                 double dot = d.getStepX() * dx + d.getStepY() * dy + d.getStepZ() * dz;
                 if (dot > maxDot) {
                     maxDot = dot;
@@ -448,27 +465,29 @@ public final class BaritonePlayerController implements IPlayerController {
             return bestFace;
         }
 
-        // 5. Fallback: ściana naprzeciwko kierunku patrzenia gracza
-        Direction opposite = player.getDirection().getOpposite();
-        if (!isFaceImpossible(player, pos, opposite)) {
-            return opposite;
+        // 5. Fallback: jakakolwiek niezasłonięta litym blokiem ściana
+        for (Direction d : Direction.values()) {
+            if (!isFaceOccluded(level, pos, d)) {
+                return d;
+            }
         }
 
-        return Direction.NORTH;
+        // Ostateczny fallback: żądana ściana lub UP
+        return requestedFace != null ? requestedFace : Direction.UP;
     }
 
     /**
      * Sprawdza czy ściana jest niemożliwa do trafienia wg reguł GrimAC PositionBreakA.
      * W GrimAC:
-     *   case UP    -> eyePositions.maxY < combined.maxY;
-     *   case DOWN  -> eyePositions.minY > combined.minY;
-     *   case NORTH -> eyePositions.minZ > combined.minZ;
-     *   case SOUTH -> eyePositions.maxZ < combined.maxZ;
-     *   case EAST  -> eyePositions.maxX < combined.maxX;
-     *   case WEST  -> eyePositions.minX > combined.minX;
+     *   Gracz nie może trafić ściany zza pleców bloku (od strony przeciwległej).
      */
     public static boolean isFaceImpossible(Player player, BlockPos pos, Direction face) {
         if (player == null || pos == null || face == null) return false;
+        Level level = player.level();
+        if (isFaceOccluded(level, pos, face)) {
+            return true; // Zasłonięta ściana jest w 100% niemożliwa!
+        }
+
         Vec3 eye = player.getEyePosition();
         double minX = pos.getX();
         double maxX = pos.getX() + 1.0;
@@ -477,9 +496,9 @@ public final class BaritonePlayerController implements IPlayerController {
         double minZ = pos.getZ();
         double maxZ = pos.getZ() + 1.0;
 
-        if (player.level() != null) {
-            BlockState state = player.level().getBlockState(pos);
-            VoxelShape shape = state.getShape(player.level(), pos);
+        if (level != null) {
+            BlockState state = level.getBlockState(pos);
+            VoxelShape shape = state.getShape(level, pos);
             if (!shape.isEmpty()) {
                 minX = pos.getX() + shape.min(Direction.Axis.X);
                 maxX = pos.getX() + shape.max(Direction.Axis.X);
@@ -490,19 +509,22 @@ public final class BaritonePlayerController implements IPlayerController {
             }
         }
 
+        // GrimAC PositionBreakA: sprawdza czy oczy gracza nie znajdują się po przeciwnej
+        // stronie bryły względem wektora normalnego danej ściany (z tolerancją na rozmiar głowy gracza 0.20 bloku).
+        final double EPS = 0.20;
         switch (face) {
             case UP:
-                return eye.y < maxY - 0.001;
+                return eye.y < minY - EPS; // Ścianę UP można widzieć o ile oczy nie są poniżej dna bloku
             case DOWN:
-                return eye.y > minY + 0.001;
+                return eye.y > maxY + EPS; // Ścianę DOWN można widzieć o ile oczy nie są ponad dachem bloku
             case NORTH:
-                return eye.z > minZ + 0.001;
+                return eye.z > maxZ + EPS; // Ściany NORTH nie trafisz stojąc głęboko na południe od bloku
             case SOUTH:
-                return eye.z < maxZ - 0.001;
+                return eye.z < minZ - EPS; // Ściany SOUTH nie trafisz stojąc głęboko na północ od bloku
             case WEST:
-                return eye.x > minX + 0.001;
+                return eye.x > maxX + EPS; // Ściany WEST nie trafisz stojąc głęboko na wschód od bloku
             case EAST:
-                return eye.x < maxX - 0.001;
+                return eye.x < minX - EPS; // Ściany EAST nie trafisz stojąc głęboko na zachód od bloku
             default:
                 return false;
         }

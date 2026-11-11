@@ -7,7 +7,7 @@ import java.util.*;
  */
 public class BypassConfig {
 
-    public int yLevel = -54;
+    public int yLevel = -58;
 
     // Tunnel
     public String pattern = "branch";
@@ -61,7 +61,7 @@ public class BypassConfig {
     public double jitter = 0.1;
     public int breakTimeVarianceMs = 50;
     public double movementVariance = 0.02;
-    public double reachLimit = 4.5;
+    public double reachLimit = 3.8;
     public int preRotationTicks = 2;
     public int postRotationTicks = 2;
 

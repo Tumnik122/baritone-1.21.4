@@ -2,6 +2,8 @@ package baritone.bypass;
 
 import baritone.Baritone;
 import baritone.api.BaritoneAPI;
+import baritone.api.event.events.BlockChangeEvent;
+import baritone.api.event.listener.AbstractGameEventListener;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.pathing.goals.GoalComposite;
@@ -14,6 +16,7 @@ import baritone.api.process.IBaritoneProcess;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.api.utils.BetterBlockPos;
+import baritone.api.utils.Pair;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.RotationUtils;
 import baritone.api.utils.input.Input;
@@ -81,7 +84,7 @@ import java.util.*;
  * (GoalOreMining / GoalGetToBlock) jak w #mine.
  * 6. Automatyczne zbieranie dropu i powrót do tunelowania na Y=-50.
  */
-public final class BypassProcess extends BaritoneProcessHelper implements IBaritoneProcess {
+public final class BypassProcess extends BaritoneProcessHelper implements IBaritoneProcess, AbstractGameEventListener {
 
     public static final double STRICT_REACH = 4.2D;
     public static final double ORE_EYE_REACH = 4.2D;
@@ -211,13 +214,15 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private Direction retreatDir = null;
     private BlockPos retreatStartPos = null;
     private int retreatTicks = 0;
-    private static final int MAX_RETREAT_BLOCKS = 6;
-    private static final int MAX_RETREAT_TICKS = 80;
+    private int targetRetreatBlocks = 9;
+    private static final int MAX_RETREAT_BLOCKS = 11;
+    private static final int MAX_RETREAT_TICKS = 140;
     private int lateralDetourRemaining = 0;
     private Direction lateralOffsetDir = null;
     private Direction blockedForwardDir = null;
     private int turnCommitCooldown = 0;
     private int consecutiveStraightBlocks = 0;
+    private BlockPos lastCountedStraightFeet = null;
     private static final int MIN_PARALLEL_SPACING = 3;
     private final Set<Long> minedCorridorFeet = new HashSet<>();
 
@@ -245,6 +250,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     // Licznik ticków wyhamowania pędu przed obrotem w stanie TURNING
     private int turnBrakeTicks = 0;
 
+    // Watchdog braku postępu kopania: 30 sekund = 600 ticków bez wykopanego bloku (Argon 4 & dj)
+    private int noBlockBrokenTicks = 0;
+    private static final int WATCHDOG_MAX_NO_BLOCK_TICKS = 600;
+
     // Bloki postawione przez bota (plomby lawy / mostki), których nie wolno
     // wykopywać z powrotem
     private final Set<BlockPos> protectedSealBlocks = Collections
@@ -266,6 +275,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     public BypassProcess(Baritone baritone) {
         super(baritone);
         this.luaEngine = new BypassLuaEngine(baritone, this);
+        baritone.getGameEventHandler().registerEventListener(this);
     }
 
     public void start(int customTargetY, List<String> ores) {
@@ -347,11 +357,15 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         }
 
         // KRYTYCZNY RESET STANU RUCHU (Argon 4 & dj):
-        // Czyści wszelkie zablokowane klawisze, stary cel kamery i ścieżki po poprzednim #stop
-        baritone.getPathingBehavior().cancelEverything();
+        // Czyści wszelkie zablokowane klawisze, stary cel kamery i ścieżki po poprzednim #stop.
+        // ZAKAZ cancelEverything() tutaj: cancelEverything() woła onLostControl() na każdym procesie,
+        // co kasowało active=true i natychmiastowo zamrażało bota w IDLE!
+        baritone.getPathingBehavior().cancelSegmentIfSafe();
+        baritone.getPathingBehavior().secretInternalSetGoal(null);
         baritone.getInputOverrideHandler().clearAllKeys();
         baritone.getLookBehavior().updateTarget(null, false);
         resetMiningState();
+        this.noBlockBrokenTicks = 0;
         if (ctx.playerController() != null) {
             ctx.playerController().resetBlockRemoving();
         }
@@ -381,6 +395,9 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             this.tunnelDir = Direction.NORTH;
             this.state = State.DESCENDING_STAIRCASE;
         }
+
+        // AKTYWACJA PROCESU (Argon 4 & dj): ZAWSZE NA SAMYM KOŃCU METODY START!
+        this.active = true;
     }
 
     public void start(int customTargetY) {
@@ -439,10 +456,46 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
+        // 0. Bezpieczeństwo AutoEat i manualnego jedzenia:
+        boolean isEating = player.isUsingItem()
+                || (baritone.getAutoEatProcess() != null && baritone.getAutoEatProcess().isEating());
+        if (isEating) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+            baritone.getInputOverrideHandler().clearAllKeys();
+            resetMiningState();
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
         if (!ensureUsablePickaxe(player)) {
             logDirect("§c[Bypass] Brak jakiegokolwiek sprawnego kilofa w ekwipunku. Zatrzymywanie.");
             onLostControl();
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        // 0.1 Watchdog braku wykopanych bloków przez 30 sekund (600 ticków) -> automatyczny restart (#stop -> #bypass)
+        if (this.state != State.IDLE && this.state != State.DISCONNECTED && player.isAlive()) {
+            this.noBlockBrokenTicks++;
+            if (this.noBlockBrokenTicks >= WATCHDOG_MAX_NO_BLOCK_TICKS) {
+                logDirect("§c[Bypass Watchdog] Brak wykopanych bloków przez 30 sekund! Automatyczny restart (#stop -> #bypass)...");
+                this.noBlockBrokenTicks = 0;
+                int restartY = this.targetY;
+                List<String> restartOres = new ArrayList<>(this.targetOresList);
+                if (restartOres.isEmpty()) {
+                    restartOres.add("diamond");
+                }
+                baritone.getPathingBehavior().cancelSegmentIfSafe();
+                baritone.getPathingBehavior().secretInternalSetGoal(null);
+                baritone.getLookBehavior().updateTarget(null, false);
+                baritone.getInputOverrideHandler().clearAllKeys();
+                if (ctx.playerController() != null) {
+                    ctx.playerController().resetBlockRemoving();
+                }
+                resetMiningState();
+                ContinuousBreakController.reset();
+                this.start(restartY, restartOres);
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
         }
 
         updateStuckWatchdog(player);
@@ -496,14 +549,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                 }
             } else if (state == State.COLLECTING_DROP) {
                 resetDropCollectionState();
-                if (tunnelAnchorPos == null || player.blockPosition().distManhattan(tunnelAnchorPos) <= 2) {
-                    tunnelAnchorPos = null;
-                    int diff = player.blockPosition().getY() - targetY;
-                    state = Math.abs(diff) > 1 ? (diff > 0 ? State.DESCENDING_STAIRCASE : State.ASCENDING_STAIRCASE)
-                            : State.TUNNELING;
-                } else {
-                    state = State.PATHFINDING_RETURN;
-                }
+                tunnelAnchorPos = null;
+                this.tunnelDir = this.primaryMiningDir;
+                int diff = player.blockPosition().getY() - targetY;
+                state = Math.abs(diff) > 1 ? (diff > 0 ? State.DESCENDING_STAIRCASE : State.ASCENDING_STAIRCASE)
+                        : State.TUNNELING;
+                logDirect("§a[Bypass] Zebrano drop diamentów! Natychmiastowy powrót do tunelowania.");
+                return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
             }
         }
 
@@ -783,6 +835,19 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         markTunnelDug(feet);
 
+        // 0. Samoratowanie przed zasypaniem żwirem / piaskiem (Argon 4 & dj):
+        // Jeśli żwir spadł prosto na gracza w biegu (głowa lub stopy są zasypane litym blokiem),
+        // natychmiast zatrzymaj ruch i odkop własną pozycję łopatą/kilofem!
+        BlockPos ownHead = feet.above();
+        if (!isPassable(level, ownHead) && !isBedrockOrUnbreakable(level, ownHead)) {
+            stopMovementInputs();
+            return mineBlockSafely(player, level, ownHead);
+        }
+        if (!isPassable(level, feet) && !isBedrockOrUnbreakable(level, feet)) {
+            stopMovementInputs();
+            return mineBlockSafely(player, level, feet);
+        }
+
         // 1. Obsługa aktywnego objazdu bocznego (lateral detour)
         if (this.lateralDetourRemaining > 0 && this.lateralOffsetDir != null) {
             return tickLateralDetour(player, level, feet);
@@ -798,6 +863,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             this.turnCooldownTicks--;
         }
 
+        // Zliczanie rzeczywiście pokonanych bloków w prostej linii i reset watchdoga
+        if (feet != null && !feet.equals(this.lastCountedStraightFeet)) {
+            this.lastCountedStraightFeet = feet.immutable();
+            this.consecutiveStraightBlocks++;
+            this.noBlockBrokenTicks = 0;
+        }
+
         // 2. Zabezpieczenie przed równoległym korytarzem w odległości < 3 bloków
         // Aktywne TYLKO po wykopaniu co najmniej 6 bloków prosto w nowym kierunku
         // (zapobiega błędnemu wykrywaniu korytarza za plecami zaraz po skręcie o 90
@@ -811,6 +883,32 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         BlockPos frontHead = frontFeet.above();
         BlockPos ceilingAboveFront = frontHead.above();
         BlockPos floorBelowFront = frontFeet.below();
+
+        // 2b. RADAR DŁUGODYSTANSOWY (Argon 4 & dj): Analiza lawy do 30 kratek w przód.
+        // Bot NIE skręca z dalekim wyprzedzeniem (kopie prosto aż do strefy 5 bloków przed lawą),
+        // ale na bieżąco analizuje sektory, aby dokładnie 5 bloków przed lawą wykonać czysty skręt
+        // w najbezpieczniejszą stronę (gdzie lawa jest najdalej)!
+        int forwardLavaDist = findForwardLavaDistance(level, feet, primaryMiningDir, 30);
+        if (forwardLavaDist > 0) {
+            Direction bestTurnDir = chooseSafestBranchAwayFromLava(level, feet, primaryMiningDir, 30);
+            boolean canTurnHere = isSafeBranchDirection(level, feet, bestTurnDir, false);
+
+            if (forwardLavaDist <= 5) {
+                // Punkt skrętu: 5 bloków przed lawą (zgodnie z wytycznymi dj)
+                if (canTurnHere) {
+                    logDirect(String.format("§6[Bypass Radar] Wykryto lawę za %d bloków (strefa skrętu 5 bloków przed lawą)! Płynny skręt w najbezpieczniejszą stronę: %s",
+                            forwardLavaDist, bestTurnDir));
+                    this.hazardColumns2D.add(to2DKey(frontFeet.getX(), frontFeet.getZ()));
+                    return initiateTurnState(bestTurnDir);
+                } else if (forwardLavaDist <= 2) {
+                    // Jeśli jesteśmy zbyt blisko (< 3 bloki) i brak bezpiecznego bocznego wyjścia -> odwrót 7-11 bloków
+                    logDirect(String.format("§c[Bypass Radar] Brak bezpiecznego skrętu na %d bloków przed lawą! Wycofuję się bezpiecznym tunelem...", forwardLavaDist));
+                    return executeRetreatBackward(player, level, feet, primaryMiningDir);
+                }
+            }
+            // Gdy forwardLavaDist > 5: bot kontynuuje normalne kopanie prosto,
+            // zbliżając się do strefy 5 bloków z już zaplanowaną trasą zmiany kierunku!
+        }
 
         // 3a. PRIORYTET LAVA PLUGGING: Zatykanie odsłoniętego wycieku lawy budulcem bez
         // obracania
@@ -1152,6 +1250,122 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     /**
+     * Skanuje oś marszu w przód na odległość do maxRange bloków (domyślnie 30) (Argon 4 & dj).
+     * Zwraca dystans (w blokach) do najbliższej wykrytej lawy, lub -1 jeśli droga jest czysta.
+     */
+    private int findForwardLavaDistance(Level level, BlockPos feet, Direction forward, int maxRange) {
+        if (level == null || feet == null || forward == null) {
+            return -1;
+        }
+        Direction leftDir = forward.getCounterClockWise();
+        Direction rightDir = forward.getClockWise();
+
+        for (int d = 1; d <= maxRange; d++) {
+            BlockPos stepFeet = feet.relative(forward, d);
+            if (!level.hasChunkAt(stepFeet)) {
+                break;
+            }
+
+            BlockPos stepHead = stepFeet.above();
+            BlockPos floorBelow = stepFeet.below();
+            BlockPos ceilingAbove = stepHead.above();
+
+            // Bezpośredni profil tunelu 1x2 + podłoga + sufit
+            if (isLava(level, stepFeet) || isLava(level, stepHead) || isLava(level, floorBelow) || isLava(level, ceilingAbove)) {
+                return d;
+            }
+            if (isHazardNear(level, stepFeet) || isHazardNear(level, stepHead)) {
+                return d;
+            }
+
+            // Sprawdź również ściany boczne (1 kratka w lewo i 1 w prawo od profilu tunelu)
+            BlockPos sideLeftFeet = stepFeet.relative(leftDir);
+            BlockPos sideRightFeet = stepFeet.relative(rightDir);
+            if (isLava(level, sideLeftFeet) || isLava(level, sideLeftFeet.above())
+                    || isLava(level, sideRightFeet) || isLava(level, sideRightFeet.above())) {
+                return d;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Oblicza minimalny dystans do lawy w danym sektorze bocznym (branchDir) z uwzględnieniem
+     * ekspansji w przód (forwardDir) (Argon 4 & dj). Im wyższy wynik, tym bezpieczniejszy sektor (brak lawy = 999.0).
+     */
+    private double evaluateLavaDistanceInSector(Level level, BlockPos feet, Direction branchDir, Direction forwardDir, int maxRange) {
+        if (level == null || feet == null || branchDir == null) {
+            return 999.0D;
+        }
+        double minLavaDist = 999.0D;
+
+        for (int b = 1; b <= maxRange; b++) {
+            BlockPos base = feet.relative(branchDir, b);
+            if (!level.hasChunkAt(base)) {
+                break;
+            }
+
+            // W każdym punkcie bocznym sprawdzamy też wachlarz w przód (od f = -2 do f = 12)
+            for (int f = -2; f <= 12; f++) {
+                BlockPos pos = (forwardDir != null) ? base.relative(forwardDir, f) : base;
+                if (!level.hasChunkAt(pos)) {
+                    continue;
+                }
+
+                if (isLava(level, pos) || isLava(level, pos.above()) || isLava(level, pos.below()) || isHazardNear(level, pos)) {
+                    double dist = Math.sqrt(b * b + Math.max(0, f) * Math.max(0, f));
+                    if (dist < minLavaDist) {
+                        minLavaDist = dist;
+                    }
+                }
+            }
+        }
+        return minLavaDist;
+    }
+
+    /**
+     * Analizuje sektory LEWO i PRAWO do scanRange bloków i wybiera stronę,
+     * gdzie lawa jest najdalej (lub nie występuje wcale), weryfikując świeżość ściany (Argon 4 & dj).
+     */
+    private Direction chooseSafestBranchAwayFromLava(Level level, BlockPos feet, Direction forwardDir, int scanRange) {
+        Direction leftDir = forwardDir.getCounterClockWise();
+        Direction rightDir = forwardDir.getClockWise();
+
+        boolean leftSafe = isSafeBranchDirection(level, feet, leftDir, false);
+        boolean rightSafe = isSafeBranchDirection(level, feet, rightDir, false);
+
+        double distLeft = evaluateLavaDistanceInSector(level, feet, leftDir, forwardDir, scanRange);
+        double distRight = evaluateLavaDistanceInSector(level, feet, rightDir, forwardDir, scanRange);
+
+        String leftDesc = distLeft >= 900.0D ? "CZYSTO (>30m)" : String.format("%.1fm", distLeft);
+        String rightDesc = distRight >= 900.0D ? "CZYSTO (>30m)" : String.format("%.1fm", distRight);
+
+        if (leftSafe && rightSafe) {
+            if (distLeft > distRight + 2.0D) {
+                logDirect(String.format("§a[Bypass Radar] Analiza sektorów: Lewo=%s, Prawo=%s -> Lawa dalej na LEWO (skręt w %s)!",
+                        leftDesc, rightDesc, leftDir));
+                return leftDir;
+            } else if (distRight > distLeft + 2.0D) {
+                logDirect(String.format("§a[Bypass Radar] Analiza sektorów: Lewo=%s, Prawo=%s -> Lawa dalej na PRAWO (skręt w %s)!",
+                        leftDesc, rightDesc, rightDir));
+                return rightDir;
+            }
+            return pickBestBranchDirection(level, feet, leftDir, rightDir);
+        }
+
+        if (leftSafe) {
+            logDirect(String.format("§a[Bypass Radar] Bezpieczna świeża ściana na LEWO (Lawa: L=%s vs P=%s)", leftDesc, rightDesc));
+            return leftDir;
+        }
+        if (rightSafe) {
+            logDirect(String.format("§a[Bypass Radar] Bezpieczna świeża ściana na PRAWO (Lawa: P=%s vs L=%s)", rightDesc, leftDesc));
+            return rightDir;
+        }
+
+        return distLeft >= distRight ? leftDir : rightDir;
+    }
+
+    /**
      * Sprawdza czy w otwartej przestrzeni (stary tunel / skrzyżowanie / jaskinia) znajduje się
      * ODSŁONIĘTA lawa mająca bezpośredni kontakt z powietrzem tunelu (zamiast ślepego cylindra przez litą skałę).
      */
@@ -1413,8 +1627,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         // 1. Jeśli świeże ściany są dostępne:
         if (leftFresh && rightFresh) {
-            Direction chosen = pickBestBranchDirection(level, feet, leftDir, rightDir);
-            logDirect("§a[Bypass] Obie strony bezpieczne od lawy! Skręcam w §f" + chosen.name() + "§a!");
+            Direction chosen = chooseSafestBranchAwayFromLava(level, feet, currentDir, 30);
+            logDirect("§a[Bypass] Obie strony bezpieczne od lawy! Skręcam w stronę najdalszej lawy: §f" + chosen.name() + "§a!");
             return initiateTurnState(chosen);
         }
         if (leftFresh) {
@@ -1539,9 +1753,15 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.retreatStartPos = feet.immutable();
         this.retreatTicks = 0;
         this.consecutiveStraightBlocks = 0;
+        this.lastCountedStraightFeet = null;
         this.state = State.RETREATING;
 
-        logDirect("§c[Bypass] §4Wszystkie kierunki zablokowane na tym węźle! Wycofuję się do tyłu bezpiecznym tunelem...");
+        // Losowy dystans wycofania od 7 do 11 bloków włącznie (Argon 4 & dj):
+        this.targetRetreatBlocks = java.util.concurrent.ThreadLocalRandom.current().nextInt(7, 12);
+
+        logDirect(String.format(
+                "§c[Bypass] Wycofuję się o §b%d§c bloków w tył bezpiecznym tunelem (strefa buforowa od lawy)...",
+                this.targetRetreatBlocks));
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
@@ -1557,41 +1777,55 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         BlockPos feet = player.blockPosition();
         int distMoved = feet.distManhattan(this.retreatStartPos);
 
-        Direction leftDir = this.retreatDir.getClockWise();
-        Direction rightDir = this.retreatDir.getCounterClockWise();
+        Direction forwardDir = this.retreatDir.getOpposite();
+        Direction leftDir = forwardDir.getCounterClockWise();
+        Direction rightDir = forwardDir.getClockWise();
 
-        // 1. Sprawdź czy po cofnięciu się o minimum 1 blok otworzyło się bezpieczne odejście w bok
-        if (distMoved >= 1) {
-            boolean canGoLeft = isSafeBranchDirection(level, feet, leftDir, false)
-                    || isSafeBranchDirection(level, feet, leftDir, true);
-            boolean canGoRight = isSafeBranchDirection(level, feet, rightDir, false)
-                    || isSafeBranchDirection(level, feet, rightDir, true);
-
-            if (canGoLeft && canGoRight) {
-                Direction chosen = pickBestBranchDirection(level, feet, leftDir, rightDir);
-                logDirect("§a[Bypass] Wycofano (" + distMoved + " bl.). Wybieram optymalne odejście: §f" + chosen.name());
-                return initiateTurnState(chosen);
-            } else if (canGoLeft) {
-                logDirect("§a[Bypass] Wycofano (" + distMoved + " bl.). Skręcam w bezpieczne odejście: §f" + leftDir.name());
-                return initiateTurnState(leftDir);
-            } else if (canGoRight) {
-                logDirect("§a[Bypass] Wycofano (" + distMoved + " bl.). Skręcam w bezpieczne odejście: §f" + rightDir.name());
-                return initiateTurnState(rightDir);
-            }
-        }
-
-        // 2. Jeśli cofnęliśmy się o MAX_RETREAT_BLOCKS lub droga w tył jest zablokowana / minął timeout:
+        // Sprawdź czy droga w tył jest fizycznie drożna
         BlockPos backFeet = feet.relative(this.retreatDir);
         BlockPos backHead = backFeet.above();
         boolean backPassable = isPassable(level, backFeet) && isPassable(level, backHead)
                 && !isLava(level, backFeet.below()) && !isLava(level, backFeet);
 
-        if (distMoved >= MAX_RETREAT_BLOCKS || !backPassable || this.retreatTicks > MAX_RETREAT_TICKS) {
-            logDirect("§e[Bypass] Zakończono wycofywanie (dystans: " + distMoved + " bl.). Obracam wektor kopania o 180°.");
-            return initiateTurnState(this.retreatDir);
+        int maxBlocks = this.targetRetreatBlocks > 0 ? this.targetRetreatBlocks : 9;
+
+        // 1. Warunek zakończenia wycofywania:
+        // Bot cofa się dokładnie o wylosowany dystans (od 7 do 11 bloków) lub dopóki korytarz jest drożny.
+        if (distMoved >= maxBlocks || !backPassable || this.retreatTicks > MAX_RETREAT_TICKS) {
+            // Wybieramy WYŁĄCZNIE świeżą, niewybraną ścianę (90° w LEWO lub w PRAWO) - zakaz wchodzenia w stare tunele!
+            boolean leftFresh = isSafeBranchDirection(level, feet, leftDir, false);
+            boolean rightFresh = isSafeBranchDirection(level, feet, rightDir, false);
+
+            Direction chosenTurn;
+            if (leftFresh && rightFresh) {
+                chosenTurn = chooseSafestBranchAwayFromLava(level, feet, forwardDir, 30);
+            } else if (leftFresh) {
+                chosenTurn = leftDir;
+            } else if (rightFresh) {
+                chosenTurn = rightDir;
+            } else {
+                // Jeśli standardowy filtr jest zbyt rygorystyczny, wybieramy stronę, która NIE jest oznaczona jako stary tunel
+                boolean leftIsDug = dugColumns2D.contains(to2DKey(feet.relative(leftDir).getX(), feet.relative(leftDir).getZ()));
+                boolean rightIsDug = dugColumns2D.contains(to2DKey(feet.relative(rightDir).getX(), feet.relative(rightDir).getZ()));
+                if (!leftIsDug && rightIsDug) {
+                    chosenTurn = leftDir;
+                } else if (!rightIsDug && leftIsDug) {
+                    chosenTurn = rightDir;
+                } else {
+                    chosenTurn = chooseSafestBranchAwayFromLava(level, feet, forwardDir, 30);
+                }
+            }
+
+            this.primaryMiningDir = chosenTurn;
+            this.tunnelDir = chosenTurn;
+            this.consecutiveStraightBlocks = 0;
+            this.lastCountedStraightFeet = null;
+            logDirect(String.format("§a[Bypass] Wycofano %d bloków (cel: %d). Skręcam w świeżą ścianę na %s (90°)!§r",
+                    distMoved, maxBlocks, chosenTurn == leftDir ? "§eLEWO (" + leftDir + ")" : "§ePRAWO (" + rightDir + ")"));
+            return initiateTurnState(chosenTurn);
         }
 
-        // 3. Sprawdź czy korytarz za nami nie został zasypany (np. gravel) - jeśli tak, odkop
+        // 2. Jeśli korytarz za nami został czymś zasypany (np. żwir/piasek), odkop go bezpiecznie
         if (!isPassable(level, backHead)) {
             return mineBlockSafely(player, level, backHead);
         }
@@ -1599,15 +1833,14 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return mineBlockSafely(player, level, backFeet);
         }
 
-        // 4. Fizyczny ruch w tył: trzymamy yaw osi tunelu i cofamy klawiszem MOVE_BACK (brak nagłych snapów 180°)
-        Direction lookDir = this.retreatDir.getOpposite();
-        float targetYaw = lookDir.toYRot();
+        // 3. Fizyczny bieg w tył: trzymamy yaw osi tunelu z kwantyzacją GCD i cofamy klawiszem MOVE_BACK
+        float targetYaw = forwardDir.toYRot();
         Rotation gcdRot = applyGrimGcd(player.getYRot(), player.getXRot(), targetYaw, 0.0F);
         baritone.getLookBehavior().updateTarget(gcdRot, false);
 
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
 
-        // Centrowanie w osi poprzecznej tunelu
+        // Centrowanie w osi poprzecznej tunelu (korytarz 1x2)
         double centerX = feet.getX() + 0.5D;
         double centerZ = feet.getZ() + 0.5D;
         double dx = centerX - player.getX();
@@ -1616,8 +1849,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
         if (lateralOffset > 0.12D) {
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, true);
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
         } else if (lateralOffset < -0.12D) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, true);
+        } else {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
         }
 
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -1746,39 +1984,16 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         double effectiveReach = getEffectiveReach();
 
         // 0. Aktywny lock kopania: jeśli już niszczymy blok (np. zasłaniający lub rudę)
-        // i nadal istnieje -> kontynuuj niszczenie bez przerywania!
+        // i nadal istnieje -> kontynuuj niszczenie przez mineBlockSafely bez przerywania i resetowania postępu!
         if (this.currentBreakingBlock != null) {
             BlockState curState = level.getBlockState(this.currentBreakingBlock);
             if (!curState.isAir() && !isBedrockOrUnbreakable(level, this.currentBreakingBlock)) {
-                Optional<Rotation> curSnap = findVerifiedGrimSnapRotation(player, level, this.currentBreakingBlock,
-                        effectiveReach);
-                if (curSnap.isEmpty()) {
-                    curSnap = RotationUtils.reachable(ctx, this.currentBreakingBlock, effectiveReach);
+                if (baritone.getPathingBehavior().isPathing()) {
+                    baritone.getPathingBehavior().cancelSegmentIfSafe();
+                    baritone.getPathingBehavior().secretInternalSetGoal(null);
                 }
-                if (curSnap.isPresent()) {
-                    ToolEquipStatus status = equipBestTool(player, curState);
-                    if (status == ToolEquipStatus.FAILED) {
-                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                    }
-                    if (status == ToolEquipStatus.SWITCHED) {
-                        if (ctx.playerController() != null) {
-                            ctx.playerController().resetBlockRemoving();
-                        }
-                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-                        ContinuousBreakController.reset();
-                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                    }
-                    if ((curState.requiresCorrectToolForDrops()
-                            && !player.getMainHandItem().isCorrectToolForDrops(curState)) || !isToolUsable(player.getMainHandItem())) {
-                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
-                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                    }
-                    baritone.getLookBehavior().updateTarget(curSnap.get(), true);
-                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
-                    ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(this.currentBreakingBlock));
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                }
+                stopMovementInputs();
+                return mineBlockSafely(player, level, this.currentBreakingBlock);
             } else {
                 this.currentBreakingBlock = null;
             }
@@ -1794,7 +2009,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
             // Zatrzymujemy ruch Baritone, bo przejmujemy bezpośrednią kontrolę nad uderzeniami w rudę
             if (baritone.getPathingBehavior().isPathing()) {
-                baritone.getPathingBehavior().cancelEverything();
+                baritone.getPathingBehavior().cancelSegmentIfSafe();
+                baritone.getPathingBehavior().secretInternalSetGoal(null);
             }
             stopMovementInputs();
 
@@ -1833,9 +2049,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             this.oreAttemptTicks = 0;
         }
 
-        // 4. KRYTYCZNE (Argon 4 & dj): Używamy GoalNear(activeOreTarget, 1) z SET_GOAL_AND_PATH!
-        // ŻADNEGO sztucznego moveTowardsWithoutSprint z REQUEST_PAUSE, który zamrażał bota na 0.0 bps!
-        return new PathingCommand(new GoalNear(activeOreTarget, 1), PathingCommandType.SET_GOAL_AND_PATH);
+        // 4. Podejście do rudy przez A* (używamy REVALIDATE zamiast spamu SET_GOAL_AND_PATH)
+        return new PathingCommand(new GoalNear(activeOreTarget, 1), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
     }
 
     private Optional<MiningAction> findMiningAction(LocalPlayer player, Level level, BlockPos orePos, double reach) {
@@ -1926,17 +2141,16 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     /**
      * Powrót na oś głównego tunelu Y=-50 po wykopaniu całej żyły i zebraniu dropu.
+     * Natychmiastowe wznowienie tunelowania w osi autostrady (eliminacja zacięć A* na GoalTwoBlocks).
      */
     private PathingCommand tickReturningToTunnel(LocalPlayer player, Level level, boolean calcFailed) {
-        if (tunnelAnchorPos == null || calcFailed || player.blockPosition().distManhattan(tunnelAnchorPos) <= 2
-                || ++returnStuckTicks > 80) {
-            tunnelAnchorPos = null;
-            returnStuckTicks = 0;
-            this.tunnelDir = this.primaryMiningDir;
-            state = (player.blockPosition().getY() - targetY > 1) ? State.DESCENDING_STAIRCASE : State.TUNNELING;
-            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
-        }
-        return new PathingCommand(new GoalTwoBlocks(tunnelAnchorPos), PathingCommandType.SET_GOAL_AND_PATH);
+        tunnelAnchorPos = null;
+        returnStuckTicks = 0;
+        this.tunnelDir = this.primaryMiningDir;
+        int diff = player.blockPosition().getY() - targetY;
+        state = Math.abs(diff) > 1 ? (diff > 0 ? State.DESCENDING_STAIRCASE : State.ASCENDING_STAIRCASE)
+                : State.TUNNELING;
+        return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
     }
 
     // =========================================================================
@@ -1947,6 +2161,9 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         BlockState targetState = level.getBlockState(target);
         if (target == null || isBedrockOrUnbreakable(level, target) || targetState.isAir()
                 || !level.getFluidState(target).isEmpty()) {
+            if (this.currentBreakingBlock != null && targetState.isAir()) {
+                this.noBlockBrokenTicks = 0;
+            }
             if (ctx.playerController() != null && this.currentBreakingBlock != null) {
                 ctx.playerController().resetBlockRemoving();
             }
@@ -2185,7 +2402,6 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         float moveYaw = (float) (Mth.atan2(dz, dx) * (180.0D / Math.PI)) - 90.0F;
         float yawDiff = Math.abs(Mth.wrapDegrees(player.getYRot() - moveYaw));
 
-        baritone.getInputOverrideHandler().setInputForceState(Input.SNEAK, true);
         if (yawDiff < 60.0F) {
             baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
         }
@@ -3599,6 +3815,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     @Override
     public void onLostControl() {
         this.active = false;
+        this.noBlockBrokenTicks = 0;
+        this.lastCountedStraightFeet = null;
         this.activeOreTarget = null;
         this.currentBreakingBlock = null;
         this.activeMiningTicks = 0;
@@ -3624,6 +3842,27 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         baritone.getInputOverrideHandler().clearAllKeys();
         if (ctx.playerController() != null) {
             ctx.playerController().resetBlockRemoving();
+        }
+    }
+
+    @Override
+    public void onBlockChange(BlockChangeEvent event) {
+        if (!this.active || event == null || event.getBlocks() == null) {
+            return;
+        }
+        LocalPlayer player = ctx.player();
+        if (player == null) {
+            return;
+        }
+        Vec3 eye = player.getEyePosition(1.0F);
+        for (Pair<BlockPos, BlockState> pair : event.getBlocks()) {
+            if (pair.second().isAir()) {
+                BlockPos pos = pair.first();
+                if (eye.distanceToSqr(Vec3.atCenterOf(pos)) <= 49.0D) {
+                    this.noBlockBrokenTicks = 0;
+                    return;
+                }
+            }
         }
     }
 

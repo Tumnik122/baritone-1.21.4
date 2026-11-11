@@ -96,7 +96,7 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
         if (mc.level != null && mc.player != null) {
             net.minecraft.world.level.block.state.BlockState state = mc.level.getBlockState(pos);
-            if (state.isAir() || !state.getFluidState().isEmpty() || state.getDestroySpeed(mc.level, pos) < 0.0f) {
+            if (state.isAir() || (state.getBlock() instanceof net.minecraft.world.level.block.LiquidBlock) || state.getDestroySpeed(mc.level, pos) < 0.0f) {
                 this.setIsHittingBlock(false);
                 this.argon$diggingActiveOnServer = false;
                 this.argon$targetBlockPosLong = Long.MIN_VALUE;
@@ -136,20 +136,20 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         }
 
         // KRYTYCZNE DLA GRIMAC (FastBreak 51ms/107ms):
-        // Jeśli kopiemy już ten sam blok na serwerze, pod żadnym pozorem NIE wysyłaj ponownego pakietu START_DESTROY_BLOCK!
+        // Jeśli kopiemy już ten sam blok na serwerze i w destroyBlockPos, pod żadnym pozorem NIE wysyłaj ponownego pakietu START_DESTROY_BLOCK!
         // Ponowny START_DESTROY_BLOCK resetuje stoper na serwerze GrimAC, powodując FastBreak.
-        if (this.isHittingBlock() && this.argon$targetBlockPosLong == posLong && this.argon$diggingActiveOnServer) {
+        // ALE: Jeśli blok uległ zmianie (np. gracz spojrzał na niższy blok), startDestroyBlock MUSI wysłać pakiet!
+        BlockPos currentHitting = this.getCurrentBlock();
+        if (currentHitting != null && currentHitting.asLong() == posLong && this.isHittingBlock() && this.argon$targetBlockPosLong == posLong && this.argon$diggingActiveOnServer) {
             cir.setReturnValue(true);
             return;
         }
 
-        if (this.argon$targetBlockPosLong != posLong || !this.argon$diggingActiveOnServer) {
-            this.argon$targetBlockPosLong = posLong;
-            this.argon$targetBlockState = currentState;
-            this.argon$miningTicks = 0;
-            this.argon$diggingActiveOnServer = true;
-            this.setDestroyProgress(0.0f);
-        }
+        this.argon$targetBlockPosLong = posLong;
+        this.argon$targetBlockState = currentState;
+        this.argon$miningTicks = 0;
+        this.argon$diggingActiveOnServer = true;
+        this.setDestroyProgress(0.0f);
 
         boolean isGrim = baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value
                 || baritone.api.BaritoneAPI.getSettings().grimCompat.value
@@ -176,7 +176,7 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         if (mc.player == null || mc.level == null) return;
 
         net.minecraft.world.level.block.state.BlockState state = mc.level.getBlockState(pos);
-        if (state.isAir() || !state.getFluidState().isEmpty()) {
+        if (state.isAir() || (state.getBlock() instanceof net.minecraft.world.level.block.LiquidBlock)) {
             this.setIsHittingBlock(false);
             this.argon$diggingActiveOnServer = false;
             this.argon$targetBlockPosLong = Long.MIN_VALUE;
@@ -208,6 +208,17 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             net.minecraft.world.item.ItemStack currentTool = mc.player.getMainHandItem();
             boolean toolChanged = !net.minecraft.world.item.ItemStack.isSameItemSameComponents(this.argon$lastMiningTool, currentTool);
 
+            // Jeśli celownik przesunął się na inny blok (np. niższy blok w korytarzu),
+            // a destroyBlockPos wciąż wskazuje stary cel, pozwól waniliowemu continueDestroyBlock
+            // wywołać startDestroyBlock() w celu wysłania legalnego pakietu START_DESTROY_BLOCK!
+            BlockPos currentBlock = this.getCurrentBlock();
+            if (currentBlock == null || currentBlock.asLong() != currentPosLong) {
+                this.argon$targetBlockPosLong = Long.MIN_VALUE;
+                this.argon$diggingActiveOnServer = false;
+                this.argon$miningTicks = 0;
+                return;
+            }
+
             if (this.argon$targetBlockPosLong != currentPosLong
                     || (this.argon$targetBlockState != null && !this.argon$targetBlockState.equals(state))
                     || toolChanged) {
@@ -235,20 +246,22 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             // W GrimAC, aby nie było 5-tickowego opóźnienia między kolejnymi krokami kopania tego samego bloku:
             this.destroyDelay = 0;
 
-            // Dopóki nie minęła wymagana liczba ticków, trzymaj destroyProgress < 0.60f
-            // ALE: jeśli destroyProgress >= 1.0f (BaritonePlayerController legalnie zezwolił na wykopanie), NIE cofaj postępu!
-            if (this.argon$miningTicks < reqTicks && this.getDestroyProgress() < 1.0f) {
-                float vanillaDelta = state.getDestroyProgress(mc.player, mc.level, pos);
-                if (this.getDestroyProgress() + vanillaDelta >= 0.60f) {
-                    this.setDestroyProgress(Math.max(0.0f, 0.50f - vanillaDelta));
-                }
+            // W Singleplayer nie blokujemy postępu kopania - waniliowe naliczanie działa w 100% naturalnie
+            if (mc.hasSingleplayerServer()) {
+                return;
+            }
+
+            // Na serwerach wieloosobowych z GrimAC:
+            // Dopóki nie minęła wymagana liczba ticków, nie pozwól na przedwczesne wysłanie STOP_DESTROY_BLOCK (>= 1.0f).
+            // Przeliczamy i ustawiamy postęp tak, aby animacja pęknięć faz 0..9 renderowała się w 100% płynnie i naturalnie!
+            float vanillaDelta = state.getDestroyProgress(mc.player, mc.level, pos);
+            if (this.argon$miningTicks < reqTicks) {
+                float visualProgress = Math.min(0.95f, (float) this.argon$miningTicks / (float) Math.max(1, reqTicks));
+                this.setDestroyProgress(Math.max(0.0f, visualProgress - vanillaDelta));
             } else {
                 // KRYTYCZNA NAPRAWA (Argon 4 & dj):
                 // Wymagana liczba ticków GrimAC minęła! Ustawiamy 1.0f, aby waniliowe continueDestroyBlock
                 // w tym samym ticku natychmiast zniszczyło blok i legalnie wysłało pakiet STOP_DESTROY_BLOCK!
-                // UWAGA: NIE czyścimy tutaj argon$targetBlockPosLong = Long.MIN_VALUE, ponieważ spowodowałoby to
-                // natychmiastowy reset destroyProgress do 0.0f w następnej klatce przed wywołaniem destroyBlock!
-                // Czyszczenie następuje poprawnie w onBlockDestroyed.
                 this.setDestroyProgress(1.0f);
                 this.argon$miningTicks = 0;
             }
@@ -266,12 +279,36 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         this.argon$miningTicks = 0;
         this.argon$targetBlockPosLong = Long.MIN_VALUE;
         this.argon$targetBlockState = null;
+        this.setIsHittingBlock(false);
     }
 
     @org.spongepowered.asm.mixin.injection.Inject(
             method = "stopDestroyBlock",
-            at = @org.spongepowered.asm.mixin.injection.At("HEAD"))
+            at = @org.spongepowered.asm.mixin.injection.At("HEAD"),
+            cancellable = true)
     private void onStopDestroyBlockHead(org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        // Jeśli to Baritone jawnie wywołał resetBlockRemoving() (np. zmiana celu lub koniec zadania):
+        if (baritone.utils.player.BaritonePlayerController.isResettingBlock) {
+            this.argon$diggingActiveOnServer = false;
+            this.argon$miningTicks = 0;
+            this.argon$targetBlockPosLong = Long.MIN_VALUE;
+            this.argon$targetBlockState = null;
+            BlockPos current = this.getCurrentBlock();
+            if (current != null) {
+                this.setIsHittingBlock(false);
+            }
+            return;
+        }
+
+        // KRYTYCZNA OCHRONA (Argon 4 & dj):
+        // Jeśli Baritone aktywnie kopie (CLICK_LEFT jest wymuszony przez maszynę bota),
+        // zablokuj waniliowe stopDestroyBlock() wywoływane w każdym ticku przez continueAttack(false)
+        // gdy gracz nie trzyma fizycznie lewego przycisku myszy!
+        if (baritone.utils.player.BaritonePlayerController.isBaritoneDigging()) {
+            ci.cancel();
+            return;
+        }
+
         this.argon$diggingActiveOnServer = false;
         this.argon$miningTicks = 0;
         this.argon$targetBlockPosLong = Long.MIN_VALUE;
@@ -291,6 +328,11 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             BlockPos pos) {
         net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
         if (mc.player != null && (baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value || baritone.api.BaritoneAPI.getSettings().grimCompat.value || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value)) {
+            if (direction != null && mc.level != null
+                    && !baritone.utils.player.BaritonePlayerController.isFaceOccluded(mc.level, pos, direction)
+                    && !baritone.utils.player.BaritonePlayerController.isFaceImpossible(mc.player, pos, direction)) {
+                return direction;
+            }
             return baritone.utils.player.BaritonePlayerController.getSafeBreakFace(mc.player, pos, direction);
         }
         return direction;
@@ -305,6 +347,11 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             BlockPos pos) {
         net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
         if (mc.player != null && (baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value || baritone.api.BaritoneAPI.getSettings().grimCompat.value || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value)) {
+            if (direction != null && mc.level != null
+                    && !baritone.utils.player.BaritonePlayerController.isFaceOccluded(mc.level, pos, direction)
+                    && !baritone.utils.player.BaritonePlayerController.isFaceImpossible(mc.player, pos, direction)) {
+                return direction;
+            }
             return baritone.utils.player.BaritonePlayerController.getSafeBreakFace(mc.player, pos, direction);
         }
         return direction;

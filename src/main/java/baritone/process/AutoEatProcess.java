@@ -517,7 +517,7 @@ public class AutoEatProcess extends BaritoneProcessHelper implements IBaritonePr
 
     @Override
     public double priority() {
-        return 6.0D; // Wyższy priorytet niż BypassProcess (3.0), InventoryPauser (4.0) i MineProcess (1.0)
+        return 6.4D; // Wyższy priorytet niż BypassProcess (6.1), aby AutoEat mógł tymczasowo wstrzymać kopanie i nakarmić bota
     }
 
     @Override

@@ -1833,7 +1833,7 @@ public final class Settings {
      * - Jeśli gracz wpadnie do wody, trasy do wyjścia z wody są faworyzowane, a ruchy w głąb karane.
      * - Real-time Safety Guard w PathExecutor natychmiast anuluje ruch, jeśli ścieżka prowadzi do wody.
      */
-    public final Setting<Boolean> mineAvoidWater = new Setting<>(true);
+    public final Setting<Boolean> mineAvoidWater = new Setting<>(false);
 
     /**
      * Współczynnik kary (negative reward) za zbliżenie się do wody w algorytmie A*.

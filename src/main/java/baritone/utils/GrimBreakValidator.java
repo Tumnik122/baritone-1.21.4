@@ -34,7 +34,12 @@ public final class GrimBreakValidator {
         float speed = tool.getDestroySpeed(state);
 
         if (speed > 1.0f) {
-            speed += (float) player.getAttributeValue(Attributes.MINING_EFFICIENCY);
+            int eff = FastBreakHelper.getEfficiencyLevel(tool);
+            if (eff > 0) {
+                speed += (float) (eff * eff + 1);
+            } else {
+                speed += (float) player.getAttributeValue(Attributes.MINING_EFFICIENCY);
+            }
         }
 
         if (MobEffectUtil.hasDigSpeed(player)) {
@@ -78,7 +83,11 @@ public final class GrimBreakValidator {
         float delta = getGrimDestroyProgress(player, level, pos, state, wasOnGroundLastTick);
         if (delta >= 1.0f) return 0;
         if (delta <= 0.0f) return Integer.MAX_VALUE;
-        // +1 tick bufora bezpieczeństwa na jitter pakietów i opóźnienia sieciowe (eliminuje flary delay=91ms..109ms)
+        net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
+        if (mc != null && mc.hasSingleplayerServer()) {
+            return (int) Math.ceil(1.0f / delta);
+        }
+        // +1 tick bufora bezpieczeństwa na jitter pakietów i opóźnienia sieciowe (eliminuje flagi delay=91ms..109ms na serwerach zewnętrznych)
         return (int) Math.ceil(1.0f / delta) + 1;
     }
 

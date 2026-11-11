@@ -96,8 +96,8 @@ public class PlayerMovementInput extends ClientInput {
         net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
 
         // GrimAC 1.21.4 Simulation Fix: Sprint jest fizycznie legalny TYLKO przy ruchu w przód,
-        // bez wciskania w tył, bez skradania, bez kopania i przy głodzie > 6
-        boolean canSprintVanilla = forward && !backward && !sneak && !isBreaking;
+        // bez wciskania w tył, bez skradania i przy głodzie > 6 (w MC kopanie bloków nie wyłącza sprintu)
+        boolean canSprintVanilla = forward && !backward && !sneak;
         boolean sprint = false;
 
         boolean botMoving = handler != null && (handler.isInputForcedDown(Input.MOVE_FORWARD) || handler.isInputForcedDown(Input.SPRINT));
@@ -119,10 +119,7 @@ public class PlayerMovementInput extends ClientInput {
 
         this.forwardImpulse = (forward == backward) ? 0.0F : (forward ? 1.0F : -1.0F);
         this.leftImpulse    = (left == right)       ? 0.0F : (left ? 1.0F : -1.0F);
-
-        if (sneak) {
-            this.forwardImpulse *= 0.3F;
-            this.leftImpulse    *= 0.3F;
-        }
+        // W MC 1.21.4 redukcja prędkości ze sneak (0.3) jest aplikowana automatycznie w fizyce LivingEntity.travel()
+        // na podstawie keyPresses.sneak(). Podwójne mnożenie tutaj powodowało błąd GrimAC Simulation 0.005279!
     }
 }

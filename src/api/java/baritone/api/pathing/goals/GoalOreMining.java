@@ -70,8 +70,9 @@ public class GoalOreMining implements Goal, IGoalRenderPos {
 
         double dist = distanceToBlock(eyeX, eyeY, eyeZ, this.x, this.y, this.z);
 
-        // Safe reach margin: 3.75 blocks (well within 3.9 reach distance)
-        if (dist <= 3.75) {
+        // Bezpieczny margines podejścia: do 3.10 bloka (gwarantuje bezpośredni zasięg z sąsiedniej podłogi
+        // w zasięgu GrimAC 3.80m, ułatwiając A* znalezienie legalnej ścieżki bez błędu No path found)
+        if (dist <= 3.10) {
             // Must have a reasonable standing perspective relative to the ore:
             // dy between -5 (ore in ceiling directly above or diagonally above) and +2 (ore in floor)
             // horizontal offset <= 3 blocks

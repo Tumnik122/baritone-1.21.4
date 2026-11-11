@@ -130,8 +130,10 @@ public final class AstraMovementFluidityEngine {
             baritone.getLookBehavior().updateTarget(this.lastExternalRotation, true);
         }
 
-        // 4. GrimAC 8-Octant MoveFix: przelicz wektor ruchu względem serwerowego Yaw kamery na bieżący tick!
-        if (!player.isInWater() && !player.isInLava()) {
+        // 4. GrimAC 8-Octant MoveFix: przelicz wektor ruchu względem serwerowego Yaw kamery na bieżący tick.
+        // Stosowane WYŁĄCZNIE przy płaskim ruchu (allowLookaheadSmoothing), aby nie psuć skoków na schodkach
+        // (MovementAscend / MovementDescend / MovementDiagonal) przez przypadkowe obcinanie pędu w przód!
+        if (allowLookaheadSmoothing && !player.isInWater() && !player.isInLava()) {
             float effectiveTickYaw = getEffectiveCurrentTickYaw(baritone, player);
             applyGrimCompliantMoveFix(ioh, desiredPathYaw, effectiveTickYaw, baritoneWantsBackOrSneak);
         }
