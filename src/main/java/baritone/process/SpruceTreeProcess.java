@@ -148,6 +148,10 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         );
     }
 
+    public boolean isDigging() {
+        return this.active && this.currentTargetPos != null && (this.currentTargetType == TargetType.LOG || this.currentTargetType == TargetType.LEAF);
+    }
+
     public State getCurrentState() {
         return this.state;
     }
@@ -331,15 +335,35 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // PODFAZA A (Liście - Motyka): szukamy widocznych liści spruce_leaves w reachu <= 3.9
+        // KRYTYCZNA BLOKADA CELU (Eliminacja chattering / niedobijania bloków na ostatnim pęknięciu):
+        // Jeśli aktualnie kopiemy dany blok, nie jest on powietrzem i nadal mieści się w zasięgu - DOKOŃCZ GO!
+        if (lastBreakingPos != null && !level.getBlockState(lastBreakingPos).isAir()) {
+            double distSq = player.getEyePosition().distanceToSqr(Vec3.atCenterOf(lastBreakingPos));
+            if (distSq <= MAX_GRIM_REACH_SQ) {
+                BlockHitResult lockedHit = raycastBlockVisibleFace(player, level, lastBreakingPos);
+                if (lockedHit != null) {
+                    BlockState lockedState = level.getBlockState(lastBreakingPos);
+                    if (lastBreakingType == TargetType.LOG) {
+                        selectAxeOrWarn(player, lockedState);
+                    } else if (lastBreakingType == TargetType.LEAF) {
+                        selectHoeOrWarn(player, lockedState);
+                    }
+                    this.currentTargetPos = lastBreakingPos;
+                    this.currentTargetType = lastBreakingType;
+                    applyGcdRotation(player, lockedHit.getLocation());
+                    startOrContinueBreaking(player, level, lastBreakingPos, lockedHit.getDirection());
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+            }
+        }
+
+        // PODFAZA A (Liście - Motyka / Ręka): szukamy widocznych liści spruce_leaves w reachu <= 3.9
         BlockHitResult leafHit = findBestBreakableTarget(player, level, true);
         if (leafHit != null) {
             BlockPos leafPos = leafHit.getBlockPos();
             BlockState leafState = level.getBlockState(leafPos);
 
-            if (!selectHoeOrWarn(player, leafState)) {
-                return cancelProcess();
-            }
+            selectHoeOrWarn(player, leafState);
 
             this.currentTargetPos = leafPos;
             this.currentTargetType = TargetType.LEAF;
@@ -611,13 +635,19 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             return;
         }
 
-        // GrimAC Invariant: unikanie kopania drewna w locie/spadku (airborne mining diff)
-        if (!player.onGround() && currentTargetType == TargetType.LOG) {
-            return;
-        }
-
         // Synchronizacja trzymanego narzędzia (eliminacja rozbieżności prędkości w GrimAC)
         ctx.playerController().syncHeldItem();
+
+        // Bezpiecznik zacięcia na bloku (watchdog): jeśli kopiemy blok znacznie dłużej niż wymagany czas (ghost block / desync)
+        if (currentBlockDamageTicks > Math.max(50, minRequiredBreakTicks + 30)) {
+            ctx.playerController().resetBlockRemoving();
+            lastBreakingPos = null;
+            lastBreakingType = TargetType.NONE;
+            currentBlockDamageTicks = 0;
+            currentBlockBreakProgress = 0.0f;
+            interBlockReleaseTicks = 2;
+            return;
+        }
 
         // 3. TICK 0: PIERWSZY KONTAKT Z NOWYM BLOKIEM
         // Wysyłamy WYŁĄCZNIE pakiet START_DESTROY_BLOCK (clickBlock).
@@ -864,8 +894,8 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
                 return true;
             }
         }
-        logDirect("§c[Astra/Spruce2x2] BŁĄD: Brak motyki (Hoe) na hotbarze!");
-        return false;
+        // Brak dedykowanej motyki na hotbarze - nie przerywaj procesu, niszcz liście bieżącym narzędziem lub ręką
+        return true;
     }
 
     private boolean selectAxeOrWarn(LocalPlayer player, BlockState logState) {

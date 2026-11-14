@@ -117,6 +117,11 @@ public final class BaritonePlayerController implements IPlayerController {
                 if (b.getInputOverrideHandler() != null && b.getInputOverrideHandler().isInputForcedDown(baritone.api.utils.input.Input.CLICK_LEFT)) {
                     return true;
                 }
+                if (b instanceof Baritone fullBaritone) {
+                    if (fullBaritone.getSpruceTreeProcess() != null && fullBaritone.getSpruceTreeProcess().isDigging()) {
+                        return true;
+                    }
+                }
             }
         } catch (Throwable ignored) {}
         return false;
