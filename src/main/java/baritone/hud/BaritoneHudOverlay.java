@@ -104,6 +104,12 @@ public final class BaritoneHudOverlay {
             baritone.bypass.BypassHudOverlay.render(guiGraphics, deltaTracker);
         } catch (Throwable ignored) {}
         try {
+            var b = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
+            if (b instanceof Baritone baritoneImpl) {
+                com.astra.revolution.visuals.SpruceTreeVisuals.render2D(guiGraphics, deltaTracker, baritoneImpl);
+            }
+        } catch (Throwable ignored) {}
+        try {
             com.statuspillhud.client.StatusPillHud.getInstance().render(guiGraphics, deltaTracker);
         } catch (Throwable ignored) {}
     }

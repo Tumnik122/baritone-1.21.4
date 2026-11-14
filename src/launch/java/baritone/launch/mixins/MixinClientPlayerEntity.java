@@ -114,6 +114,9 @@ public class MixinClientPlayerEntity implements LastSent {
             at = @At("HEAD")
     )
     private void onPreUpdate(CallbackInfo ci) {
+        try {
+            com.astra.revolution.nuker.VenturaNukerModule.getInstance().onPrePlayerUpdate((LocalPlayer) (Object) this);
+        } catch (Throwable ignored) {}
         IBaritone baritone = this.baritone$getBaritone();
         if (baritone != null) {
             baritone.getGameEventHandler().onPlayerUpdate(new PlayerUpdateEvent(EventState.PRE));
@@ -125,6 +128,9 @@ public class MixinClientPlayerEntity implements LastSent {
             at = @At("RETURN")
     )
     private void onPostUpdate(CallbackInfo ci) {
+        try {
+            com.astra.revolution.nuker.VenturaNukerModule.getInstance().onPostPlayerUpdate((LocalPlayer) (Object) this);
+        } catch (Throwable ignored) {}
         IBaritone baritone = this.baritone$getBaritone();
         if (baritone != null) {
             baritone.getGameEventHandler().onPlayerUpdate(new PlayerUpdateEvent(EventState.POST));

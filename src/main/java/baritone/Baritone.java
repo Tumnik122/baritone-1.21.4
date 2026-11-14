@@ -83,6 +83,7 @@ public class Baritone implements IBaritone {
     private final AutoEatProcess autoEatProcess;
     private final AutoDropProcess autoDropProcess;
     private final baritone.process.HomeProcess homeProcess;
+    private final baritone.process.SpruceTreeProcess spruceTreeProcess;
     private final IElytraProcess elytraProcess;
     private final baritone.bypass.BypassProcess bypassProcess;
     private final baritone.process.TillProcess tillProcess;
@@ -140,6 +141,7 @@ public class Baritone implements IBaritone {
             this.autoEatProcess          = this.registerProcess(AutoEatProcess::new);
             this.autoDropProcess         = this.registerProcess(AutoDropProcess::new);
             this.homeProcess             = this.registerProcess(baritone.process.HomeProcess::new);
+            this.spruceTreeProcess       = this.registerProcess(baritone.process.SpruceTreeProcess::new);
             this.elytraProcess           = this.registerProcess(ElytraProcess::create);
             this.bypassProcess           = this.registerProcess(baritone.bypass.BypassProcess::new);
             this.mobDefenseProcess       = this.registerProcess(baritone.process.MobDefenseProcess::new);
@@ -263,6 +265,10 @@ public class Baritone implements IBaritone {
 
     public baritone.process.HomeProcess getHomeProcess() {
         return this.homeProcess;
+    }
+
+    public baritone.process.SpruceTreeProcess getSpruceTreeProcess() {
+        return this.spruceTreeProcess;
     }
 
     public baritone.process.TillProcess getTillProcess() {

@@ -73,9 +73,9 @@ public final class DropCollectionHelper {
         Vec3 playerPos = player.position();
         Vec3 dropPos = drop.position();
 
-        // Zbyt duża różnica wysokości (np. drop w dziurze lub na wysokiej półce) wymaga A* lub rozkopania
+        // Różnica wysokości: dopuszczamy drop w rowku 1 blok w dół (-1.4m) lub na półce do +1.0m
         double dy = dropPos.y - playerPos.y;
-        if (dy < -0.65 || dy > 0.65) {
+        if (dy < -1.4 || dy > 1.0) {
             return false;
         }
 
@@ -96,8 +96,15 @@ public final class DropCollectionHelper {
             }
             // Sprawdź, czy po drodze pod stopami jest podłoże i nie ma płynów (lawa/woda)
             BlockPos below = BlockPos.containing(testBox.getCenter().x, testBox.minY - 0.5, testBox.getCenter().z);
-            if (!level.getFluidState(below).isEmpty() || level.getBlockState(below).isAir()) {
+            if (!level.getFluidState(below).isEmpty()) {
                 return false;
+            }
+            // Jeśli podłoże jest powietrzem, dopuszczamy maksymalnie 1 blok uskoku w dół
+            if (level.getBlockState(below).isAir()) {
+                BlockPos twoBelow = below.below();
+                if (!level.getFluidState(twoBelow).isEmpty() || level.getBlockState(twoBelow).isAir()) {
+                    return false; // Głęboka dziura lub lawa pod spodem
+                }
             }
         }
         return true;
@@ -135,13 +142,12 @@ public final class DropCollectionHelper {
         if (dirToDrop.lengthSqr() > 1.0E-4) {
             dirToDrop = dirToDrop.normalize();
             BlockPos frontFeet = BlockPos.containing(player.getX() + dirToDrop.x * 0.8, player.getY() + 0.2, player.getZ() + dirToDrop.z * 0.8);
-            if (isMineableObstruction(level, frontFeet, eyePos)) {
-                return frontFeet;
-            }
-
             BlockPos frontHead = frontFeet.above();
             if (isMineableObstruction(level, frontHead, eyePos)) {
                 return frontHead;
+            }
+            if (isMineableObstruction(level, frontFeet, eyePos)) {
+                return frontFeet;
             }
         }
 

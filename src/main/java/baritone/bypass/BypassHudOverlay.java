@@ -54,6 +54,18 @@ public final class BypassHudOverlay {
     public static void render(GuiGraphics g, DeltaTracker deltaTracker) {
         Minecraft mc = Minecraft.getInstance();
         if (mc.options.hideGui || mc.player == null) return;
+
+        // Renderowanie modułu HUD "Keybinds" (Astra Client / Grim style)
+        try {
+            float pt = (deltaTracker != null) ? deltaTracker.getGameTimeDeltaPartialTick(true) : 1.0f;
+            com.astra.revolution.gui.KeybindsHudRenderer.render(g, pt);
+        } catch (Throwable ignored) {}
+
+        // Bezpieczne wywolanie natywnego mostka C++ FFM Panama
+        try {
+            com.astra.revolution.nativecore.AstraNativeBridge.renderKeybindsHud(g);
+        } catch (Throwable ignored) {}
+
         if (!com.astra.revolution.gui.BaritoneBypassScreen.wildPillHud) return;
 
         try {

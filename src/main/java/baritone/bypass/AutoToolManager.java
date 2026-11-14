@@ -2,6 +2,7 @@ package baritone.bypass;
 
 import baritone.api.utils.IPlayerContext;
 import baritone.utils.ToolSet;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.player.Inventory;
@@ -22,6 +23,39 @@ import net.minecraft.world.level.block.state.BlockState;
 public final class AutoToolManager {
 
     private AutoToolManager() {}
+
+    /**
+     * Szybki dobór optymalnego narzędzia z hotbara pod dany BlockState.
+     */
+    public static boolean selectBestTool(BlockState state) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player == null || state == null) {
+            return false;
+        }
+        LocalPlayer player = mc.player;
+        Inventory inv = player.getInventory();
+        int bestSlot = -1;
+        double bestSpeed = -1.0;
+        for (int i = 0; i < 9; i++) {
+            ItemStack stack = inv.getItem(i);
+            if (state.requiresCorrectToolForDrops() && !stack.isCorrectToolForDrops(state)) {
+                continue;
+            }
+            if (stack.isDamageableItem() && (stack.getMaxDamage() - stack.getDamageValue() <= 5)) {
+                continue;
+            }
+            double speed = ToolSet.calculateSpeedVsBlock(stack, state);
+            if (speed > bestSpeed) {
+                bestSpeed = speed;
+                bestSlot = i;
+            }
+        }
+        if (bestSlot != -1) {
+            baritone.utils.player.BaritonePlayerController.setCarriedItemSafe(player, bestSlot);
+            return true;
+        }
+        return false;
+    }
 
     /**
      * Dobiera optymalne narzędzie i ustawia slot w ekwipunku gracza.

@@ -1,0 +1,198 @@
+edit
+more_vert
+1. Diagnoza techniczna (Dlaczego bot obraca się w trakcie kopania i marszu)
+
+Przerwanie aktywnego kopania (Preemption Bug w BypassProcess): Skanery findNearestOre oraz findNearbyValuableDrop wykonywały się w każdym ticku nawet wtedy, gdy bot był w połowie rozbijania bloku (currentBreakingBlock != null). Wykrycie rudy lub dropu z boku natychmiast przerywało kopanie obecnego bloku, zmieniało state i szarpało kamerą w nową stronę.
+
+Przełączanie celu w połowie rozbijania (BypassOreManager / BypassNavigator): Podczas ruchu o ułamek bloku algorytm w kolejnym ticku potrafił zmienić cel z frontHead na frontFeet lub z rudy na occluder przed zniszczeniem pierwszego bloku, co powodowało skakanie celownika.
+
+Konflikt chodzenia z kopaniem i zaniżony zasięg: Brak rozdzielenia fazy czystego marszu (gdy trasa przed graczem jest wolna) od fazy bicia oraz zbyt niski próg zasięgu (2.8m–3.15m zamiast pełnego 3.8m) zmuszały bota do niepotrzebnego podchodzenia pod sam blok i kręcenia kamerą w trakcie biegu.
+
+2. Poprawka BypassProcess.java (Blokada przerywania kopania Commit-To-Break + priorytet trasy 3.8m)
+code
+Java
+download
+content_copy
+expand_less
+// W BypassProcess.java -> dodaj metodę sprawdzającą, czy bot jest w trakcie rozbijania bloku w reachu 3.8m:
+
+public static final double HARD_MINING_REACH = 3.8D;
+public static final double HARD_MINING_REACH_SQ = HARD_MINING_REACH * HARD_MINING_REACH; // 14.44
+
+public boolean isCommittedToBreaking(LocalPlayer player, Level level) {
+    if (currentBreakingBlock == null) return false;
+    BlockState state = level.getBlockState(currentBreakingBlock);
+    if (state.isAir() || !state.getFluidState().isEmpty() || state.getDestroySpeed(level, currentBreakingBlock) < 0.0F) {
+        currentBreakingBlock = null;
+        return false;
+    }
+    double distSq = player.getEyePosition().distanceToSqr(Vec3.atCenterOf(currentBreakingBlock));
+    if (distSq > HARD_MINING_REACH_SQ) {
+        currentBreakingBlock = null;
+        return false;
+    }
+    return true;
+}
+code
+Java
+download
+content_copy
+expand_less
+// W BypassProcess.java (pętla główna onTick) -> zablokuj skanery rud/dropów, gdy bot aktualnie kopie blok LUB idzie wyznaczoną trasą:
+
+boolean activelyBreaking = isCommittedToBreaking(player, level);
+boolean followingActivePath = baritone.getPathingBehavior().isPathing();
+
+// 0. ZASADA COMMIT-TO-BREAK: Jeśli bot zaczął rozbijać blok w reachu <= 3.8m,
+// MUSI go dokończyć do powietrza bez obracania się za nowymi celami!
+if (activelyBreaking) {
+    Optional<MiningAction> keepMining = BypassOreManager.findMiningAction(this, player, level, currentBreakingBlock, HARD_MINING_REACH);
+    if (keepMining.isPresent()) {
+        stopMovementInputs();
+        return mineBlockSafely(player, level, keepMining.get().targetPos(), keepMining.get().snapRotation());
+    }
+}
+
+// 1. Skanuj rudy i dropy TYLKO wtedy, gdy bot NIE rozbija aktualnie bloku i NIE wykonuje aktywnej ścieżki A*
+if (!activelyBreaking && !followingActivePath && state != State.MINING_ORE && state != State.TURNING) {
+    ItemEntity drop = BypassDropCollector.findNearbyValuableDrop(this, player, level);
+    if (drop != null) {
+        state = State.COLLECTING_DROP;
+        return BypassDropCollector.handleCollectingDrop(this, player, level, drop);
+    }
+
+    BlockPos foundOre = BypassOreManager.findNearestOre(this, player, level);
+    if (foundOre != null) {
+        if (tunnelAnchorPos == null && state == State.TUNNELING) {
+            tunnelAnchorPos = player.blockPosition();
+        }
+        activeOreTarget = foundOre;
+        invalidStandingPositions.clear();
+        oreStagnationTicks = 0;
+        oreAttemptTicks = 0;
+        BypassOreManager.enqueueConnectedVein(this, level, foundOre);
+        stopMovementInputs();
+        baritone.getPathingBehavior().cancelSegmentIfSafe();
+        baritone.getPathingBehavior().secretInternalSetGoal(null);
+        state = State.MINING_ORE;
+    }
+}
+3. Poprawka BypassOreManager.java (Pełny reach 3.8m + zakaz zmiany celu przed rozbiciem bloku)
+code
+Java
+download
+content_copy
+expand_less
+// W BypassOreManager.java -> zaktualizuj stałą zasięgu i sekcję bicia w tickMiningOre:
+
+private static final double DIRECT_MINE_REACH = 3.8D;
+private static final double DIRECT_MINE_REACH_SQ = DIRECT_MINE_REACH * DIRECT_MINE_REACH; // 14.44m2
+
+// Wewnątrz tickMiningOre (zaraz po sprawdzeniu czy ruda nie została wykopana):
+
+Vec3 eyePos = player.getEyePosition();
+Vec3 targetCenter = Vec3.atCenterOf(orePos);
+double distSq3D = eyePos.distanceToSqr(targetCenter);
+
+// 1. Jeśli aktualnie rozbijamy już jakiś blok (rudę lub occluder) w zasięgu <= 3.8m, dokończ go bez zmiany kąta!
+BlockPos currentBreak = proc.getCurrentBreakingBlock();
+if (currentBreak != null && !level.getBlockState(currentBreak).isAir()) {
+    if (eyePos.distanceToSqr(Vec3.atCenterOf(currentBreak)) <= DIRECT_MINE_REACH_SQ) {
+        Optional<MiningAction> lockedAct = findMiningAction(proc, player, level, currentBreak, DIRECT_MINE_REACH);
+        if (lockedAct.isPresent()) {
+            proc.stopMovementInputs();
+            return proc.mineBlockSafely(player, level, lockedAct.get().targetPos(), lockedAct.get().snapRotation());
+        }
+    }
+}
+
+// 2. ZASIĘG 3.8m: Jeśli ruda lub zasłaniający ją occluder mieści się w 3.8m, bij od razu z miejsca!
+if (distSq3D <= DIRECT_MINE_REACH_SQ) {
+    Optional<MiningAction> directAction = findMiningAction(proc, player, level, orePos, DIRECT_MINE_REACH);
+    if (directAction.isPresent()) {
+        proc.stopMovementInputs();
+        return proc.mineBlockSafely(player, level, directAction.get().targetPos(), directAction.get().snapRotation());
+    }
+
+    BlockPos occluder = findOccludingBlock(player, level, orePos);
+    if (occluder != null && !isUnbreakable(level, occluder)) {
+        Optional<MiningAction> occAction = findMiningAction(proc, player, level, occluder, DIRECT_MINE_REACH);
+        if (occAction.isPresent()) {
+            proc.stopMovementInputs();
+            return proc.mineBlockSafely(player, level, occAction.get().targetPos(), occAction.get().snapRotation());
+        }
+    }
+}
+
+// 3. PODEJŚCIE (Tylko gdy cel jest dalej niż 3.8m lub całkowicie brak linii wzroku):
+// Jeśli na trasie podejścia stoi przeszkoda w reachu 3.8m -> rozbij ją, w przeciwnym razie skup się w 100% na chodzeniu:
+double dx = targetCenter.x - player.getX();
+double dz = targetCenter.z - player.getZ();
+Direction stepDir = Math.abs(dx) >= Math.abs(dz)
+        ? (dx > 0 ? Direction.EAST : Direction.WEST)
+        : (dz > 0 ? Direction.SOUTH : Direction.NORTH);
+
+BlockPos nextFeet = player.blockPosition().relative(stepDir);
+BlockPos nextHead = nextFeet.above();
+BlockPos pathBlocker = getBreakableBlocker(level, nextHead, nextFeet, orePos);
+
+if (pathBlocker != null) {
+    Optional<MiningAction> clearAct = findMiningAction(proc, player, level, pathBlocker, DIRECT_MINE_REACH);
+    if (clearAct.isPresent()) {
+        proc.stopMovementInputs();
+        return proc.mineBlockSafely(player, level, clearAct.get().targetPos(), clearAct.get().snapRotation());
+    }
+}
+
+// Czysta trasa do rudy -> skup się wyłącznie na płynnym podejściu bez machania kamerą
+return BypassNavigator.moveSafelyTowards(proc, player, level, Vec3.atBottomCenterOf(nextFeet), stepDir);
+4. Poprawka BypassNavigator.java (Rozdział: masz czystą trasę = idź prosto, masz blok w 3.8m = rozwal go)
+code
+Java
+download
+content_copy
+expand_less
+// W BypassNavigator.java -> zastąp tickTunnelStep czystym podziałem WALK vs MINE (reach 3.8m):
+
+public static PathingCommand tickTunnelStep(BypassProcess proc, LocalPlayer player, Level level, Direction tunnelDir) {
+    BlockPos feetPos = player.blockPosition();
+    BlockPos frontFeet = feetPos.relative(tunnelDir);
+    BlockPos frontHead = frontFeet.above();
+
+    // 1. Jeśli trasa bezpośrednio przed graczem (1-2 bloki) jest pusta -> 100% skupienia na marszu/sprincie!
+    // Nie szukaj bloków do kopania z daleka i nie kręć kamerą, dopóki masz wolny korytarz przed sobą.
+    BlockPos step2Feet = frontFeet.relative(tunnelDir);
+    BlockPos step2Head = step2Feet.above();
+    boolean immediatePathClear = level.getBlockState(frontHead).isAir() && level.getBlockState(frontFeet).isAir();
+    boolean twoStepsClear = immediatePathClear && level.getBlockState(step2Head).isAir() && level.getBlockState(step2Feet).isAir();
+
+    if (twoStepsClear) {
+        return moveSafelyTowards(proc, player, level, Vec3.atBottomCenterOf(step2Feet), tunnelDir);
+    }
+
+    // 2. Wybór przeszkody blokującej trasę w zasięgu 3.8m (góra -> dół -> kolejny krok)
+    BlockPos targetBlock = null;
+    if (!level.getBlockState(frontHead).isAir()) {
+        targetBlock = frontHead;
+    } else if (!level.getBlockState(frontFeet).isAir()) {
+        targetBlock = frontFeet;
+    } else if (!level.getBlockState(step2Head).isAir()) {
+        targetBlock = step2Head;
+    } else if (!level.getBlockState(step2Feet).isAir()) {
+        targetBlock = step2Feet;
+    }
+
+    // 3. Jeśli jest przeszkoda w reachu <= 3.8m -> skup się na jej rozbiciu do końca
+    if (targetBlock != null) {
+        Optional<MiningAction> act = BypassOreManager.findMiningAction(proc, player, level, targetBlock, 3.8D);
+        if (act.isPresent()) {
+            proc.stopMovementInputs();
+            return proc.mineBlockSafely(player, level, act.get().targetPos(), act.get().snapRotation());
+        }
+    }
+
+    // Fallback: podejdź do przodu po osi tunelu
+    return moveSafelyTowards(proc, player, level, Vec3.atBottomCenterOf(frontFeet), tunnelDir);
+}
+thumb_up
+thumb_down

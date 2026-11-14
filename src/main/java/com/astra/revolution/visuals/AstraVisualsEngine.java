@@ -353,6 +353,9 @@ public final class AstraVisualsEngine implements AbstractGameEventListener {
             // Pass 6: God-Tier 3D Combat Impact Waves & Dispersion Rings (Zero-Alloc)
             AstraGodTierVisuals.renderActiveShockwaves(poseStack, camPos);
 
+            // Pass 6B: Spruce Tree Farm 2x2 3D Cyber Box & Target ESP
+            SpruceTreeVisuals.render3D(poseStack, camPos, baritone);
+
             // Pass 7: Volumetric Cyber-Beacon & Double-Helix DNA Beacon for Path Goal (All goal types)
             boolean selVis = baritone != null && Baritone.settings().selectionVisuals.value;
             if (selVis && baritone.getPathingBehavior() != null && baritone.getPathingBehavior().getGoal() != null) {

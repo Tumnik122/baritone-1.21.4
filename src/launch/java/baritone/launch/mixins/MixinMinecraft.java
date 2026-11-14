@@ -45,6 +45,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import com.astra.revolution.perf.AstraPerformanceConfig;
 import com.astra.revolution.gui.AstraSchematicScreen;
 import com.astra.revolution.gui.AstraMainMenuScreen;
+import com.astra.revolution.gui.CustomStyledTitleScreen;
+import com.astra.revolution.gui.ModernAestheticTitleScreen;
 import com.astra.revolution.schematic.AstraSchematicManager;
 import com.astra.revolution.schematic.AstraSchematicManager.BedwarsBridgeEngine;
 import net.minecraft.client.gui.components.EditBox;
@@ -104,6 +106,26 @@ public abstract class MixinMinecraft {
 
     @Unique
     private static boolean astra$wasKeyRightCtrlPressed = false;
+
+    @Inject(method = "setOverlay", at = @At("TAIL"))
+    private void astra$onOverlayChanged(CallbackInfo ci) {
+        Minecraft self = (Minecraft) (Object) this;
+        if (self.getOverlay() == null && self.screen instanceof TitleScreen && !(self.screen instanceof ModernAestheticTitleScreen)) {
+            if (!ModernAestheticTitleScreen.bypassToVanillaOnce && !CustomStyledTitleScreen.bypassToVanillaOnce && !AstraMainMenuScreen.bypassToVanillaOnce) {
+                boolean shiftHeld = false;
+                if (self.getWindow() != null && self.getWindow().getWindow() != 0L) {
+                    shiftHeld = (GLFW.glfwGetKey(self.getWindow().getWindow(), GLFW.GLFW_KEY_LEFT_SHIFT) == GLFW.GLFW_PRESS);
+                }
+                if (!shiftHeld) {
+                    try {
+                        self.setScreen(new ModernAestheticTitleScreen());
+                    } catch (Throwable t) {
+                        t.printStackTrace();
+                    }
+                }
+            }
+        }
+    }
 
     @Inject(method = "tick", at = @At("HEAD"))
     private void baritone$onTickHead(CallbackInfo ci) {
@@ -298,6 +320,16 @@ public abstract class MixinMinecraft {
 
         try {
             AstraSchematicManager.getInstance().onClientTick();
+        } catch (Throwable ignored) {
+        }
+
+        try {
+            com.astra.revolution.nuker.VenturaNukerModule.getInstance().onClientTick((Minecraft) (Object) this);
+        } catch (Throwable ignored) {
+        }
+
+        try {
+            com.astra.revolution.gui.KeybindsHudRenderer.KeybindManager.onClientTick();
         } catch (Throwable ignored) {
         }
 
@@ -505,7 +537,9 @@ public abstract class MixinMinecraft {
             argsOnly = true
     )
     private Screen astra$replaceTitleScreen(Screen targetScreen) {
-        if (AstraMainMenuScreen.bypassToVanillaOnce) {
+        if (ModernAestheticTitleScreen.bypassToVanillaOnce || CustomStyledTitleScreen.bypassToVanillaOnce || AstraMainMenuScreen.bypassToVanillaOnce) {
+            ModernAestheticTitleScreen.bypassToVanillaOnce = false;
+            CustomStyledTitleScreen.bypassToVanillaOnce = false;
             AstraMainMenuScreen.bypassToVanillaOnce = false;
             return targetScreen;
         }
@@ -517,8 +551,13 @@ public abstract class MixinMinecraft {
             }
         }
 
-        if (targetScreen instanceof TitleScreen && !(targetScreen instanceof AstraMainMenuScreen)) {
-            return new AstraMainMenuScreen();
+        if (targetScreen instanceof TitleScreen && !(targetScreen instanceof ModernAestheticTitleScreen)) {
+            try {
+                return new ModernAestheticTitleScreen();
+            } catch (Throwable t) {
+                t.printStackTrace();
+                return targetScreen;
+            }
         }
 
         if (targetScreen instanceof net.minecraft.client.gui.screens.worldselection.SelectWorldScreen && !(targetScreen instanceof com.astra.revolution.gui.AstraSingleplayerScreen)) {
@@ -526,7 +565,12 @@ public abstract class MixinMinecraft {
         }
 
         if (targetScreen == null && this.level == null) {
-            return new AstraMainMenuScreen();
+            try {
+                return new ModernAestheticTitleScreen();
+            } catch (Throwable t) {
+                t.printStackTrace();
+                return null;
+            }
         }
 
         return targetScreen;

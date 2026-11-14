@@ -59,6 +59,10 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
     @Override
     public abstract void setDestroyProgress(float destroyProgress);
 
+    @Invoker("startPrediction")
+    @Override
+    public abstract void callStartPrediction(net.minecraft.client.multiplayer.ClientLevel level, net.minecraft.client.multiplayer.prediction.PredictiveAction action);
+
     @org.spongepowered.asm.mixin.Unique
     private long argon$targetBlockPosLong = Long.MIN_VALUE;
     @org.spongepowered.asm.mixin.Unique
@@ -102,6 +106,19 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
                 this.argon$targetBlockPosLong = Long.MIN_VALUE;
                 cir.setReturnValue(false);
                 return;
+            }
+
+            // BEZWZGLĘDNA OCHRONA BLOKU POD NOGAMI (Argon 4 & dj):
+            // Nigdy nie pozwól na niszczenie bloku podłogi bezpośrednio pod stopami gracza, gdy bot tuneluje!
+            if (pos.equals(mc.player.blockPosition().below())) {
+                baritone.api.IBaritone primaryBaritone = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
+                if (primaryBaritone != null && primaryBaritone.getCustomGoalProcess().isActive()) {
+                    this.setIsHittingBlock(false);
+                    this.argon$diggingActiveOnServer = false;
+                    this.argon$targetBlockPosLong = Long.MIN_VALUE;
+                    cir.setReturnValue(false);
+                    return;
+                }
             }
 
             // KRYTYCZNA OCHRONA (Argon 4 & dj):
@@ -182,6 +199,19 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             this.argon$targetBlockPosLong = Long.MIN_VALUE;
             cir.setReturnValue(true);
             return;
+        }
+
+        // BEZWZGLĘDNA OCHRONA BLOKU POD NOGAMI (Argon 4 & dj):
+        // Nigdy nie pozwól na niszczenie bloku podłogi bezpośrednio pod stopami gracza, gdy bot tuneluje!
+        if (pos.equals(mc.player.blockPosition().below())) {
+            baritone.api.IBaritone primaryBaritone = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
+            if (primaryBaritone != null && primaryBaritone.getCustomGoalProcess().isActive()) {
+                this.setIsHittingBlock(false);
+                this.argon$diggingActiveOnServer = false;
+                this.argon$targetBlockPosLong = Long.MIN_VALUE;
+                cir.setReturnValue(false);
+                return;
+            }
         }
 
         // KRYTYCZNA OCHRONA (Argon 4 & dj):

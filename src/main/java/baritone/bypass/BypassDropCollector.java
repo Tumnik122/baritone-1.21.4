@@ -8,6 +8,7 @@ import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
@@ -29,10 +30,25 @@ public final class BypassDropCollector {
 
     public static ItemEntity findNearbyValuableDrop(BypassProcess proc, LocalPlayer player, Level level) {
         if (player == null || level == null) return null;
+
+        Direction tunnelDir = proc.getPrimaryMiningDir() != null ? proc.getPrimaryMiningDir() : proc.getTunnelDir();
+        boolean isTunneling = proc.getState() == BypassProcess.State.TUNNELING && tunnelDir != null;
+
         AABB searchBox = player.getBoundingBox().inflate(6.0D, 3.5D, 6.0D);
         List<ItemEntity> items = level.getEntitiesOfClass(ItemEntity.class, searchBox, entity -> {
             if (!entity.isAlive() || entity.isInLava() || proc.getIgnoredDropIds().containsKey(entity.getId()))
                 return false;
+
+            // Na prostej drodze w trakcie tunelowania NIE zawracaj po stare dropy leżące za plecami (Argon 4 & dj)
+            if (isTunneling) {
+                double dx = entity.getX() - player.getX();
+                double dz = entity.getZ() - player.getZ();
+                double dot = dx * tunnelDir.getStepX() + dz * tunnelDir.getStepZ();
+                if (dot < -0.4D) {
+                    return false;
+                }
+            }
+
             Item item = entity.getItem().getItem();
             if (proc.getTargetOresList().isEmpty()) {
                 return item == Items.DIAMOND || item == Items.DIAMOND_ORE || item == Items.DEEPSLATE_DIAMOND_ORE;
@@ -91,10 +107,27 @@ public final class BypassDropCollector {
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
-        if (distSq <= 6.25 && proc.getDropStuckTicks() < 15 && DropCollectionHelper.canWalkDirectlyToDrop(player, level, drop)) {
+        // Gracz jest w ścisłym centrum przedmiotu (hitbox pickup: <= 0.25m XZ)
+        double dx = drop.getX() - player.getX();
+        double dz = drop.getZ() - player.getZ();
+        double hDistSq = dx * dx + dz * dz;
+        if (hDistSq <= 0.0625 && Math.abs(drop.getY() - player.getY()) <= 1.25) {
+            proc.setCurrentBreakingBlock(null);
+            proc.getBaritone().getInputOverrideHandler().clearAllKeys();
+            proc.setLastDropGoal(null);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // Płynne wbieganie wprost na drop bez zacinania
+        if (distSq <= 16.0 && proc.getDropStuckTicks() < 30 && DropCollectionHelper.canWalkDirectlyToDrop(player, level, drop)) {
             proc.setCurrentBreakingBlock(null);
             moveSafelyTowardsDrop(proc, player, drop.position());
             proc.setLastDropGoal(null);
+
+            double dy = drop.getY() - player.getY();
+            if (dy > 0.45 && hDistSq < 2.25 && player.onGround()) {
+                proc.getBaritone().getInputOverrideHandler().setInputForceState(Input.JUMP, true);
+            }
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
@@ -107,6 +140,8 @@ public final class BypassDropCollector {
 
         proc.setCurrentBreakingBlock(null);
         proc.getBaritone().getInputOverrideHandler().clearAllKeys();
+        baritone.Baritone.settings().autoTool.value = true;
+        baritone.Baritone.settings().walkWhileBreaking.value = false;
 
         Goal lastGoal = proc.getLastDropGoal();
         if (lastGoal == null || !lastGoal.isInGoal(drop.blockPosition())) {
@@ -120,16 +155,23 @@ public final class BypassDropCollector {
     public static void moveSafelyTowardsDrop(BypassProcess proc, LocalPlayer player, Vec3 targetPos) {
         if (player == null || targetPos == null)
             return;
-        Rotation fullRot = BypassNavigator.calcRotationFromVec3d(player.getEyePosition(1.0F), targetPos, player.getYRot());
-        float yawDiff = Math.abs(Mth.wrapDegrees(fullRot.getYaw() - player.getYRot()));
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        Rotation fullRot = BypassNavigator.calcRotationFromVec3d(eyePos, targetPos.add(0, 0.2, 0), player.getYRot());
+        float pitchClamped = Mth.clamp(fullRot.getPitch(), -15.0f, 35.0f);
+        Rotation walkRot = BypassNavigator.applyGrimGcd(player.getYRot(), player.getXRot(), fullRot.getYaw(), pitchClamped);
+        updateRotationGrimSafe(proc, player, walkRot, false);
 
-        if (yawDiff > 3.0f) {
-            Rotation walkRot = BypassNavigator.applyGrimGcd(player.getYRot(), player.getXRot(), fullRot.getYaw(), player.getXRot());
-            updateRotationGrimSafe(proc, player, walkRot, false);
+        float yawDiff = Math.abs(Mth.wrapDegrees(walkRot.getYaw() - player.getYRot()));
+        proc.getBaritone().getInputOverrideHandler().clearAllKeys();
+        if (yawDiff > 35.0f) {
+            proc.getBaritone().getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+            return;
         }
 
-        proc.getBaritone().getInputOverrideHandler().clearAllKeys();
         proc.getBaritone().getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
+        if (player.getFoodData().getFoodLevel() > 6 && !player.horizontalCollision) {
+            proc.getBaritone().getInputOverrideHandler().setInputForceState(Input.SPRINT, true);
+        }
     }
 
     public static void updateRotationGrimSafe(BypassProcess proc, LocalPlayer player, Rotation targetRot, boolean blockInteract) {

@@ -3,6 +3,7 @@ package baritone.bypass;
 import baritone.Baritone;
 import baritone.api.BaritoneAPI;
 import baritone.api.event.events.BlockChangeEvent;
+import baritone.api.event.events.PathEvent;
 import baritone.api.event.listener.AbstractGameEventListener;
 import baritone.api.pathing.goals.Goal;
 import baritone.api.process.IBaritoneProcess;
@@ -48,14 +49,17 @@ import java.util.*;
 
 /**
  * Główny proces wydobywczy (Argon 4 & dj).
- * Zoptymalizowany pod kątem bypassu GrimAC (GCD quantizing, RayTrace, Line-of-Sight, zero airbreak/simulation flags).
+ * Zoptymalizowany pod kątem bypassu GrimAC (GCD quantizing, RayTrace,
+ * Line-of-Sight, zero airbreak/simulation flags).
  * 
  * Zdekomponowany na wyspecjalizowane moduły:
  * - {@link BypassNavigator}: poruszanie się, schodki, korytarze, obroty, odwrót
  * - {@link BypassOreManager}: detekcja i bezpieczne wydobycie rud (diamentów)
  * - {@link BypassHazardSealer}: zatykanie wycieków wody/lawy i bridging podłogi
- * - {@link BypassDropCollector}: wyszukiwanie i odzyskiwanie leżącego dropu surowców
- * - {@link BypassLavaRadar}: długodystansowy radar lawy (do 30 bloków) i analiza sektorów
+ * - {@link BypassDropCollector}: wyszukiwanie i odzyskiwanie leżącego dropu
+ * surowców
+ * - {@link BypassLavaRadar}: długodystansowy radar lawy (do 30 bloków) i
+ * analiza sektorów
  */
 public final class BypassProcess extends BaritoneProcessHelper implements IBaritoneProcess, AbstractGameEventListener {
 
@@ -111,18 +115,29 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             "debris", Set.of(Items.ANCIENT_DEBRIS, Items.NETHERITE_SCRAP));
 
     public static String normalizeOreKey(String key) {
-        if (key == null) return "diamond";
+        if (key == null)
+            return "diamond";
         String s = key.toLowerCase(Locale.ROOT).trim();
-        if (s.equals("diamonds") || s.equals("diax") || s.equals("diaxy") || s.equals("diamond_ore")) return "diamond";
-        if (s.equals("gold_ore") || s.equals("zloto")) return "gold";
-        if (s.equals("iron_ore") || s.equals("zelazo")) return "iron";
-        if (s.equals("copper_ore") || s.equals("miedz")) return "copper";
-        if (s.equals("coal_ore") || s.equals("wegiel")) return "coal";
-        if (s.equals("lapis_ore") || s.equals("lazuryt") || s.equals("lapis_lazuli")) return "lapis";
-        if (s.equals("redstone_ore") || s.equals("czerwony")) return "redstone";
-        if (s.equals("emerald_ore") || s.equals("szmaragd") || s.equals("emeralds")) return "emerald";
-        if (s.equals("ancient_debris") || s.equals("netherite")) return "debris";
-        if (s.endsWith("_ore")) s = s.substring(0, s.length() - 4);
+        if (s.equals("diamonds") || s.equals("diax") || s.equals("diaxy") || s.equals("diamond_ore"))
+            return "diamond";
+        if (s.equals("gold_ore") || s.equals("zloto"))
+            return "gold";
+        if (s.equals("iron_ore") || s.equals("zelazo"))
+            return "iron";
+        if (s.equals("copper_ore") || s.equals("miedz"))
+            return "copper";
+        if (s.equals("coal_ore") || s.equals("wegiel"))
+            return "coal";
+        if (s.equals("lapis_ore") || s.equals("lazuryt") || s.equals("lapis_lazuli"))
+            return "lapis";
+        if (s.equals("redstone_ore") || s.equals("czerwony"))
+            return "redstone";
+        if (s.equals("emerald_ore") || s.equals("szmaragd") || s.equals("emeralds"))
+            return "emerald";
+        if (s.equals("ancient_debris") || s.equals("netherite"))
+            return "debris";
+        if (s.endsWith("_ore"))
+            s = s.substring(0, s.length() - 4);
         return s;
     }
 
@@ -131,7 +146,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
 
     private boolean active = false;
     private int targetY = DEFAULT_TARGET_Y;
-    private State state = State.IDLE;
+    public State state = State.IDLE;
+    public String phase = "idle";
     private Direction tunnelDir = Direction.NORTH;
 
     private BlockPos tunnelAnchorPos = null;
@@ -142,12 +158,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private int lostSightGraceTicks = 0;
     private Rotation lockedMiningRotation = null;
 
-    private final Map<BlockPos, EnumSet<Direction>> blockedDirsByNode = new LinkedHashMap<>(64, 0.75f, true) {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<BlockPos, EnumSet<Direction>> eldest) {
-            return size() > 48;
-        }
-    };
+    private final Map<BlockPos, EnumSet<Direction>> blockedDirsByNode=new LinkedHashMap<>(64,0.75f,true){@Override protected boolean removeEldestEntry(Map.Entry<BlockPos,EnumSet<Direction>>eldest){return size()>48;}};
     private Direction pendingTurnDir = null;
     private int turnCooldownTicks = 0;
     private int turnBrakeTicks = 0;
@@ -193,13 +204,14 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     private int oreAttemptTicks = 0;
     private int returnStuckTicks = 0;
     private BlockPos lastPlayerPos = null;
-    private int oresMined = 0;
+    public int oresMined = 0;
     private int diamondCount = 0;
     private int goldCount = 0;
     private long startTime = 0L;
     private int toolSwitchCooldownTicks = 0;
     private boolean originalAutoTool = true;
     private boolean originalAllowPlace = false;
+    private boolean originalWalkWhileBreaking = true;
     private int postPlaceMineDelayTicks = 0;
     private int noBlockBrokenTicks = 0;
 
@@ -217,8 +229,28 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         return this.ctx;
     }
 
+    public static final double HARD_MINING_REACH = 4.0D;
+    public static final double HARD_MINING_REACH_SQ = HARD_MINING_REACH * HARD_MINING_REACH; // 16.0
+
     public double getEffectiveReach() {
-        return STRICT_REACH;
+        return HARD_MINING_REACH;
+    }
+
+    public boolean isCommittedToBreaking(LocalPlayer player, Level level) {
+        if (currentBreakingBlock == null || level == null || player == null)
+            return false;
+        BlockState bstate = level.getBlockState(currentBreakingBlock);
+        if (bstate.isAir() || !bstate.getFluidState().isEmpty()
+                || bstate.getDestroySpeed(level, currentBreakingBlock) < 0.0F) {
+            currentBreakingBlock = null;
+            return false;
+        }
+        double distSq = player.getEyePosition(1.0F).distanceToSqr(Vec3.atCenterOf(currentBreakingBlock));
+        if (distSq > HARD_MINING_REACH_SQ) {
+            currentBreakingBlock = null;
+            return false;
+        }
+        return true;
     }
 
     public void logDirect(String msg) {
@@ -315,10 +347,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.protectedSealBlocks.clear();
         this.originalAutoTool = Baritone.settings().autoTool.value;
         this.originalAllowPlace = Baritone.settings().allowPlace.value;
+        this.originalWalkWhileBreaking = Baritone.settings().walkWhileBreaking.value;
         Baritone.settings().autoTool.value = false;
         Baritone.settings().allowPlace.value = false;
         Baritone.settings().allowBreak.value = true;
         Baritone.settings().allowParkour.value = false;
+        Baritone.settings().walkWhileBreaking.value = false;
 
         List<Item> throwaway = Baritone.settings().acceptableThrowawayItems.value;
         for (Item item : List.of(
@@ -375,19 +409,23 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     public void resumeFromData(ReconnectData data) {
-        if (data == null) return;
+        if (data == null)
+            return;
         List<String> ores = data.ores != null ? data.ores : List.of("diamond");
         int y = (int) Math.round(data.y);
-        if (y > 0) y = DEFAULT_TARGET_Y;
+        if (y > 0)
+            y = DEFAULT_TARGET_Y;
         this.start(y, ores);
         try {
             if (data.tunnel_direction != null) {
                 this.tunnelDir = Direction.valueOf(data.tunnel_direction);
                 this.primaryMiningDir = this.tunnelDir;
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         this.oresMined = data.ores_mined;
-        logDirect(String.format("§a[Bypass] Wznowiono sesję z pliku reconnect_data.json! Wykopano wcześniej: %d rud.", oresMined));
+        logDirect(String.format("§a[Bypass] Wznowiono sesję z pliku reconnect_data.json! Wykopano wcześniej: %d rud.",
+                oresMined));
     }
 
     public void stop() {
@@ -439,6 +477,7 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         this.protectedSealBlocks.clear();
         Baritone.settings().autoTool.value = this.originalAutoTool;
         Baritone.settings().allowPlace.value = this.originalAllowPlace;
+        Baritone.settings().walkWhileBreaking.value = this.originalWalkWhileBreaking;
         resetMiningState();
         baritone.getInputOverrideHandler().clearAllKeys();
         if (ctx.playerController() != null) {
@@ -468,6 +507,33 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     @Override
+    public void onPathEvent(PathEvent event) {
+        if (!isActive())
+            return;
+        if (event == PathEvent.CALC_FAILED || event == PathEvent.NEXT_CALC_FAILED) {
+            if (activeOreTarget != null) {
+                BlockPos failedOre = activeOreTarget.immutable();
+                blacklistedOres.add(failedOre);
+                OreScanner.blacklist(failedOre);
+                for (BlockPos q : veinQueue) {
+                    blacklistedOres.add(q.immutable());
+                    OreScanner.blacklist(q.immutable());
+                }
+                veinQueue.clear();
+                logDirect("§c[Bypass Blacklist] Nie znaleziono ścieżki (CALC_FAILED) do rudy "
+                        + failedOre.toShortString() + " -> natychmiastowa czarna lista!");
+                activeOreTarget = null;
+                resetMiningState();
+                stopMovementInputs();
+                baritone.getPathingBehavior().cancelSegmentIfSafe();
+                baritone.getPathingBehavior().secretInternalSetGoal(null);
+                this.tunnelDir = this.primaryMiningDir;
+                state = State.TUNNELING;
+            }
+        }
+    }
+
+    @Override
     public String displayName0() {
         return "BypassProcess [" + state.name() + " | Y=" + targetY + "]";
     }
@@ -477,6 +543,25 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         LocalPlayer player = ctx.player();
         Level level = ctx.world();
         if (player == null || level == null) {
+            return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+        }
+
+        // Błąd wyznaczenia ścieżki (No path found) do aktywnej rudy -> natychmiastowa
+        // czarna lista!
+        if (calcFailed && activeOreTarget != null) {
+            BlockPos failedOre = activeOreTarget.immutable();
+            blacklistedOres.add(failedOre);
+            OreScanner.blacklist(failedOre);
+            for (BlockPos q : veinQueue) {
+                blacklistedOres.add(q.immutable());
+                OreScanner.blacklist(q.immutable());
+            }
+            veinQueue.clear();
+            logDirect("§c[Bypass Blacklist] Nie znaleziono ścieżki (No path found) do rudy " + failedOre.toShortString()
+                    + " -> natychmiastowa czarna lista!");
+            activeOreTarget = null;
+            resetMiningState();
+            state = State.TUNNELING;
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
@@ -497,11 +582,13 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
         }
 
-        // 0.1 Watchdog braku wykopanych bloków przez 30 sekund (600 ticków) -> auto-restart
+        // 0.1 Watchdog braku wykopanych bloków przez 30 sekund (600 ticków) ->
+        // auto-restart
         if (this.state != State.IDLE && this.state != State.DISCONNECTED && player.isAlive()) {
             this.noBlockBrokenTicks++;
             if (this.noBlockBrokenTicks >= WATCHDOG_MAX_NO_BLOCK_TICKS) {
-                logDirect("§c[Bypass Watchdog] Brak wykopanych bloków przez 30 sekund! Automatyczny restart (#stop -> #bypass)...");
+                logDirect(
+                        "§c[Bypass Watchdog] Brak wykopanych bloków przez 30 sekund! Automatyczny restart (#stop -> #bypass)...");
                 this.noBlockBrokenTicks = 0;
                 int restartY = this.targetY;
                 List<String> restartOres = new ArrayList<>(this.targetOresList);
@@ -542,24 +629,24 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             this.hazardSourcePos = null;
         }
 
-        // 1. Priorytet: Ciągłe skanowanie rud w pobliżu
-        if (state != State.MINING_ORE && state != State.TURNING) {
-            BlockPos foundOre = BypassOreManager.findNearestOre(this, player, level);
-            if (foundOre != null) {
-                if (tunnelAnchorPos == null && state == State.TUNNELING) {
-                    tunnelAnchorPos = player.blockPosition();
-                }
-                activeOreTarget = foundOre;
-                invalidStandingPositions.clear();
-                oreStagnationTicks = 0;
-                oreAttemptTicks = 0;
-                BypassOreManager.enqueueConnectedVein(this, level, foundOre);
-                state = State.MINING_ORE;
+        boolean activelyBreaking = isCommittedToBreaking(player, level);
+        boolean followingActivePath = baritone.getPathingBehavior().isPathing();
+
+        // 0. ZASADA COMMIT-TO-BREAK (Argon 4 & dj): Jeśli bot zaczął rozbijać blok w
+        // reachu <= 3.8m,
+        // DOKOŃCZ GO BEZ OBRACANIA SIĘ ZA NOWYMI RUDAMI ANI PRZERYWANIA!
+        if (activelyBreaking) {
+            Optional<BypassOreManager.MiningAction> keepMining = BypassOreManager.findMiningAction(this, player, level,
+                    currentBreakingBlock, HARD_MINING_REACH);
+            if (keepMining.isPresent()) {
+                stopMovementInputs();
+                return mineBlockSafely(player, level, keepMining.get().targetPos(), keepMining.get().snapRotation());
             }
         }
 
-        // 2. Zbieranie leżącego dropu diamentów/surowców w pobliżu
-        if (state != State.MINING_ORE && state != State.TURNING) {
+        // 1. Skanuj rudy i dropy TYLKO wtedy, gdy bot NIE rozbija aktualnie bloku i NIE
+        // wykonuje aktywnej ścieżki A*
+        if (!activelyBreaking && !followingActivePath && state != State.MINING_ORE && state != State.TURNING) {
             ItemEntity drop = BypassDropCollector.findNearbyValuableDrop(this, player, level);
             if (drop != null) {
                 if (tunnelAnchorPos == null && state == State.TUNNELING) {
@@ -579,6 +666,22 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                         : State.TUNNELING;
                 logDirect("§a[Bypass] Zebrano drop diamentów! Natychmiastowy powrót do tunelowania.");
                 return new PathingCommand(null, PathingCommandType.CANCEL_AND_SET_GOAL);
+            }
+
+            BlockPos foundOre = BypassOreManager.findNearestOre(this, player, level);
+            if (foundOre != null) {
+                if (tunnelAnchorPos == null && state == State.TUNNELING) {
+                    tunnelAnchorPos = player.blockPosition();
+                }
+                activeOreTarget = foundOre;
+                invalidStandingPositions.clear();
+                oreStagnationTicks = 0;
+                oreAttemptTicks = 0;
+                BypassOreManager.enqueueConnectedVein(this, level, foundOre);
+                stopMovementInputs();
+                baritone.getPathingBehavior().cancelSegmentIfSafe();
+                baritone.getPathingBehavior().secretInternalSetGoal(null);
+                state = State.MINING_ORE;
             }
         }
 
@@ -605,6 +708,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     public PathingCommand mineBlockSafely(LocalPlayer player, Level level, BlockPos target) {
+        return mineBlockSafely(player, level, target, null);
+    }
+
+    public PathingCommand mineBlockSafely(LocalPlayer player, Level level, BlockPos target, Rotation preferredRotation) {
         BlockState targetState = level.getBlockState(target);
         if (target == null || BypassNavigator.isBedrockOrUnbreakable(level, target) || targetState.isAir()
                 || !level.getFluidState(target).isEmpty()) {
@@ -618,7 +725,23 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        stopMovementInputs();
+        int feetY = player.blockPosition().getY();
+        // TWARDA BLOKADA Y-FLOOR (Argon 4 & dj):
+        // W trakcie tunelowania bezwzględnie zabroń kopania jakiegokolwiek bloku poniżej poziomu stóp (Y < feetY)
+        // oraz bloku podłogi bezpośrednio pod stopami gracza!
+        if ((target.getY() < feetY || target.equals(player.blockPosition().below()))
+                && (this.state == State.TUNNELING || !BypassOreManager.isTargetOre(this, targetState))) {
+            this.currentBreakingBlock = null;
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // Zatrzymujemy ruch tylko jeśli jesteśmy w ścisłym kontakcie z blokiem (< 1.35m) lub mamy kolizję (Argon 4 & dj)
+        Vec3 eye = player.getEyePosition(1.0F);
+        double distSqTarget = eye.distanceToSqr(Vec3.atCenterOf(target));
+        if (distSqTarget <= (1.35 * 1.35) || player.horizontalCollision) {
+            stopMovementInputs();
+        }
 
         if (!target.equals(this.currentBreakingBlock)) {
             if (ctx.playerController() != null && this.currentBreakingBlock != null) {
@@ -675,6 +798,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             if (ctx.playerController() != null) {
                 ctx.playerController().resetBlockRemoving();
             }
+            if (this.state == State.MINING_ORE && target != null && target.equals(this.activeOreTarget)) {
+                this.blacklistedOres.add(target.immutable());
+                this.activeOreTarget = null;
+            }
             resetMiningState();
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
@@ -697,19 +824,34 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         }
 
         if (this.lockedMiningRotation == null) {
-            Optional<Rotation> candidate = findMultipointGrimRotation(player, level, target, reach);
-            if (candidate.isEmpty()) {
-                Optional<Rotation> fallbackSnap = RotationUtils.reachable(ctx, target, reach);
-                if (fallbackSnap.isPresent()) {
-                    Rotation gcdRot = BypassNavigator.applyGrimGcd(
-                            player.getYRot(),
-                            player.getXRot(),
-                            fallbackSnap.get().getYaw(),
-                            fallbackSnap.get().getPitch());
-                    candidate = Optional.of(gcdRot);
+            if (preferredRotation != null) {
+                Vec3 eyePos = player.getEyePosition(1.0F);
+                Vec3 prefLook = Vec3.directionFromRotation(preferredRotation.getPitch(), preferredRotation.getYaw());
+                BlockHitResult prefClip = level.clip(new ClipContext(
+                        eyePos,
+                        eyePos.add(prefLook.scale(reach)),
+                        ClipContext.Block.OUTLINE,
+                        ClipContext.Fluid.NONE,
+                        player));
+                if (prefClip.getType() == HitResult.Type.BLOCK && prefClip.getBlockPos().equals(target)) {
+                    this.lockedMiningRotation = preferredRotation;
                 }
             }
-            candidate.ifPresent(rot -> this.lockedMiningRotation = rot);
+            if (this.lockedMiningRotation == null) {
+                Optional<Rotation> candidate = findMultipointGrimRotation(player, level, target, reach);
+                if (candidate.isEmpty()) {
+                    Optional<Rotation> fallbackSnap = RotationUtils.reachable(ctx, target, reach);
+                    if (fallbackSnap.isPresent()) {
+                        Rotation gcdRot = BypassNavigator.applyGrimGcd(
+                                player.getYRot(),
+                                player.getXRot(),
+                                fallbackSnap.get().getYaw(),
+                                fallbackSnap.get().getPitch());
+                        candidate = Optional.of(gcdRot);
+                    }
+                }
+                candidate.ifPresent(rot -> this.lockedMiningRotation = rot);
+            }
         }
 
         if (this.lockedMiningRotation != null) {
@@ -728,7 +870,21 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             float pitchDelta = Math.abs(player.getXRot() - this.lockedMiningRotation.getPitch());
             boolean hitValid = currentHit.getType() == HitResult.Type.BLOCK && currentHit.getBlockPos().equals(target);
 
-            if (hitValid || (yawDelta <= 10.0f && pitchDelta <= 10.0f)) {
+            // BRAMKA RAYCASTU (Argon 4 & dj):
+            // Zezwól na CLICK_LEFT wyłącznie wtedy, gdy promień trafia w blok o Y >= feetY!
+            // W ułamku sekundy po pęknięciu frontFeet (gdy promień minąłby blok i trafił w podłogę Y - 1)
+            // CLICK_LEFT zostaje natychmiast odcięty!
+            boolean isTunnelOrNonOre = (this.state == State.TUNNELING || !BypassOreManager.isTargetOre(this, targetState));
+            if (isTunnelOrNonOre) {
+                boolean validBlockHit = currentHit.getType() == HitResult.Type.BLOCK
+                        && currentHit.getBlockPos().getY() >= feetY
+                        && !currentHit.getBlockPos().equals(player.blockPosition().below());
+                if (!validBlockHit) {
+                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+            }
+            if (hitValid || (this.state != State.TUNNELING && yawDelta <= 10.0f && pitchDelta <= 10.0f)) {
                 this.lostSightGraceTicks = 0;
                 this.aimStallTicks = 0;
                 this.activeMiningTicks++;
@@ -759,13 +915,18 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             if (ctx.playerController() != null) {
                 ctx.playerController().resetBlockRemoving();
             }
+            if (this.state == State.MINING_ORE && target != null && target.equals(this.activeOreTarget)) {
+                this.blacklistedOres.add(target.immutable());
+                this.activeOreTarget = null;
+            }
             resetMiningState();
         }
 
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
-    public static Optional<Rotation> findMultipointGrimRotation(LocalPlayer player, Level level, BlockPos target, double reach) {
+    public static Optional<Rotation> findMultipointGrimRotation(LocalPlayer player, Level level, BlockPos target,
+            double reach) {
         Vec3 eyePos = player.getEyePosition(1.0F);
         if (eyePos.distanceToSqr(Vec3.atCenterOf(target)) > (reach + 1.2D) * (reach + 1.2D)) {
             return Optional.empty();
@@ -775,7 +936,9 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         VoxelShape shape = state.getShape(level, target);
         AABB box = shape.isEmpty() ? new AABB(0, 0, 0, 1, 1, 1) : shape.bounds();
 
-        double[] yOffsets = { 0.55D, 0.72D, 0.82D, 0.35D };
+        double[] yOffsets = (target.getY() <= player.blockPosition().getY())
+                ? new double[] { 0.88D, 0.78D, 0.68D, 0.58D }
+                : new double[] { 0.55D, 0.72D, 0.82D, 0.35D };
         double[] xzOffsets = { 0.50D, 0.35D, 0.65D, 0.25D, 0.75D };
 
         Rotation bestRot = null;
@@ -788,10 +951,12 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
                 for (double zFrac : xzOffsets) {
                     double pz = target.getZ() + Mth.lerp(zFrac, box.minZ, box.maxZ);
                     Vec3 hitVec = new Vec3(px, py, pz);
-                    if (eyePos.distanceToSqr(hitVec) > reach * reach) continue;
+                    if (eyePos.distanceToSqr(hitVec) > reach * reach)
+                        continue;
 
                     Rotation rawRot = BypassNavigator.calcRotationFromVec3d(eyePos, hitVec, player.getYRot());
-                    Rotation gcdRot = BypassNavigator.applyGrimGcd(player.getYRot(), player.getXRot(), rawRot.getYaw(), rawRot.getPitch());
+                    Rotation gcdRot = BypassNavigator.applyGrimGcd(player.getYRot(), player.getXRot(), rawRot.getYaw(),
+                            rawRot.getPitch());
 
                     Vec3 lookVec = Vec3.directionFromRotation(gcdRot.getPitch(), gcdRot.getYaw());
                     BlockHitResult clip = level.clip(new ClipContext(
@@ -842,24 +1007,29 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     public boolean isPickaxe(ItemStack stack) {
-        if (stack == null || stack.isEmpty()) return false;
+        if (stack == null || stack.isEmpty())
+            return false;
         return stack.getItem() instanceof PickaxeItem;
     }
 
     public boolean isToolUsable(ItemStack stack) {
-        if (stack == null || stack.isEmpty()) return false;
-        if (!stack.isDamageableItem()) return true;
+        if (stack == null || stack.isEmpty())
+            return false;
+        if (!stack.isDamageableItem())
+            return true;
         int max = stack.getMaxDamage();
         int cur = stack.getDamageValue();
         return (max - cur) > MIN_TOOL_DURABILITY;
     }
 
     public boolean hasOnlyCriticallyDamagedTools(LocalPlayer player, BlockState state) {
-        if (player == null || state == null) return false;
+        if (player == null || state == null)
+            return false;
         boolean foundCriticallyDamaged = false;
         for (int i = 0; i < 36; i++) {
             ItemStack stack = player.getInventory().getItem(i);
-            if (stack.isEmpty()) continue;
+            if (stack.isEmpty())
+                continue;
             if (stack.isCorrectToolForDrops(state) || stack.getItem() instanceof DiggerItem) {
                 if (isToolUsable(stack)) {
                     return false;
@@ -871,7 +1041,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     public boolean ensureUsablePickaxe(LocalPlayer player) {
-        if (player == null) return false;
+        if (player == null)
+            return false;
         ItemStack held = player.getMainHandItem();
         if (isPickaxe(held) && isToolUsable(held)) {
             return true;
@@ -901,12 +1072,15 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     }
 
     public ToolEquipStatus equipBestTool(LocalPlayer player, BlockState state) {
-        if (player == null || state == null) return ToolEquipStatus.NO_CHANGE;
+        if (player == null || state == null)
+            return ToolEquipStatus.NO_CHANGE;
         ItemStack held = player.getMainHandItem();
 
         if (state.isAir()) {
-            if (isPickaxe(held) && isToolUsable(held)) return ToolEquipStatus.NO_CHANGE;
-            if (ensureUsablePickaxe(player)) return ToolEquipStatus.SWITCHED;
+            if (isPickaxe(held) && isToolUsable(held))
+                return ToolEquipStatus.NO_CHANGE;
+            if (ensureUsablePickaxe(player))
+                return ToolEquipStatus.SWITCHED;
             return ToolEquipStatus.NO_CHANGE;
         }
 
@@ -944,7 +1118,8 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         return ToolEquipStatus.NO_CHANGE;
     }
 
-    private int findBestToolInRange(LocalPlayer player, BlockState state, int startSlot, int endSlot, int currentSelected) {
+    private int findBestToolInRange(LocalPlayer player, BlockState state, int startSlot, int endSlot,
+            int currentSelected) {
         int bestSlot = -1;
         float bestSpeed = 1.0F;
 
@@ -952,24 +1127,30 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
             ItemStack held = player.getInventory().getItem(currentSelected);
             if (isToolUsable(held)) {
                 float heldSpeed = held.getDestroySpeed(state);
-                if (held.isCorrectToolForDrops(state)) heldSpeed *= 1.5F;
+                if (held.isCorrectToolForDrops(state))
+                    heldSpeed *= 1.5F;
                 bestSpeed = heldSpeed;
                 bestSlot = currentSelected;
             }
         }
 
         for (int i = startSlot; i < endSlot; i++) {
-            if (i == currentSelected) continue;
+            if (i == currentSelected)
+                continue;
             ItemStack stack = player.getInventory().getItem(i);
-            if (stack.isEmpty() || !isToolUsable(stack)) continue;
+            if (stack.isEmpty() || !isToolUsable(stack))
+                continue;
 
             float speed = stack.getDestroySpeed(state);
             boolean correct = stack.isCorrectToolForDrops(state);
-            if (correct) speed *= 1.5F;
+            if (correct)
+                speed *= 1.5F;
 
             if (state.requiresCorrectToolForDrops()) {
-                if (!correct) continue;
-                if (bestSlot == -1 || !player.getInventory().getItem(bestSlot).isCorrectToolForDrops(state) || speed > bestSpeed) {
+                if (!correct)
+                    continue;
+                if (bestSlot == -1 || !player.getInventory().getItem(bestSlot).isCorrectToolForDrops(state)
+                        || speed > bestSpeed) {
                     bestSpeed = speed;
                     bestSlot = i;
                 }
@@ -1010,151 +1191,408 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
     // GETTERY I SETTERY DLA WYODRĘBNIONYCH MODUŁÓW (Argon 4 & dj)
     // =========================================================================
 
-    public int getTargetY() { return targetY; }
-    public void setTargetY(int y) { this.targetY = y; }
+    public int getTargetY() {
+        return targetY;
+    }
 
-    public State getState() { return state; }
-    public void setState(State s) { this.state = s; }
+    public void setTargetY(int y) {
+        this.targetY = y;
+    }
 
-    public Direction getTunnelDir() { return tunnelDir; }
-    public void setTunnelDir(Direction d) { this.tunnelDir = d; }
+    public State getState() {
+        return state;
+    }
 
-    public Direction getPrimaryMiningDir() { return primaryMiningDir; }
-    public void setPrimaryMiningDir(Direction d) { this.primaryMiningDir = d; }
+    public void setState(State s) {
+        this.state = s;
+        this.phase = s != null ? s.name().toLowerCase(Locale.ROOT) : "idle";
+    }
 
-    public BlockPos getTunnelAnchorPos() { return tunnelAnchorPos; }
-    public void setTunnelAnchorPos(BlockPos p) { this.tunnelAnchorPos = p; }
+    public String getPhase() {
+        return state != null ? state.name().toLowerCase(Locale.ROOT) : "idle";
+    }
 
-    public BlockPos getActiveOreTarget() { return activeOreTarget; }
-    public void setActiveOreTarget(BlockPos p) { this.activeOreTarget = p; }
+    public int getOresMined() {
+        return oresMined;
+    }
 
-    public BlockPos getCurrentBreakingBlock() { return currentBreakingBlock; }
-    public void setCurrentBreakingBlock(BlockPos p) { this.currentBreakingBlock = p; }
+    public Direction getTunnelDir() {
+        return tunnelDir;
+    }
 
-    public int getActiveMiningTicks() { return activeMiningTicks; }
-    public void setActiveMiningTicks(int t) { this.activeMiningTicks = t; }
+    public void setTunnelDir(Direction d) {
+        this.tunnelDir = d;
+    }
 
-    public int getAimStallTicks() { return aimStallTicks; }
-    public void setAimStallTicks(int t) { this.aimStallTicks = t; }
+    public Direction getPrimaryMiningDir() {
+        return primaryMiningDir;
+    }
 
-    public int getTurnBrakeTicks() { return turnBrakeTicks; }
-    public void setTurnBrakeTicks(int t) { this.turnBrakeTicks = t; }
+    public void setPrimaryMiningDir(Direction d) {
+        this.primaryMiningDir = d;
+    }
 
-    public int getTurnCooldownTicks() { return turnCooldownTicks; }
-    public void setTurnCooldownTicks(int t) { this.turnCooldownTicks = t; }
+    public BlockPos getTunnelAnchorPos() {
+        return tunnelAnchorPos;
+    }
 
-    public int getTurnCommitCooldown() { return turnCommitCooldown; }
-    public void setTurnCommitCooldown(int t) { this.turnCommitCooldown = t; }
+    public void setTunnelAnchorPos(BlockPos p) {
+        this.tunnelAnchorPos = p;
+    }
 
-    public Deque<BlockPos> getVeinQueue() { return veinQueue; }
-    public Set<BlockPos> getBlacklistedOres() { return blacklistedOres; }
-    public Set<BlockPos> getInvalidStandingPositions() { return invalidStandingPositions; }
-    public List<String> getTargetOresList() { return targetOresList; }
+    public BlockPos getActiveOreTarget() {
+        return activeOreTarget;
+    }
 
-    public Map<Integer, Long> getIgnoredDropIds() { return ignoredDropIds; }
-    public int getCurrentDropId() { return currentDropId; }
-    public void setCurrentDropId(int id) { this.currentDropId = id; }
+    public void setActiveOreTarget(BlockPos p) {
+        this.activeOreTarget = p;
+    }
 
-    public int getDropCollectTicks() { return dropCollectTicks; }
-    public void setDropCollectTicks(int t) { this.dropCollectTicks = t; }
+    public BlockPos getCurrentBreakingBlock() {
+        return currentBreakingBlock;
+    }
 
-    public int getDropStuckTicks() { return dropStuckTicks; }
-    public void setDropStuckTicks(int t) { this.dropStuckTicks = t; }
+    public void setCurrentBreakingBlock(BlockPos p) {
+        this.currentBreakingBlock = p;
+    }
 
-    public double getLastDistToDropSq() { return lastDistToDropSq; }
-    public void setLastDistToDropSq(double d) { this.lastDistToDropSq = d; }
+    public int getActiveMiningTicks() {
+        return activeMiningTicks;
+    }
 
-    public Goal getLastDropGoal() { return lastDropGoal; }
-    public void setLastDropGoal(Goal g) { this.lastDropGoal = g; }
+    public void setActiveMiningTicks(int t) {
+        this.activeMiningTicks = t;
+    }
 
-    public BlockPos getHazardSourcePos() { return hazardSourcePos; }
-    public void setHazardSourcePos(BlockPos p) { this.hazardSourcePos = p; }
+    public int getAimStallTicks() {
+        return aimStallTicks;
+    }
 
-    public int getSealCooldownTicks() { return sealCooldownTicks; }
-    public void setSealCooldownTicks(int t) { this.sealCooldownTicks = t; }
+    public void setAimStallTicks(int t) {
+        this.aimStallTicks = t;
+    }
 
-    public int getSealFailedAttempts() { return sealFailedAttempts; }
-    public void setSealFailedAttempts(int t) { this.sealFailedAttempts = t; }
+    public int getTurnBrakeTicks() {
+        return turnBrakeTicks;
+    }
 
-    public int getPlaceCooldownTicks() { return placeCooldownTicks; }
-    public void setPlaceCooldownTicks(int t) { this.placeCooldownTicks = t; }
+    public void setTurnBrakeTicks(int t) {
+        this.turnBrakeTicks = t;
+    }
 
-    public LongSet getDugColumns2D() { return dugColumns2D; }
-    public LongSet getHazardColumns2D() { return hazardColumns2D; }
-    public Map<BlockPos, EnumSet<Direction>> getBlockedDirsByNode() { return blockedDirsByNode; }
+    public int getTurnCooldownTicks() {
+        return turnCooldownTicks;
+    }
 
-    public Direction getPendingTurnDir() { return pendingTurnDir; }
-    public void setPendingTurnDir(Direction d) { this.pendingTurnDir = d; }
+    public void setTurnCooldownTicks(int t) {
+        this.turnCooldownTicks = t;
+    }
 
-    public Direction getRetreatDir() { return retreatDir; }
-    public void setRetreatDir(Direction d) { this.retreatDir = d; }
+    public int getTurnCommitCooldown() {
+        return turnCommitCooldown;
+    }
 
-    public BlockPos getRetreatStartPos() { return retreatStartPos; }
-    public void setRetreatStartPos(BlockPos p) { this.retreatStartPos = p; }
+    public void setTurnCommitCooldown(int t) {
+        this.turnCommitCooldown = t;
+    }
 
-    public int getRetreatTicks() { return retreatTicks; }
-    public void setRetreatTicks(int t) { this.retreatTicks = t; }
+    public Deque<BlockPos> getVeinQueue() {
+        return veinQueue;
+    }
 
-    public int getTargetRetreatBlocks() { return targetRetreatBlocks; }
-    public void setTargetRetreatBlocks(int b) { this.targetRetreatBlocks = b; }
+    public Set<BlockPos> getBlacklistedOres() {
+        return blacklistedOres;
+    }
 
-    public int getLateralDetourRemaining() { return lateralDetourRemaining; }
-    public void setLateralDetourRemaining(int r) { this.lateralDetourRemaining = r; }
+    public Set<BlockPos> getInvalidStandingPositions() {
+        return invalidStandingPositions;
+    }
 
-    public Direction getLateralOffsetDir() { return lateralOffsetDir; }
-    public void setLateralOffsetDir(Direction d) { this.lateralOffsetDir = d; }
+    public List<String> getTargetOresList() {
+        return targetOresList;
+    }
 
-    public Direction getBlockedForwardDir() { return blockedForwardDir; }
-    public void setBlockedForwardDir(Direction d) { this.blockedForwardDir = d; }
+    public Map<Integer, Long> getIgnoredDropIds() {
+        return ignoredDropIds;
+    }
 
-    public int getConsecutiveStraightBlocks() { return consecutiveStraightBlocks; }
-    public void setConsecutiveStraightBlocks(int b) { this.consecutiveStraightBlocks = b; }
+    public int getCurrentDropId() {
+        return currentDropId;
+    }
 
-    public BlockPos getLastCountedStraightFeet() { return lastCountedStraightFeet; }
-    public void setLastCountedStraightFeet(BlockPos p) { this.lastCountedStraightFeet = p; }
+    public void setCurrentDropId(int id) {
+        this.currentDropId = id;
+    }
 
-    public int getMovementStuckTicks() { return movementStuckTicks; }
-    public void setMovementStuckTicks(int t) { this.movementStuckTicks = t; }
+    public int getDropCollectTicks() {
+        return dropCollectTicks;
+    }
 
-    public Vec3 getLastTrackedMovementPos() { return lastTrackedMovementPos; }
-    public void setLastTrackedMovementPos(Vec3 v) { this.lastTrackedMovementPos = v; }
+    public void setDropCollectTicks(int t) {
+        this.dropCollectTicks = t;
+    }
 
-    public int getNoBlockBrokenTicks() { return noBlockBrokenTicks; }
-    public void setNoBlockBrokenTicks(int t) { this.noBlockBrokenTicks = t; }
+    public int getDropStuckTicks() {
+        return dropStuckTicks;
+    }
 
-    public int getStuckTicks() { return stuckTicks; }
-    public void setStuckTicks(int t) { this.stuckTicks = t; }
+    public void setDropStuckTicks(int t) {
+        this.dropStuckTicks = t;
+    }
 
-    public int getOreStagnationTicks() { return oreStagnationTicks; }
-    public void setOreStagnationTicks(int t) { this.oreStagnationTicks = t; }
+    public double getLastDistToDropSq() {
+        return lastDistToDropSq;
+    }
 
-    public int getOreAttemptTicks() { return oreAttemptTicks; }
-    public void setOreAttemptTicks(int t) { this.oreAttemptTicks = t; }
+    public void setLastDistToDropSq(double d) {
+        this.lastDistToDropSq = d;
+    }
 
-    public int getReturnStuckTicks() { return returnStuckTicks; }
-    public void setReturnStuckTicks(int t) { this.returnStuckTicks = t; }
+    public Goal getLastDropGoal() {
+        return lastDropGoal;
+    }
 
-    public Set<BlockPos> getProtectedSealBlocks() { return protectedSealBlocks; }
+    public void setLastDropGoal(Goal g) {
+        this.lastDropGoal = g;
+    }
 
-    public int getPostPlaceMineDelayTicks() { return postPlaceMineDelayTicks; }
-    public void setPostPlaceMineDelayTicks(int t) { this.postPlaceMineDelayTicks = t; }
+    public BlockPos getHazardSourcePos() {
+        return hazardSourcePos;
+    }
 
-    public void incrementOresMined() { this.oresMined++; }
-    public void incrementDiamondCount(int c) { this.diamondCount += c; }
-    public void incrementGoldCount(int c) { this.goldCount += c; }
+    public void setHazardSourcePos(BlockPos p) {
+        this.hazardSourcePos = p;
+    }
+
+    public int getSealCooldownTicks() {
+        return sealCooldownTicks;
+    }
+
+    public void setSealCooldownTicks(int t) {
+        this.sealCooldownTicks = t;
+    }
+
+    public int getSealFailedAttempts() {
+        return sealFailedAttempts;
+    }
+
+    public void setSealFailedAttempts(int t) {
+        this.sealFailedAttempts = t;
+    }
+
+    public int getPlaceCooldownTicks() {
+        return placeCooldownTicks;
+    }
+
+    public void setPlaceCooldownTicks(int t) {
+        this.placeCooldownTicks = t;
+    }
+
+    public LongSet getDugColumns2D() {
+        return dugColumns2D;
+    }
+
+    public LongSet getHazardColumns2D() {
+        return hazardColumns2D;
+    }
+
+    public Map<BlockPos, EnumSet<Direction>> getBlockedDirsByNode() {
+        return blockedDirsByNode;
+    }
+
+    public Direction getPendingTurnDir() {
+        return pendingTurnDir;
+    }
+
+    public void setPendingTurnDir(Direction d) {
+        this.pendingTurnDir = d;
+    }
+
+    public Direction getRetreatDir() {
+        return retreatDir;
+    }
+
+    public void setRetreatDir(Direction d) {
+        this.retreatDir = d;
+    }
+
+    public BlockPos getRetreatStartPos() {
+        return retreatStartPos;
+    }
+
+    public void setRetreatStartPos(BlockPos p) {
+        this.retreatStartPos = p;
+    }
+
+    public int getRetreatTicks() {
+        return retreatTicks;
+    }
+
+    public void setRetreatTicks(int t) {
+        this.retreatTicks = t;
+    }
+
+    public int getTargetRetreatBlocks() {
+        return targetRetreatBlocks;
+    }
+
+    public void setTargetRetreatBlocks(int b) {
+        this.targetRetreatBlocks = b;
+    }
+
+    public int getLateralDetourRemaining() {
+        return lateralDetourRemaining;
+    }
+
+    public void setLateralDetourRemaining(int r) {
+        this.lateralDetourRemaining = r;
+    }
+
+    public Direction getLateralOffsetDir() {
+        return lateralOffsetDir;
+    }
+
+    public void setLateralOffsetDir(Direction d) {
+        this.lateralOffsetDir = d;
+    }
+
+    public Direction getBlockedForwardDir() {
+        return blockedForwardDir;
+    }
+
+    public void setBlockedForwardDir(Direction d) {
+        this.blockedForwardDir = d;
+    }
+
+    public int getConsecutiveStraightBlocks() {
+        return consecutiveStraightBlocks;
+    }
+
+    public void setConsecutiveStraightBlocks(int b) {
+        this.consecutiveStraightBlocks = b;
+    }
+
+    public BlockPos getLastCountedStraightFeet() {
+        return lastCountedStraightFeet;
+    }
+
+    public void setLastCountedStraightFeet(BlockPos p) {
+        this.lastCountedStraightFeet = p;
+    }
+
+    public int getMovementStuckTicks() {
+        return movementStuckTicks;
+    }
+
+    public void setMovementStuckTicks(int t) {
+        this.movementStuckTicks = t;
+    }
+
+    public Vec3 getLastTrackedMovementPos() {
+        return lastTrackedMovementPos;
+    }
+
+    public void setLastTrackedMovementPos(Vec3 v) {
+        this.lastTrackedMovementPos = v;
+    }
+
+    public int getNoBlockBrokenTicks() {
+        return noBlockBrokenTicks;
+    }
+
+    public void setNoBlockBrokenTicks(int t) {
+        this.noBlockBrokenTicks = t;
+    }
+
+    public int getStuckTicks() {
+        return stuckTicks;
+    }
+
+    public void setStuckTicks(int t) {
+        this.stuckTicks = t;
+    }
+
+    public int getOreStagnationTicks() {
+        return oreStagnationTicks;
+    }
+
+    public void setOreStagnationTicks(int t) {
+        this.oreStagnationTicks = t;
+    }
+
+    public int getOreAttemptTicks() {
+        return oreAttemptTicks;
+    }
+
+    public void setOreAttemptTicks(int t) {
+        this.oreAttemptTicks = t;
+    }
+
+    public int getReturnStuckTicks() {
+        return returnStuckTicks;
+    }
+
+    public void setReturnStuckTicks(int t) {
+        this.returnStuckTicks = t;
+    }
+
+    public Set<BlockPos> getProtectedSealBlocks() {
+        return protectedSealBlocks;
+    }
+
+    public int getPostPlaceMineDelayTicks() {
+        return postPlaceMineDelayTicks;
+    }
+
+    public void setPostPlaceMineDelayTicks(int t) {
+        this.postPlaceMineDelayTicks = t;
+    }
+
+    public void incrementOresMined() {
+        this.oresMined++;
+    }
+
+    public void incrementDiamondCount(int c) {
+        this.diamondCount += c;
+    }
+
+    public void incrementGoldCount(int c) {
+        this.goldCount += c;
+    }
 
     public BlockPos getCurrentTargetBlock() {
         return activeOreTarget != null ? activeOreTarget : currentBreakingBlock;
     }
 
-    public BypassConfig getConfig() { return config; }
-    public String getPhase() { return state.name().toLowerCase(Locale.ROOT); }
-    public Direction getTunnelDirection() { return tunnelDir; }
-    public int getOresMined() { return oresMined; }
-    public int getDiamondCount() { return diamondCount; }
-    public int getGoldCount() { return goldCount; }
-    public long getStartTime() { return startTime; }
-    public List<String> getTargetOres() { return Collections.unmodifiableList(targetOresList); }
-    public Set<String> getTargetDropItems() { return Collections.unmodifiableSet(targetDropItems); }
-    public BypassLuaEngine getLuaEngine() { return luaEngine; }
+    public BypassConfig getConfig() {
+        return config;
+    }
+
+    public Direction getTunnelDirection() {
+        return tunnelDir;
+    }
+
+    public int getDiamondCount() {
+        return diamondCount;
+    }
+
+    public int getGoldCount() {
+        return goldCount;
+    }
+
+    public long getStartTime() {
+        return startTime;
+    }
+
+    public List<String> getTargetOres() {
+        return Collections.unmodifiableList(targetOresList);
+    }
+
+    public Set<String> getTargetDropItems() {
+        return Collections.unmodifiableSet(targetDropItems);
+    }
+
+    public BypassLuaEngine getLuaEngine() {
+        return luaEngine;
+    }
 }

@@ -9,6 +9,7 @@ public enum Category {
     BYPASS("GrimAC Bypass", "Main", VectorIcon.SHIELD),
     MOVEMENT("Path & Movement", "Main", VectorIcon.MOVEMENT),
     MINING("Legit Mining", "Main", VectorIcon.MINING),
+    NUKER("Ventura Nuker", "Main", VectorIcon.PICKAXE),
     RENDER("Visuals", "Main", VectorIcon.RENDER),
     PRESETS("AntiCheat Presets", "Other", VectorIcon.SLIDERS);
 

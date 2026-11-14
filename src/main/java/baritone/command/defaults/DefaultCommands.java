@@ -70,6 +70,7 @@ public final class DefaultCommands {
                 new WaypointsCommand(baritone),
                 new CommandAlias(baritone, "sethome", "Sets your home waypoint", "waypoints save home"),
                 new HomeCommand(baritone),
+                new SpruceCommand(baritone),
                 new SelCommand(baritone),
                 new CommandAlias(baritone, Arrays.asList("selclear", "sellclear", "clearsel"), "Clears all selections", "sel clear"),
                 new CommandAlias(baritone, "cleararea", "Clears the selected area", "sel cleararea"),
@@ -86,7 +87,8 @@ public final class DefaultCommands {
                 new AnarchiaCommand(baritone),
                 new PracaCommand(baritone),
                 new TestCommand(baritone),
-                new OverlayCommand(baritone)
+                new OverlayCommand(baritone),
+                new NukerCommand(baritone)
         ));
         ExecutionControlCommands prc = new ExecutionControlCommands(baritone);
         commands.add(prc.pauseCommand);

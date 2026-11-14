@@ -23,6 +23,7 @@ import org.lwjgl.opengl.GL30;
 import java.lang.reflect.Method;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -345,22 +346,111 @@ public class BaritoneBypassScreen extends Screen {
             this.modes = modes != null ? modes : new String[0];
             this.modeIndex = 0;
         }
+
+        public int keyCode = GLFW.GLFW_KEY_UNKNOWN;
+        public KeybindsHudRenderer.KeybindMode keyMode = KeybindsHudRenderer.KeybindMode.TOGGLE;
+
+        public String getBindDisplayName() {
+            if ("nuker_main".equals(id)) return "Nuker";
+            if ("grim_rot_gcd".equals(id)) return "Grim GCD";
+            if ("movement_fix_input".equals(id)) return "Silent Move";
+            if ("hand_shaders".equals(id)) return "Hand Shaders";
+            if ("radial_ground_wave".equals(id)) return "Ground Wave";
+            if ("target_esp".equals(id)) return "Target ESP";
+            if ("motion_trail".equals(id)) return "Motion Trail";
+            if ("jump_circles".equals(id)) return "Jump Circles";
+            if ("china_hat_cosmetic".equals(id)) return "China Hat";
+            if ("client_block_overlay".equals(id)) return "Block Overlay";
+            if ("anarchia_mode".equals(id)) return "Anarchia Mode";
+            if ("legit_parkour".equals(id)) return "Parkour Jump";
+            if ("anti_xray_heuristics".equals(id)) return "Anti-Xray";
+            if ("nuker_rotation".equals(id)) return "Nuker Aim";
+            if ("nuker_flatten".equals(id)) return "Nuker Flatten";
+            return title;
+        }
+
+        public String getKeyName() {
+            return KeybindsHudRenderer.KeybindManager.getKeyName(keyCode);
+        }
     }
 
     public static final class SavedCardState {
         public boolean enabled;
         public float value;
         public int modeIndex;
+        public int keyCode;
+        public KeybindsHudRenderer.KeybindMode keyMode;
 
-        public SavedCardState(boolean enabled, float value, int modeIndex) {
+        public SavedCardState(boolean enabled, float value, int modeIndex, int keyCode, KeybindsHudRenderer.KeybindMode keyMode) {
             this.enabled = enabled;
             this.value = value;
             this.modeIndex = modeIndex;
+            this.keyCode = keyCode;
+            this.keyMode = (keyMode != null) ? keyMode : KeybindsHudRenderer.KeybindMode.TOGGLE;
+        }
+
+        public SavedCardState(boolean enabled, float value, int modeIndex) {
+            this(enabled, value, modeIndex, GLFW.GLFW_KEY_UNKNOWN, KeybindsHudRenderer.KeybindMode.TOGGLE);
         }
     }
 
     private static final java.util.Map<String, SavedCardState> PERSISTENT_CARD_STATES = new java.util.concurrent.ConcurrentHashMap<>();
     private static Category lastActiveCategory = Category.BYPASS;
+
+    public static final List<BypassCard> ALL_CARDS = new CopyOnWriteArrayList<>();
+    public static BypassCard listeningCard = null;
+    public static long listeningStartTime = 0L;
+
+    public static void syncCardKeybind(BypassCard card) {
+        if (card == null) return;
+        if (card.keyCode == GLFW.GLFW_KEY_UNKNOWN) {
+            KeybindsHudRenderer.KeybindManager.unregister(card.getBindDisplayName());
+            return;
+        }
+
+        KeybindsHudRenderer.KeybindManager.register(
+                card.getBindDisplayName(),
+                card.keyCode,
+                card.keyMode,
+                () -> card.enabled,
+                () -> {
+                    card.enabled = !card.enabled;
+                    card.toggleAnim = card.enabled ? 1.0f : 0.0f;
+                    syncCardToSettings(card);
+                },
+                (down) -> {
+                    if (card.enabled != down) {
+                        card.enabled = down;
+                        card.toggleAnim = card.enabled ? 1.0f : 0.0f;
+                        syncCardToSettings(card);
+                    }
+                }
+        );
+    }
+
+    public static void removeCardKeybind(BypassCard card) {
+        if (card == null) return;
+        KeybindsHudRenderer.KeybindManager.unregister(card.getBindDisplayName());
+        card.keyCode = GLFW.GLFW_KEY_UNKNOWN;
+    }
+
+    public static BypassCard getCardById(String id) {
+        if (id == null) return null;
+        for (BypassCard card : ALL_CARDS) {
+            if (id.equals(card.id)) return card;
+        }
+        return null;
+    }
+
+    public static BypassCard getCardByName(String name) {
+        if (name == null) return null;
+        for (BypassCard card : ALL_CARDS) {
+            if (name.equalsIgnoreCase(card.getBindDisplayName()) || name.equalsIgnoreCase(card.title) || name.equalsIgnoreCase(card.id)) {
+                return card;
+            }
+        }
+        return null;
+    }
 
     // =========================================================================
     // STAN EKRANU
@@ -387,6 +477,9 @@ public class BaritoneBypassScreen extends Screen {
 
     // Interakcja z suwakiem karty
     private BypassCard activeSliderCard = null;
+
+    // Selektor bloków i panel kontrolny Ventura Nuker
+    private final com.astra.revolution.nuker.NukerBlockSelectorWidget nukerBlockSelector = new com.astra.revolution.nuker.NukerBlockSelectorWidget();
 
     // Mikro-feedback dla przełączników i presetów
     private String activePresetName = "GrimAC 2.3.65 Strict";
@@ -481,6 +574,64 @@ public class BaritoneBypassScreen extends Screen {
                 "UNDETECTED", COL_STATUS_GREEN, Category.MINING, true,
                 true, "Air Exposure Weight", "x", 1.0f, 5.0f, 3.2f,
                 "Exposed Only", "Hybrid Ray"
+        ));
+
+        // Kategoria: NUKER (Ventura Client Port)
+        var nuker = com.astra.revolution.nuker.VenturaNukerModule.getInstance();
+        cards.add(new BypassCard(
+                "nuker_main", "Ventura Nuker Engine",
+                "Błyskawiczny, wielowątkowy moduł niszczenia bloków przeniesiony z klienta Ventura.",
+                "VENTURA CORE", COL_ACCENT_LILAC, Category.NUKER, nuker.isEnabled(),
+                false, "", "", 0, 0, 0
+        ));
+        cards.add(new BypassCard(
+                "nuker_rotation", "Nuker Raycast Rotations",
+                "Dedykowany algorytm celowania na punkt hitVec raycasta z kwantyzacją GCD myszy. Aktywny TYLKO podczas niszczenia bloku przez Nukera.",
+                "ISOLATED AIM", COL_STATUS_GREEN, Category.NUKER, nuker.getRotationMode() != com.astra.revolution.nuker.VenturaNukerModule.RotationMode.OFF,
+                true, "Max Aim Speed", "deg", 10.0f, 180.0f, nuker.getMaxRotationSpeed(),
+                "Silent (Grim GCD)", "Client Smooth", "Off"
+        ));
+        cards.add(new BypassCard(
+                "nuker_range", "Nuker Range & Reach",
+                "Promień sfery wokół gracza przeszukiwanej asynchronicznie pod kątem bloków do zniszczenia.",
+                "REACH", COL_STATUS_GREEN, Category.NUKER, true,
+                true, "Break Radius", "m", 1.0f, 10.0f, nuker.getRange(),
+                "Spherical Search", "Cylinder Search"
+        ));
+        cards.add(new BypassCard(
+                "nuker_delay", "Break Interval Delay",
+                "Czas przerwy pomiędzy kolejnymi zniszczeniami bloków w trybie Delay (Timed).",
+                "TIMING", COL_STATUS_GREEN, Category.NUKER, nuker.getDelayMs() > 0.0f,
+                true, "Cooldown", "ms", 0.0f, 1000.0f, nuker.getDelayMs(),
+                "Fixed MS", "Jitter Random"
+        ));
+        cards.add(new BypassCard(
+                "nuker_flatten", "Flatten (Anti-Pit Protection)",
+                "Zabezpieczenie przed spadaniem: pomija wszystkie bloki poniżej poziomu stóp gracza (Y < playerY).",
+                "SAFETY", COL_STATUS_GREEN, Category.NUKER, nuker.isFlatten(),
+                false, "", "", 0, 0, 0,
+                "Strict Floor", "Walkway Level"
+        ));
+        cards.add(new BypassCard(
+                "nuker_avoid_lava", "Avoid Lava Exposure",
+                "Skanuje 6 ścian sąsiadujących z blokiem – jeśli którakolwiek styka się z lawą, blok jest omijany.",
+                "HAZARD AVOID", COL_STATUS_AMBER, Category.NUKER, nuker.isAvoidLava(),
+                false, "", "", 0, 0, 0,
+                "Strict 6-Face", "Source Only"
+        ));
+        cards.add(new BypassCard(
+                "nuker_raycast", "Outline Vector Raycast",
+                "Metoda detekcji widoczności ścianek bloku: wielopunktowy skan 0.2 step, linia wzroku do centrum lub przez ściany.",
+                "RAY VALIDATION", COL_STATUS_GREEN, Category.NUKER, true,
+                false, "", "", 0, 0, 0,
+                "Multi-Point (0.2 Step)", "Center Line-of-Sight", "Through Walls"
+        ));
+        cards.add(new BypassCard(
+                "nuker_filter", "Target Block Filter",
+                "Kryterium wyboru bloków: wszystkie niszczalne, tylko kamień i rudy lub wyłącznie dojrzałe uprawy.",
+                "TARGETING", COL_STATUS_GREEN, Category.NUKER, true,
+                false, "", "", 0, 0, 0,
+                "All Destructible", "Stone & Ores Only", "Mature Crops Only"
         ));
 
         // Kategoria: RENDER (Visuals)
@@ -668,6 +819,10 @@ public class BaritoneBypassScreen extends Screen {
         ));
 
         // 5. Przywracanie zapisanego stanu wszystkich kart (toggles, suwaki, tryby)
+        ALL_CARDS.clear();
+        ALL_CARDS.addAll(cards);
+
+        // Przywrócenie zapisanego stanu z pamięci sesji (toggles, suwaki, tryby, bindy)
         for (BypassCard card : cards) {
             SavedCardState saved = PERSISTENT_CARD_STATES.get(card.id);
             if (saved != null) {
@@ -678,6 +833,27 @@ public class BaritoneBypassScreen extends Screen {
                     card.modeIndex = Math.min(saved.modeIndex, card.modes.length - 1);
                 }
                 card.toggleAnim = card.enabled ? 1.0f : 0.0f;
+                if (saved.keyCode != 0 && saved.keyCode != GLFW.GLFW_KEY_UNKNOWN) {
+                    card.keyCode = saved.keyCode;
+                    if (saved.keyMode != null) {
+                        card.keyMode = saved.keyMode;
+                    }
+                }
+            } else {
+                if ("nuker_main".equals(card.id)) {
+                    card.keyCode = GLFW.GLFW_KEY_N;
+                    card.keyMode = KeybindsHudRenderer.KeybindMode.TOGGLE;
+                } else if ("grim_rot_gcd".equals(card.id)) {
+                    card.keyCode = GLFW.GLFW_KEY_R;
+                    card.keyMode = KeybindsHudRenderer.KeybindMode.TOGGLE;
+                } else if ("anarchia_mode".equals(card.id)) {
+                    card.keyCode = GLFW.GLFW_KEY_V;
+                    card.keyMode = KeybindsHudRenderer.KeybindMode.TOGGLE;
+                }
+            }
+
+            if (card.keyCode != GLFW.GLFW_KEY_UNKNOWN) {
+                syncCardKeybind(card);
             }
         }
     }
@@ -755,6 +931,9 @@ public class BaritoneBypassScreen extends Screen {
 
         // 7. Płynny pasek przewijania SDF z podświetleniem pozycji
         renderSdfScrollbar(viewX + viewW - 8.5f, viewY + 8.0f, viewH - 16.0f, viewH, mouseX, mouseY, dt);
+
+        // 8. Moduł HUD Keybinds (Draggable w ClickGUI)
+        KeybindsHudRenderer.render(g, partialTick);
     }
 
     private void renderSidebar(GuiGraphics g, float winX, float winY, int mouseX, int mouseY, float dt) {
@@ -914,7 +1093,14 @@ public class BaritoneBypassScreen extends Screen {
         boolean hasSearchHighlight = !searchQuery.trim().isEmpty();
 
         for (BypassCard card : visible) {
-            float cardH = card.hasSlider || card.modes.length > 0 ? 78.0f : 52.0f;
+            float cardH;
+            if ("nuker_main".equals(card.id)) {
+                cardH = 336.0f;
+            } else if (card.hasSlider || card.modes.length > 0) {
+                cardH = 78.0f;
+            } else {
+                cardH = 52.0f;
+            }
             boolean hovered = isHovered(mouseX, mouseY, viewX + padX, curY, cardW, cardH)
                     && mouseY >= viewY && mouseY <= viewY + viewH;
 
@@ -967,6 +1153,53 @@ public class BaritoneBypassScreen extends Screen {
             float togY = curY + 11.0f;
             VenturaSdfRenderer.drawToggle(togX, togY, card.toggleAnim, isHovered(mouseX, mouseY, togX, togY, 30.0f, 16.0f));
 
+            // Przycisk przypisania klawisza (Keybind Button)
+            boolean isListening = (listeningCard == card);
+            String bindLabel;
+            if (isListening) {
+                bindLabel = "PRESS KEY";
+            } else if (card.keyCode != GLFW.GLFW_KEY_UNKNOWN) {
+                String kName = card.getKeyName();
+                String mName = (card.keyMode == KeybindsHudRenderer.KeybindMode.HOLD) ? "HOLD" : "TGL";
+                bindLabel = kName + " " + mName;
+            } else {
+                bindLabel = "+ BIND";
+            }
+
+            int labelW = this.font.width(bindLabel);
+            float bindBtnW = Math.max(26.0f, labelW + 10.0f);
+            float bindBtnH = 15.0f;
+            float bindBtnX = togX - bindBtnW - 8.0f;
+            float bindBtnY = curY + 11.5f;
+
+            boolean bindHov = isHovered(mouseX, mouseY, bindBtnX, bindBtnY, bindBtnW, bindBtnH);
+            int bindBgCol;
+            int bindBorderCol;
+            int bindTextCol;
+            float bindBorderW = 1.0f;
+
+            if (isListening) {
+                float pulse = 0.65f + 0.35f * (float) Math.sin((System.currentTimeMillis() - listeningStartTime) * 0.012f);
+                int alpha = (int) (0xFF * pulse);
+                bindTextCol = (alpha << 24) | 0x00FFFFFF;
+                bindBgCol = 0x36C4B5FD;
+                bindBorderCol = (alpha << 24) | (COL_ACCENT_LILAC & 0x00FFFFFF);
+                bindBorderW = 1.5f;
+            } else if (card.keyCode != GLFW.GLFW_KEY_UNKNOWN) {
+                bindTextCol = bindHov ? COL_TEXT_WHITE : COL_TEXT_LILAC;
+                bindBgCol = bindHov ? 0x30C4B5FD : 0x18C4B5FD;
+                bindBorderCol = bindHov ? COL_ACCENT_LILAC : 0x54C4B5FD;
+            } else {
+                bindTextCol = bindHov ? COL_TEXT_LILAC : COL_TEXT_GRAY;
+                bindBgCol = bindHov ? 0x1CC4B5FD : COL_BG_FIELD;
+                bindBorderCol = bindHov ? 0x80C4B5FD : COL_BORDER_FIELD;
+            }
+
+            VenturaSdfRenderer.drawRoundedRect(bindBtnX, bindBtnY, bindBtnW, bindBtnH, 4.0f, bindBgCol, bindBorderCol, bindBorderW);
+            int bindTextX = (int) (bindBtnX + (bindBtnW - labelW) * 0.5f);
+            int bindTextY = (int) (bindBtnY + (bindBtnH - 7.0f) * 0.5f);
+            g.drawString(this.font, bindLabel, bindTextX, bindTextY, bindTextCol, false);
+
             // Dolny rząd karty: Suwak SDF + Selektor trybów
             if (card.hasSlider || card.modes.length > 0) {
                 float rowY = curY + 46.0f;
@@ -997,6 +1230,11 @@ public class BaritoneBypassScreen extends Screen {
                     );
                     g.drawString(this.font, modeText, (int) (modeX + 8.0f), (int) (rowY + 9.0f), COL_TEXT_TAG, false);
                 }
+            }
+
+            // Wbudowany selektor bloków Ventura Nuker dla karty nuker_main
+            if ("nuker_main".equals(card.id)) {
+                nukerBlockSelector.render(g, (int) (viewX + padX + 8.0f), (int) (curY + 38.0f), (int) (cardW - 16.0f), 290, mouseX, mouseY, dt);
             }
 
             curY += cardH + 9.0f;
@@ -1039,6 +1277,18 @@ public class BaritoneBypassScreen extends Screen {
     // =========================================================================
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (listeningCard != null && button >= GLFW.GLFW_MOUSE_BUTTON_2 && button <= GLFW.GLFW_MOUSE_BUTTON_LAST) {
+            listeningCard.keyCode = button;
+            syncCardKeybind(listeningCard);
+            syncCardToSettings(listeningCard);
+            listeningCard = null;
+            return true;
+        }
+
+        if (KeybindsHudRenderer.handleMouseClicked(mouseX, mouseY, button)) {
+            return true;
+        }
+
         float winX = (this.width - WIN_WIDTH) * 0.5f;
         float winY = (this.height - WIN_HEIGHT) * 0.5f;
 
@@ -1114,9 +1364,59 @@ public class BaritoneBypassScreen extends Screen {
             float cardW = contentW - padX * 2.0f - 8.0f;
 
             for (BypassCard card : getFilteredCards()) {
-                float cardH = card.hasSlider || card.modes.length > 0 ? 78.0f : 52.0f;
+                float cardH;
+                if ("nuker_main".equals(card.id)) {
+                    cardH = 336.0f;
+                } else if (card.hasSlider || card.modes.length > 0) {
+                    cardH = 78.0f;
+                } else {
+                    cardH = 52.0f;
+                }
                 float togX = contentX + padX + cardW - 42.0f;
                 float togY = cardY + 11.0f;
+
+                if ("nuker_main".equals(card.id)) {
+                    float widgetX = contentX + padX + 8.0f;
+                    float widgetY = cardY + 38.0f;
+                    float widgetW = cardW - 16.0f;
+                    float widgetH = 290.0f;
+                    if (isHovered(mouseX, mouseY, widgetX, widgetY, widgetW, widgetH)) {
+                        if (nukerBlockSelector.mouseClicked(mouseX, mouseY, button, (int) widgetX, (int) widgetY, (int) widgetW, (int) widgetH)) {
+                            return true;
+                        }
+                    }
+                }
+
+                // Sprawdzenie kliknięcia przycisku binda
+                boolean isListening = (listeningCard == card);
+                String bindLabel = isListening ? "PRESS KEY" : (card.keyCode != GLFW.GLFW_KEY_UNKNOWN ? (card.getKeyName() + " " + (card.keyMode == KeybindsHudRenderer.KeybindMode.HOLD ? "HOLD" : "TGL")) : "+ BIND");
+                float bindBtnW = Math.max(26.0f, this.font.width(bindLabel) + 10.0f);
+                float bindBtnH = 15.0f;
+                float bindBtnX = togX - bindBtnW - 8.0f;
+                float bindBtnY = cardY + 11.5f;
+
+                if (isHovered(mouseX, mouseY, bindBtnX, bindBtnY, bindBtnW, bindBtnH)) {
+                    if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+                        if (listeningCard == card) {
+                            listeningCard = null;
+                        } else {
+                            listeningCard = card;
+                            listeningStartTime = System.currentTimeMillis();
+                        }
+                        card.clickPulseAnim = 1.0f;
+                        return true;
+                    } else if (button == GLFW.GLFW_MOUSE_BUTTON_RIGHT) {
+                        if (card.keyCode != GLFW.GLFW_KEY_UNKNOWN) {
+                            card.keyMode = (card.keyMode == KeybindsHudRenderer.KeybindMode.TOGGLE)
+                                    ? KeybindsHudRenderer.KeybindMode.HOLD
+                                    : KeybindsHudRenderer.KeybindMode.TOGGLE;
+                            card.clickPulseAnim = 0.8f;
+                            syncCardKeybind(card);
+                            syncCardToSettings(card);
+                            return true;
+                        }
+                    }
+                }
 
                 if (isHovered(mouseX, mouseY, togX - 4.0f, togY - 4.0f, 38.0f, 24.0f)) {
                     card.enabled = !card.enabled;
@@ -1155,9 +1455,9 @@ public class BaritoneBypassScreen extends Screen {
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
-    private void syncCardToSettings(BypassCard card) {
+    public static void syncCardToSettings(BypassCard card) {
         if (card != null) {
-            PERSISTENT_CARD_STATES.put(card.id, new SavedCardState(card.enabled, card.currentVal, card.modeIndex));
+            PERSISTENT_CARD_STATES.put(card.id, new SavedCardState(card.enabled, card.currentVal, card.modeIndex, card.keyCode, card.keyMode));
         }
         try {
             var s = BaritoneAPI.getSettings();
@@ -1299,6 +1599,35 @@ public class BaritoneBypassScreen extends Screen {
                     com.astra.revolution.visuals.AstraMotionBlurEngine.getInstance().setStrength(card.currentVal);
                     com.astra.revolution.visuals.AstraMotionBlurEngine.getInstance().setMode(card.modeIndex);
                     break;
+                case "nuker_main":
+                    com.astra.revolution.nuker.VenturaNukerModule.getInstance().setEnabled(card.enabled);
+                    break;
+                case "nuker_rotation":
+                    com.astra.revolution.nuker.VenturaNukerModule.getInstance().setRotationMode(
+                            card.modeIndex == 0 ? com.astra.revolution.nuker.VenturaNukerModule.RotationMode.SILENT_GCD :
+                            card.modeIndex == 1 ? com.astra.revolution.nuker.VenturaNukerModule.RotationMode.CLIENT_SMOOTH :
+                            com.astra.revolution.nuker.VenturaNukerModule.RotationMode.OFF
+                    );
+                    com.astra.revolution.nuker.VenturaNukerModule.getInstance().setMaxRotationSpeed(card.currentVal);
+                    break;
+                case "nuker_range":
+                    com.astra.revolution.nuker.VenturaNukerModule.getInstance().setRange(card.currentVal);
+                    break;
+                case "nuker_delay":
+                    com.astra.revolution.nuker.VenturaNukerModule.getInstance().setDelayMs((long) card.currentVal);
+                    break;
+                case "nuker_flatten":
+                    com.astra.revolution.nuker.VenturaNukerModule.getInstance().setFlatten(card.enabled);
+                    break;
+                case "nuker_avoid_lava":
+                    com.astra.revolution.nuker.VenturaNukerModule.getInstance().setAvoidLava(card.enabled);
+                    break;
+                case "nuker_raycast":
+                    com.astra.revolution.nuker.VenturaNukerModule.getInstance().setRaycastModeIndex(card.modeIndex);
+                    break;
+                case "nuker_filter":
+                    com.astra.revolution.nuker.VenturaNukerModule.getInstance().setFilterModeIndex(card.modeIndex);
+                    break;
             }
             if (s != null) {
                 SettingsUtil.save(s);
@@ -1308,6 +1637,16 @@ public class BaritoneBypassScreen extends Screen {
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (KeybindsHudRenderer.handleMouseDragged(mouseX, mouseY, button, dragX, dragY)) {
+            return true;
+        }
+        float winX = (this.width - WIN_WIDTH) * 0.5f;
+        float contentX = winX + SIDEBAR_WIDTH;
+        float padX = 14.0f;
+        float cardW = (WIN_WIDTH - SIDEBAR_WIDTH) - padX * 2.0f - 8.0f;
+        if (nukerBlockSelector.mouseDragged(mouseX, mouseY, button, (int) (contentX + padX + 8.0f), (int) (cardW - 16.0f))) {
+            return true;
+        }
         if (draggingScrollbar && maxScroll > 1.0f) {
             float trackH = (WIN_HEIGHT - TOPBAR_HEIGHT - 1.0f) - 16.0f;
             float deltaY = (float) mouseY - scrollbarDragStartY;
@@ -1319,6 +1658,12 @@ public class BaritoneBypassScreen extends Screen {
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (KeybindsHudRenderer.handleMouseReleased(mouseX, mouseY, button)) {
+            return true;
+        }
+        if (nukerBlockSelector.mouseReleased(mouseX, mouseY, button)) {
+            return true;
+        }
         activeSliderCard = null;
         draggingScrollbar = false;
         return super.mouseReleased(mouseX, mouseY, button);
@@ -1326,12 +1671,69 @@ public class BaritoneBypassScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        float winX = (this.width - WIN_WIDTH) * 0.5f;
+        float winY = (this.height - WIN_HEIGHT) * 0.5f;
+        float contentX = winX + SIDEBAR_WIDTH;
+        float viewY = winY + TOPBAR_HEIGHT + 1.0f;
+        float viewW = WIN_WIDTH - SIDEBAR_WIDTH;
+        float padX = 14.0f;
+        float cardW = viewW - padX * 2.0f - 8.0f;
+        float curCheckY = viewY + 14.0f - scrollCurrent + 18.0f;
+
+        for (BypassCard card : getFilteredCards()) {
+            float cHeight;
+            if ("nuker_main".equals(card.id)) {
+                cHeight = 336.0f;
+                float widgetX = contentX + padX + 8.0f;
+                float widgetY = curCheckY + 38.0f;
+                float widgetW = cardW - 16.0f;
+                float widgetH = 290.0f;
+                if (nukerBlockSelector.mouseScrolled(mouseX, mouseY, scrollY, (int) widgetX, (int) widgetY, (int) widgetW, (int) widgetH)) {
+                    return true;
+                }
+            } else if (card.hasSlider || card.modes.length > 0) {
+                cHeight = 78.0f;
+            } else {
+                cHeight = 52.0f;
+            }
+            curCheckY += cHeight + 9.0f;
+        }
+
         scrollTarget = Mth.clamp(scrollTarget - (float) scrollY * 28.0f, 0.0f, maxScroll);
         return true;
     }
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (listeningCard != null) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_DELETE || keyCode == GLFW.GLFW_KEY_BACKSPACE) {
+                removeCardKeybind(listeningCard);
+                syncCardToSettings(listeningCard);
+                listeningCard = null;
+                return true;
+            }
+            listeningCard.keyCode = keyCode;
+            syncCardKeybind(listeningCard);
+            syncCardToSettings(listeningCard);
+            listeningCard = null;
+            return true;
+        }
+
+        if (KeybindsHudRenderer.isListening()) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_DELETE || keyCode == GLFW.GLFW_KEY_BACKSPACE) {
+                KeybindsHudRenderer.handleListeningKey(GLFW.GLFW_KEY_UNKNOWN);
+            } else {
+                KeybindsHudRenderer.handleListeningKey(keyCode);
+            }
+            return true;
+        }
+
+        if (nukerBlockSelector.isSearchFocused()) {
+            if (nukerBlockSelector.keyPressed(keyCode, scanCode, modifiers)) {
+                return true;
+            }
+        }
+
         if (searchFocused) {
             if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_ENTER) {
                 searchFocused = false;
@@ -1348,6 +1750,11 @@ public class BaritoneBypassScreen extends Screen {
 
     @Override
     public boolean charTyped(char codePoint, int modifiers) {
+        if (nukerBlockSelector.isSearchFocused()) {
+            if (nukerBlockSelector.charTyped(codePoint, modifiers)) {
+                return true;
+            }
+        }
         if (searchFocused && (Character.isLetterOrDigit(codePoint) || " _-.".indexOf(codePoint) >= 0)) {
             if (searchQuery.length() < 26) {
                 searchQuery += codePoint;
@@ -1557,6 +1964,11 @@ public class BaritoneBypassScreen extends Screen {
 
         public void drawVectorIcon(VectorIcon icon, float cx, float cy, float radius, float stroke, int color) {
             drawIcon(icon, cx, cy, radius * 2.0f, color);
+        }
+
+        public static void drawRoundedBox(float x, float y, float w, float h, float radius,
+                                          int fillCol, int borderCol, float borderW) {
+            drawRoundedRect(x, y, w, h, radius, fillCol, borderCol, borderW);
         }
 
         public static void drawRoundedRect(float x, float y, float w, float h, float radius,

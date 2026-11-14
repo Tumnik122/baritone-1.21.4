@@ -48,6 +48,10 @@ public final class GrimSnapRotationUtil {
 
     private GrimSnapRotationUtil() {}
 
+    public static Rotation calcRotationFromVec3d(Vec3 orig, Vec3 dest, Rotation current) {
+        return RotationUtils.calcRotationFromVec3d(orig, dest, current);
+    }
+
     /**
      * Wyznacza skwantowaną pod GrimAC (GCD) rotację o minimalnej delcie kątowej,
      * która gwarantuje trafienie promieniem dokładnie w ściankę supportFace bloku supportPos (dla #sel fill / placement).
