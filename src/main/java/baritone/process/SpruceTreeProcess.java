@@ -11,11 +11,13 @@ import baritone.api.utils.input.Input;
 import baritone.bypass.AutoToolManager;
 import baritone.bypass.GrimSnapRotationUtil;
 import baritone.utils.BaritoneProcessHelper;
+import baritone.utils.GrimBreakValidator;
 import com.astra.revolution.visuals.SpruceTreeVisuals;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.Item;
@@ -89,6 +91,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
     private int currentBlockDamageTicks = 0;
     private int minRequiredBreakTicks = 1;
     private int interBlockReleaseTicks = 0;
+    private long blockMiningStartTimeMs = 0L;
 
     // Liczniki ticków i kontrola stanów
     private int stateTicks = 0;
@@ -327,8 +330,9 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         // Sprawdzenie, czy dotarliśmy do podłoża (podzol / dirt) i pień został ścięty
         boolean reachedGround = player.onGround() && (player.getY() <= baseSoilY + 2.5D);
         boolean noRemainingLogs = !hasAnyRemainingTrunkLogsInReach(player, level);
+        boolean allTrunkLogsGone = areAllTrunkLogsChopped(level);
 
-        if (reachedGround && noRemainingLogs) {
+        if (reachedGround && allTrunkLogsGone && noRemainingLogs) {
             stopDigging();
             logDirect("§a[Astra/Spruce2x2] Pień 2x2 ścięty do ziemi. Przechodzę do sadzenia (REPLANT_2X2).");
             transitionTo(State.REPLANT_2X2);
@@ -409,45 +413,85 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         }
 
         List<BlockPos> soilPositions = get2x2SoilPositions();
+
+        // 1. OCZYŚĆ WSZYSTKIE 4 POLA SADZENIA Z POZOSTAŁYCH KŁÓD I ZAWIESZONYCH LIŚCI
         for (BlockPos soilPos : soilPositions) {
             BlockPos saplingPos = soilPos.above();
             BlockState aboveState = level.getBlockState(saplingPos);
 
-            // Jeśli na tym bloku gleby nie stoi jeszcze sadzonka ani pień
-            if (!aboveState.is(Blocks.SPRUCE_SAPLING) && !aboveState.is(Blocks.SPRUCE_LOG)) {
-                // Jeśli zalega liść na miejscu sadzonki, zniszcz go przed posadzeniem
-                if (aboveState.is(Blocks.SPRUCE_LEAVES)) {
-                    BlockHitResult leafClearHit = raycastBlockVisibleFace(player, level, saplingPos);
-                    if (leafClearHit != null) {
+            if (!aboveState.isAir() && !aboveState.canBeReplaced() && !aboveState.is(Blocks.SPRUCE_SAPLING)) {
+                BlockHitResult hit = raycastBlockVisibleFace(player, level, saplingPos);
+                if (hit != null) {
+                    if (aboveState.is(Blocks.SPRUCE_LOG)) {
+                        selectAxeOrWarn(player, aboveState);
+                        this.currentTargetType = TargetType.LOG;
+                    } else {
                         selectHoeOrWarn(player, aboveState);
-                        applyGcdRotation(player, leafClearHit.getLocation());
-                        startOrContinueBreaking(player, level, saplingPos, leafClearHit.getDirection());
-                        return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                        this.currentTargetType = TargetType.LEAF;
                     }
+                    this.currentTargetPos = saplingPos;
+                    applyGcdRotation(player, hit.getLocation());
+                    startOrContinueBreaking(player, level, saplingPos, hit.getDirection());
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
+            }
 
-                // Wybór sadzonki świerku z hotbara
+            // Jeśli bezpośrednio nad polem sadzenia (Y+2) wisi liść lub kłoda blokująca wzrost drzewa 2x2:
+            BlockPos above2 = saplingPos.above();
+            BlockState above2State = level.getBlockState(above2);
+            if (!above2State.isAir() && !above2State.canBeReplaced() && !above2State.is(Blocks.SPRUCE_SAPLING)) {
+                BlockHitResult hit2 = raycastBlockVisibleFace(player, level, above2);
+                if (hit2 != null) {
+                    if (above2State.is(Blocks.SPRUCE_LOG)) {
+                        selectAxeOrWarn(player, above2State);
+                        this.currentTargetType = TargetType.LOG;
+                    } else {
+                        selectHoeOrWarn(player, above2State);
+                        this.currentTargetType = TargetType.LEAF;
+                    }
+                    this.currentTargetPos = above2;
+                    applyGcdRotation(player, hit2.getLocation());
+                    startOrContinueBreaking(player, level, above2, hit2.getDirection());
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+                }
+            }
+        }
+
+        // 2. SPRAWDŹ CZY KTÓREŚ POLE JEST BLOKOWANE PRZEZ HITBOX GRACZA
+        boolean playerIntersecting = false;
+        for (BlockPos soilPos : soilPositions) {
+            BlockPos saplingPos = soilPos.above();
+            if (player.getBoundingBox().intersects(saplingPos.getX(), saplingPos.getY(), saplingPos.getZ(),
+                    saplingPos.getX() + 1, saplingPos.getY() + 1, saplingPos.getZ() + 1)) {
+                playerIntersecting = true;
+                break;
+            }
+        }
+        if (playerIntersecting) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        } else {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
+        }
+
+        // 3. POSADŹ SADZONKI NA WOLNYCH POLACH
+        for (BlockPos soilPos : soilPositions) {
+            BlockPos saplingPos = soilPos.above();
+            BlockState aboveState = level.getBlockState(saplingPos);
+
+            if (!aboveState.is(Blocks.SPRUCE_SAPLING) && (aboveState.isAir() || aboveState.canBeReplaced())) {
                 if (!selectItemFromHotbar(player, Items.SPRUCE_SAPLING)) {
                     logDirect("§c[Astra/Spruce2x2] BŁĄD: Brak sadzonek świerku (spruce_sapling) na hotbarze! Zatrzymuję bota.");
                     return cancelProcess();
                 }
 
-                // Sprawdzenie czy gracz nie blokuje własnym ciałem pola sadzenia
-                if (player.getBoundingBox().intersects(saplingPos.getX(), saplingPos.getY(), saplingPos.getZ(),
-                        saplingPos.getX() + 1, saplingPos.getY() + 1, saplingPos.getZ() + 1)) {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
-                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
-                } else {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
-                }
-
-                this.currentTargetPos = saplingPos;
-                this.currentTargetType = TargetType.REPLANT;
-
                 BlockHitResult topFaceHit = raycastTopFaceForPlacement(player, level, soilPos);
                 if (topFaceHit == null) {
                     continue;
                 }
+
+                this.currentTargetPos = saplingPos;
+                this.currentTargetType = TargetType.REPLANT;
 
                 applyGcdRotation(player, topFaceHit.getLocation());
 
@@ -455,15 +499,30 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
                 if (mc.gameMode != null) {
                     mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, topFaceHit);
                     player.swing(InteractionHand.MAIN_HAND);
-                    placeDelayTicks = 2; // Bezpieczny odstęp pod GrimAC
+                    placeDelayTicks = 1; // 1 tick odstępu pod GrimAC (50ms)
                 }
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
         }
 
-        // Wszystkie 4 sadzonki są posadzone
-        logDirect("§a[Astra/Spruce2x2] Posadzono 4 sadzonki 2x2. Rozpoczynam pędzenie mączką (BONE_MEAL_SPAM).");
-        transitionTo(State.BONE_MEAL_SPAM);
+        // 4. WERYFIKACJA CZY DOKŁADNIE WSZYSTKIE 4 SADZONKI ZOSTAŁY POSADZONE
+        int plantedCount = 0;
+        for (BlockPos soilPos : soilPositions) {
+            BlockPos saplingPos = soilPos.above();
+            if (level.getBlockState(saplingPos).is(Blocks.SPRUCE_SAPLING)) {
+                plantedCount++;
+            }
+        }
+
+        if (plantedCount == 4) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
+            logDirect("§a[Astra/Spruce2x2] Posadzono 4/4 sadzonki 2x2. Rozpoczynam pędzenie mączką (BONE_MEAL_SPAM).");
+            transitionTo(State.BONE_MEAL_SPAM);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+
+        // Jeśli posadzono mniej niż 4 (np. 2/4): zrób mikro-krok w tył, aby odsłonić pozostałe pola
+        baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, true);
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
@@ -510,18 +569,19 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         this.currentTargetPos = targetSaplingPos;
         this.currentTargetType = TargetType.BONE_MEAL;
 
-        applyGcdRotation(player, saplingHit.getLocation());
-
         if (boneMealDelayTicks > 0) {
             boneMealDelayTicks--;
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
+        // Rotacja i kliknięcie mączką w tym samym ticku!
+        applyGcdRotation(player, saplingHit.getLocation());
+
         Minecraft mc = Minecraft.getInstance();
         if (mc.gameMode != null) {
             mc.gameMode.useItemOn(player, InteractionHand.MAIN_HAND, saplingHit);
             player.swing(InteractionHand.MAIN_HAND);
-            boneMealDelayTicks = ThreadLocalRandom.current().nextInt(2, 4);
+            boneMealDelayTicks = ThreadLocalRandom.current().nextInt(1, 3);
         }
 
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
@@ -599,11 +659,9 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             lastBreakingType = TargetType.NONE;
             currentBlockBreakProgress = 0.0f;
             currentBlockDamageTicks = 0;
-            // GrimAC: Dla drewna (non-instamine) wymagane jest pełne 5 ticków (250ms vanilla destroyDelay).
-            // Dla liści (instamine) wystarczą 2 ticki.
-            interBlockReleaseTicks = wasLog ? 5 : 2;
+            interBlockReleaseTicks = 0;
             ctx.playerController().resetBlockRemoving();
-            return;
+            // Brak return - natychmiastowe przejście do niszczenia kolejnego celu w tym samym ticku!
         }
 
         BlockState targetState = level.getBlockState(pos);
@@ -617,22 +675,15 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         Direction safeSide = side != null ? side : Direction.UP;
 
         // 1. ZMIANA BLOKU (z pnia 1 na pień 2 lub z liścia na liść):
-        // Wymuszenie zwolnienia kliku i reset sesji kopania (eliminacja FastBreak delay=0ms)
+        // Błyskawiczny reset poprzedniego bloku bez sztucznego opóźnienia
         if (lastBreakingPos != null && !lastBreakingPos.equals(pos)) {
-            boolean wasLog = (lastBreakingType == TargetType.LOG);
             ctx.playerController().resetBlockRemoving();
             lastBreakingPos = null;
             lastBreakingType = TargetType.NONE;
             currentBlockDamageTicks = 0;
             currentBlockBreakProgress = 0.0f;
-            interBlockReleaseTicks = wasLog ? 5 : 2;
-            return;
-        }
-
-        // 2. Jeśli trwa bufor odstępu puszczenia kliku po zniszczeniu lub zmianie celu:
-        if (interBlockReleaseTicks > 0) {
-            interBlockReleaseTicks--;
-            return;
+            interBlockReleaseTicks = 0;
+            // Brak return - kliknięcie w nowy blok w tym samym ticku!
         }
 
         // Synchronizacja trzymanego narzędzia (eliminacja rozbieżności prędkości w GrimAC)
@@ -645,22 +696,23 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             lastBreakingType = TargetType.NONE;
             currentBlockDamageTicks = 0;
             currentBlockBreakProgress = 0.0f;
-            interBlockReleaseTicks = 2;
+            interBlockReleaseTicks = 0;
             return;
         }
 
         // 3. TICK 0: PIERWSZY KONTAKT Z NOWYM BLOKIEM
-        // Wysyłamy WYŁĄCZNIE pakiet START_DESTROY_BLOCK (clickBlock).
-        // NIE wywołujemy onPlayerDamageBlock w tym samym ticku, co całkowicie zapobiega flagom delay=0ms!
+        // Kliknięcie następuje NATYCHMIASTOWO w tym samym ticku co rotacja (żądanie dj)!
         if (lastBreakingPos == null) {
             lastBreakingPos = pos.immutable();
             lastBreakingType = currentTargetType;
             currentBlockDamageTicks = 0;
             currentBlockBreakProgress = 0.0f;
+            blockMiningStartTimeMs = System.currentTimeMillis();
 
-            float damagePerTick = targetState.getDestroyProgress(player, level, pos);
-            minRequiredBreakTicks = (damagePerTick >= 1.0f) ? 1 : (int) Math.ceil(1.0f / Math.max(1e-4f, damagePerTick)) + 1;
+            int reqTicks = GrimBreakValidator.getRequiredTicks(player, level, pos, targetState, player.onGround());
+            minRequiredBreakTicks = (currentTargetType == TargetType.LOG) ? Math.max(3, reqTicks) : Math.max(2, reqTicks);
 
+            // Błyskawiczny pakiet START_DESTROY_BLOCK w tym samym ticku:
             ctx.playerController().clickBlock(pos, safeSide);
             player.swing(InteractionHand.MAIN_HAND);
             return;
@@ -797,7 +849,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
 
     private BlockHitResult raycastTopFaceForPlacement(LocalPlayer player, Level level, BlockPos soilPos) {
         Vec3 eyePos = player.getEyePosition();
-        double[] offsets = {0.5D, 0.35D, 0.65D};
+        double[] offsets = {0.15D, 0.35D, 0.5D, 0.65D, 0.85D};
 
         for (double ox : offsets) {
             for (double oz : offsets) {
@@ -815,38 +867,88 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
                 BlockHitResult hit = level.clip(context);
                 if (hit.getType() == HitResult.Type.BLOCK
                         && hit.getBlockPos().equals(soilPos)
-                        && hit.getDirection() == Direction.UP
                         && eyePos.distanceToSqr(hit.getLocation()) <= MAX_GRIM_REACH_SQ) {
-                    return hit;
+                    return new BlockHitResult(hit.getLocation(), Direction.UP, soilPos, false);
                 }
             }
+        }
+
+        // Fallback: bezpośredni punkt centralny jeśli w zasięgu reach <= 3.9m
+        Vec3 centerTop = new Vec3(soilPos.getX() + 0.5D, soilPos.getY() + 1.0D, soilPos.getZ() + 0.5D);
+        if (eyePos.distanceToSqr(centerTop) <= MAX_GRIM_REACH_SQ) {
+            return new BlockHitResult(centerTop, Direction.UP, soilPos, false);
         }
         return null;
     }
 
     private void applyGcdRotation(LocalPlayer player, Vec3 targetVec) {
-        Rotation targetRot = RotationUtils.calcRotationFromVec3d(
-                player.getEyePosition(),
-                targetVec,
-                new Rotation(player.getYRot(), player.getXRot())
-        );
+        Vec3 eyePos = player.getEyePosition(1.0F);
+        double dx = targetVec.x - eyePos.x;
+        double dy = targetVec.y - eyePos.y;
+        double dz = targetVec.z - eyePos.z;
 
-        double sensitivity = Minecraft.getInstance().options.sensitivity().get();
+        float targetYaw = (float) Mth.wrapDegrees(Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+        float targetPitch = (float) Mth.wrapDegrees(-Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz))));
+
+        double sensitivity = 0.5D;
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.options != null && mc.options.sensitivity() != null) {
+            sensitivity = mc.options.sensitivity().get();
+        }
         double f = sensitivity * 0.6D + 0.2D;
         double gcd = f * f * f * 8.0D * 0.15D;
+        if (gcd < 1.0E-5D) gcd = 1.0E-5D;
 
         float currentYaw = player.getYRot();
         float currentPitch = player.getXRot();
 
-        float deltaYaw = wrapDegrees(targetRot.getYaw() - currentYaw);
-        float deltaPitch = targetRot.getPitch() - currentPitch;
+        float deltaYaw = Mth.wrapDegrees(targetYaw - currentYaw);
+        float clampedTargetPitch = Mth.clamp(targetPitch, -89.5F, 89.5F);
+        float deltaPitch = clampedTargetPitch - currentPitch;
 
-        float quantizedYaw = currentYaw + (float) (Math.round(deltaYaw / gcd) * gcd);
-        float quantizedPitch = Math.clamp(currentPitch + (float) (Math.round(deltaPitch / gcd) * gcd), -90.0F, 90.0F);
+        // Nuker Fast (żądanie dj): wysoka prędkość obrotu (do 180°/tick) z precyzyjną kwantyzacją GCD (GrimAC bypass)
+        float maxSpeed = 180.0F;
+        deltaYaw = Mth.clamp(deltaYaw, -maxSpeed, maxSpeed);
+        deltaPitch = Mth.clamp(deltaPitch, -maxSpeed, maxSpeed);
 
-        baritone.getLookBehavior().updateTarget(new Rotation(quantizedYaw, quantizedPitch), true);
-        player.setYRot(quantizedYaw);
-        player.setXRot(quantizedPitch);
+        int kYaw = (int) Math.round(deltaYaw / gcd);
+        int kPitch = (int) Math.round(deltaPitch / gcd);
+
+        // Ochrona przed AimDuplicateLook: jeśli kąt jest w progu GCD, nie wykonuj zbędnych mikro-skoków
+        if (kYaw == 0 && kPitch == 0) {
+            baritone.getLookBehavior().updateTarget(new Rotation(currentYaw, currentPitch), true);
+            return;
+        }
+
+        float fastYaw = (float) (currentYaw + kYaw * gcd);
+        float fastPitch = (float) (currentPitch + kPitch * gcd);
+
+        while (fastPitch > 89.5F) {
+            kPitch--;
+            fastPitch = (float) (currentPitch + kPitch * gcd);
+        }
+        while (fastPitch < -89.5F) {
+            kPitch++;
+            fastPitch = (float) (currentPitch + kPitch * gcd);
+        }
+
+        player.setYRot(fastYaw);
+        player.setXRot(fastPitch);
+        player.yRotO = fastYaw;
+        player.xRotO = fastPitch;
+
+        // Natychmiastowy pakiet rotacji do serwera PRZED wysłaniem pakietu akcji w tym samym ticku!
+        // Gwarantuje idealną zgodność raytrace w GrimAC (zero delay między rotacją a kliknięciem)
+        if (player.connection != null) {
+            player.connection.send(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
+                    fastYaw,
+                    fastPitch,
+                    player.onGround(),
+                    player.horizontalCollision
+            ));
+        }
+
+        baritone.getLookBehavior().updateTarget(new Rotation(fastYaw, fastPitch), true);
     }
 
     private static float wrapDegrees(float degrees) {
@@ -972,6 +1074,20 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
 
     private boolean hasAnyRemainingTrunkLogsInReach(LocalPlayer player, Level level) {
         return findBestBreakableTarget(player, level, false) != null;
+    }
+
+    private boolean areAllTrunkLogsChopped(Level level) {
+        if (baseSoilY <= 0) return true;
+        int maxY = topLogY > baseSoilY ? topLogY : (baseSoilY + 35);
+        for (BlockPos soilPos : get2x2SoilPositions()) {
+            for (int y = baseSoilY + 1; y <= maxY; y++) {
+                BlockPos p = new BlockPos(soilPos.getX(), y, soilPos.getZ());
+                if (level.getBlockState(p).is(Blocks.SPRUCE_LOG)) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     private List<BlockPos> get2x2SoilPositions() {

@@ -378,7 +378,9 @@ public final class BaritonePlayerController implements IPlayerController {
             markInteracted();
         }
 
-        if (initialDelta >= 1.0f || mc.level.getBlockState(loc).isAir()) {
+        boolean isTrueInstamine = (state.getDestroySpeed(mc.level, loc) == 0.0f)
+                || (initialDelta >= 1.0f && !state.is(net.minecraft.tags.BlockTags.LOGS) && state.getDestroySpeed(mc.level, loc) < 0.5f);
+        if (isTrueInstamine || mc.level.getBlockState(loc).isAir()) {
             // Instamine zakończony — zablokuj późniejszy ABORT_DESTROY_BLOCK
             ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);
             ((IPlayerControllerMP) mc.gameMode).setDestroyProgress(0.0f);

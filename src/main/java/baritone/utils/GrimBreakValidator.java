@@ -81,14 +81,36 @@ public final class GrimBreakValidator {
      */
     public static int getRequiredTicks(LocalPlayer player, BlockGetter level, BlockPos pos, BlockState state, boolean wasOnGroundLastTick) {
         float delta = getGrimDestroyProgress(player, level, pos, state, wasOnGroundLastTick);
-        if (delta >= 1.0f) return 0;
+        boolean isLog = state != null && state.is(net.minecraft.tags.BlockTags.LOGS);
+        boolean isLeaf = state != null && state.is(net.minecraft.tags.BlockTags.LEAVES);
+
+        if (delta >= 1.0f) {
+            // GrimAC: Pnie drzew (hardness 2.0) i twarde bloki NIGDY nie są instamine! Wymagają minimum 3 ticków (150ms).
+            if (isLog || (state != null && state.getDestroySpeed(level, pos) >= 1.5f)) {
+                return 3;
+            }
+            if (isLeaf) {
+                return 2;
+            }
+            return 0;
+        }
         if (delta <= 0.0f) return Integer.MAX_VALUE;
         net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
         if (mc != null && mc.hasSingleplayerServer()) {
             return (int) Math.ceil(1.0f / delta);
         }
+
+        int ticks = (int) Math.ceil(1.0f / delta);
+        if (isLog) {
+            // Dla pni drzew: absolutne minimum 3 ticki (150ms) + 1 tick bufora bezpieczeństwa na jitter sieciowy (eliminacja flag delay=98ms..105ms)
+            return Math.max(3, ticks + 1);
+        }
+        if (isLeaf) {
+            return Math.max(2, ticks);
+        }
+
         // +1 tick bufora bezpieczeństwa na jitter pakietów i opóźnienia sieciowe (eliminuje flagi delay=91ms..109ms na serwerach zewnętrznych)
-        return (int) Math.ceil(1.0f / delta) + 1;
+        return ticks + 1;
     }
 
     public static int getRequiredTicks(LocalPlayer player, BlockGetter level, BlockPos pos, BlockState state) {

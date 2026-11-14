@@ -105,8 +105,16 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 this.prevRotation = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
 
                 if (Baritone.settings().smoothRotation.value) {
-                    // Płynna rotacja przez silnik RotationEngine na pełny docelowy cel (C2 smootherstep, GCD, brak 1-tick snapów)
-                    SmoothLookHelper.apply(ctx.player(), this.target.rotation, Baritone.settings(), this.target.blockInteract);
+                    if (baritone instanceof Baritone fullBaritone
+                            && fullBaritone.getSpruceTreeProcess() != null
+                            && fullBaritone.getSpruceTreeProcess().isActive()) {
+                        // Szybka rotacja GCD w stylu Nuker Fast (żądanie dj) — bezpośrednie ustawienie celu bez wielotickowego spowalniacza
+                        ctx.player().setYRot(this.target.rotation.getYaw());
+                        ctx.player().setXRot(this.target.rotation.getPitch());
+                    } else {
+                        // Płynna rotacja przez silnik RotationEngine na pełny docelowy cel (C2 smootherstep, GCD, brak 1-tick snapów)
+                        SmoothLookHelper.apply(ctx.player(), this.target.rotation, Baritone.settings(), this.target.blockInteract);
+                    }
                 } else {
                     Rotation actual = this.processor.peekRotation(this.target.rotation, this.target.blockInteract);
                     if (!this.target.blockInteract) {

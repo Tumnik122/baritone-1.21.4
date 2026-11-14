@@ -171,6 +171,37 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         boolean isGrim = baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value
                 || baritone.api.BaritoneAPI.getSettings().grimCompat.value
                 || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value;
+
+        // KRYTYCZNA OCHRONA ANTY-FASTBREAK 0ms (Argon 4 & dj):
+        // Na serwerach z GrimAC żaden pień drzewa ani blok o twardości > 0 nie może być natychmiast
+        // zniszczony w ticku 0 przez waniliowe startDestroyBlock (np. przy siekierze Efficiency 10).
+        // Wymuszamy wysłanie START_DESTROY_BLOCK i wejście w kontrolowany cykl continueDestroyBlock (min. 3 ticki).
+        if (isGrim && currentState != null && (currentState.is(net.minecraft.tags.BlockTags.LOGS) || currentState.getDestroySpeed(mc.level, pos) >= 1.0f)) {
+            if (currentState.getDestroyProgress(mc.player, mc.level, pos) >= 1.0f) {
+                BlockPos cur = this.getCurrentBlock();
+                if (cur != null && this.isHittingBlock() && !cur.equals(pos)) {
+                    if (mc.getConnection() != null) {
+                        mc.getConnection().send(new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
+                                net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK,
+                                cur,
+                                direction
+                        ));
+                    }
+                }
+                this.callStartPrediction(mc.level, seq -> new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
+                        net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK,
+                        pos,
+                        direction,
+                        seq
+                ));
+                this.setIsHittingBlock(true);
+                this.setDestroyProgress(0.0f);
+                this.destroyDelay = 0;
+                cir.setReturnValue(true);
+                return;
+            }
+        }
+
         if (!isGrim && baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
             this.destroyDelay = 0;
         }
