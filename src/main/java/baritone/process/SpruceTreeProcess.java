@@ -672,6 +672,10 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
 
         if (mc.gameMode == null) return;
 
+        if (mc.gameMode instanceof baritone.utils.accessor.IPlayerControllerMP mp) {
+            mp.setDestroyDelay(0);
+        }
+
         Direction safeSide = side != null ? side : Direction.UP;
 
         // 1. ZMIANA BLOKU (z pnia 1 na pień 2 lub z liścia na liść):
@@ -936,17 +940,6 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         player.setXRot(fastPitch);
         player.yRotO = fastYaw;
         player.xRotO = fastPitch;
-
-        // Natychmiastowy pakiet rotacji do serwera PRZED wysłaniem pakietu akcji w tym samym ticku!
-        // Gwarantuje idealną zgodność raytrace w GrimAC (zero delay między rotacją a kliknięciem)
-        if (player.connection != null) {
-            player.connection.send(new net.minecraft.network.protocol.game.ServerboundMovePlayerPacket.Rot(
-                    fastYaw,
-                    fastPitch,
-                    player.onGround(),
-                    player.horizontalCollision
-            ));
-        }
 
         baritone.getLookBehavior().updateTarget(new Rotation(fastYaw, fastPitch), true);
     }
