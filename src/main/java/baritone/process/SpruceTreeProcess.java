@@ -782,7 +782,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             blockMiningStartTimeMs = System.currentTimeMillis();
 
             int reqTicks = GrimBreakValidator.getRequiredWaitTicks(player, level, pos, targetState);
-            minRequiredBreakTicks = (currentTargetType == TargetType.LOG) ? Math.max(6, reqTicks) : Math.max(4, reqTicks);
+            minRequiredBreakTicks = (currentTargetType == TargetType.LOG) ? Math.max(3, reqTicks) : Math.max(2, reqTicks);
 
             // Pakiet START_DESTROY_BLOCK:
             ctx.playerController().clickBlock(pos, safeSide);

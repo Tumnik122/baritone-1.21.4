@@ -21,12 +21,20 @@ import baritone.api.BaritoneAPI;
 import baritone.api.IBaritone;
 import baritone.api.event.events.PacketEvent;
 import baritone.api.event.events.type.EventState;
+import baritone.utils.GrimBreakValidator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.Connection;
 import net.minecraft.network.PacketSendListener;
 import net.minecraft.network.protocol.Packet;
 import net.minecraft.network.protocol.PacketFlow;
+import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
+import net.minecraft.network.protocol.game.ServerboundClientTickEndPacket;
+import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -50,11 +58,42 @@ public class MixinNetworkManager {
 
     @Inject(
             method = "sendPacket",
-            at = @At("HEAD")
+            at = @At("HEAD"),
+            cancellable = true
     )
     private void preDispatchPacket(Packet<?> packet, PacketSendListener packetSendListener, boolean flush, CallbackInfo ci) {
         if (this.receiving != PacketFlow.CLIENTBOUND) {
             return;
+        }
+
+        // 1. Zsynchronizowany koniec ticku klienta (1.21.2+):
+        if (packet instanceof ServerboundClientTickEndPacket) {
+            GrimBreakValidator.onClientTickEnd();
+        }
+        // 2. Eliminacja TickTimer (type=flying, packets=1 / type=end, packets=2) oraz Timer:
+        // GrimAC zlicza pakiety ruchu pomiędzy kolejnymi ServerboundClientTickEndPacket.
+        // Odrzucamy duplikaty pakietów ruchu w obrębie tego samego ticku!
+        else if (packet instanceof ServerboundMovePlayerPacket) {
+            if (!GrimBreakValidator.allowFlyingPacket()) {
+                ci.cancel();
+                return;
+            }
+        }
+        // 3. Ostateczna zapora na poziomie sieci przed AirLiquidBreak (START_DIGGING / FINISHED_DIGGING na AIR):
+        else if (packet instanceof ServerboundPlayerActionPacket actionPacket) {
+            ServerboundPlayerActionPacket.Action action = actionPacket.getAction();
+            if (action == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK
+                    || action == ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK) {
+                Minecraft mc = Minecraft.getInstance();
+                ClientLevel level = mc.level;
+                if (level != null) {
+                    BlockPos targetPos = actionPacket.getPos();
+                    if (level.getBlockState(targetPos).isAir() || GrimBreakValidator.isUnderQuarantine(targetPos)) {
+                        ci.cancel();
+                        return;
+                    }
+                }
+            }
         }
 
         for (IBaritone ibaritone : BaritoneAPI.getProvider().getAllBaritones()) {
@@ -91,6 +130,12 @@ public class MixinNetworkManager {
         if (this.receiving != PacketFlow.CLIENTBOUND) {
             return;
         }
+
+        // Odblokowanie natychmiastowej odpowiedzi na teleport z serwera (potwierdzenie pozycji)
+        if (packet instanceof ClientboundPlayerPositionPacket) {
+            GrimBreakValidator.onServerTeleportReceived();
+        }
+
         for (IBaritone ibaritone : BaritoneAPI.getProvider().getAllBaritones()) {
             if (ibaritone.getPlayerContext().player() != null && ibaritone.getPlayerContext().player().connection.getConnection() == (Connection) (Object) this) {
                 ibaritone.getGameEventHandler().onReceivePacket(new PacketEvent((Connection) (Object) this, EventState.PRE, packet));

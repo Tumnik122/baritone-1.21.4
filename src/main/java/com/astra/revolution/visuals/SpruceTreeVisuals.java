@@ -348,25 +348,14 @@ public final class SpruceTreeVisuals {
             RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
             RenderSystem.enableBlend();
 
-            // Przebieg 1: Ściany półprzezroczyste Porter-Duff (Cyan #00F0FF / Red-Orange #FF3300)
-            RenderSystem.blendFuncSeparate(
-                    GlStateManager.SourceFactor.SRC_ALPHA,
-                    GlStateManager.DestFactor.ONE_MINUS_SRC_ALPHA,
-                    GlStateManager.SourceFactor.ONE,
-                    GlStateManager.DestFactor.ZERO
-            );
-            drawDirectBuffer(SOLID_QUAD_BUF, solidQuadVerts, VertexFormat.Mode.QUADS, VIEW_ROTATION_MATRIX);
-
-            // Przebieg 2: Additive Bloom (wolumetryczne poświaty, fala skanująca UV, Cyber Brackets [ ])
+            // Lekki rendering 3D (Argon 4 & dj): Zero zasłaniających widok brył quadów, wyłącznie precyzyjne linie/nawiasy
             RenderSystem.blendFuncSeparate(
                     GlStateManager.SourceFactor.SRC_ALPHA,
                     GlStateManager.DestFactor.ONE,
                     GlStateManager.SourceFactor.ONE,
                     GlStateManager.DestFactor.ONE
             );
-            drawDirectBuffer(BLOOM_QUAD_BUF, bloomQuadVerts, VertexFormat.Mode.QUADS, VIEW_ROTATION_MATRIX);
-
-            RenderSystem.lineWidth(2.0f);
+            RenderSystem.lineWidth(1.8f);
             drawDirectBuffer(BLOOM_LINE_BUF, bloomLineVerts, VertexFormat.Mode.DEBUG_LINES, VIEW_ROTATION_MATRIX);
             RenderSystem.lineWidth(1.0f);
 

@@ -138,8 +138,11 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         }
 
         // KRYTYCZNA OCHRONA GRIMAC (FastBreak delay=38..56ms, 91ms, 199ms):
-        // Wymuszamy przestrzeganie odstępu 5 ticków (250ms) między kolejnymi blokami nie-instabreak!
-        if (!baritone.utils.GrimBreakValidator.canStartNewBreak(mc.player.tickCount)) {
+        // Wymuszamy przestrzeganie odstępu 5 ticków (260ms) między kolejnymi blokami nie-instabreak!
+        if (this.destroyDelay > 0 || !baritone.utils.GrimBreakValidator.canStartNewBreak(mc.player.tickCount)) {
+            if (this.destroyDelay > 0) {
+                this.destroyDelay--;
+            }
             this.setIsHittingBlock(false);
             cir.setReturnValue(false);
             return;
@@ -360,10 +363,19 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
                 return;
             }
 
+            // Gwarantujemy dokładnie 1 pakiet STOP_DESTROY_BLOCK i weryfikujemy stan bloku
+            if (!baritone.utils.GrimBreakValidator.consumeServerDigForFinish(pos) || mc.level.getBlockState(pos).isAir()) {
+                this.setIsHittingBlock(false);
+                this.setDestroyProgress(0.0f);
+                baritone.utils.GrimBreakValidator.reset();
+                cir.setReturnValue(false);
+                return;
+            }
+
             // Wymagany czas i delta GrimAC minęły w 100%!
             boolean isInsta = baritone.utils.GrimBreakValidator.getGrimDestroyProgress(mc.player, mc.level, pos, state) >= 1.0f
                     && state.getDestroySpeed(mc.level, pos) == 0.0f;
-            baritone.utils.GrimBreakValidator.onFinishBreak(currentTick, isInsta);
+            baritone.utils.GrimBreakValidator.onFinishBreak(pos, currentTick, isInsta);
 
             this.argon$recentDestroyedBlocks.put(pos.asLong(), System.currentTimeMillis() + 3000L);
             this.argon$lastDestroyedPosLong = pos.asLong();

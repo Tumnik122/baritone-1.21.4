@@ -12,32 +12,42 @@ import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
 
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
- * Kompletny walidator i kontroler niszczenia bloków zgodny z GrimAC 1.21.4 (Argon 4 High & dj).
- * Eliminuje flagi FastBreak (39ms..56ms, 89ms, 199ms) oraz AirLiquidBreak.
+ * Kompletny walidator i kontroler niszczenia bloków oraz pakietów ruchu zgodny z GrimAC 1.21.4 (Argon 4 High & dj).
+ * Eliminuje w 100%:
+ *  - FastBreak (delay=0..97ms, break-threshold oraz delay-threshold)
+ *  - AirLiquidBreak (block=air, type=START_DIGGING oraz type=FINISHED_DIGGING)
+ *  - TickTimer (type=flying, packets=1 / type=end, packets=2) oraz Timer (x35..x40).
  */
 public final class GrimBreakValidator {
 
-    // Bufor bezpieczeństwa ticków ponad matematyczne ceil(1.0 / delta)
-    private static final int GRIM_SAFETY_EXTRA_TICKS = 1;
-
-    // Bufor bezpieczeństwa czasu rzeczywistego (ms) na każdy wymagany tick (50ms)
-    private static final long TICK_MS = 50L;
-    private static final long JITTER_SAFETY_MS = 10L;
-
-    // Minimalny odstęp między zakończeniem jednego bloku (STOP) a rozpoczęciem kolejnego (START)
-    // Waniliowe destroyDelay = 5 ticków (250ms) wymagane przez GrimAC przy niszczeniu kolejnych bloków
+    // 1. Waniliowe 5 ticków (250ms + 10ms buforu na jitter) pomiędzy STOP a kolejnym START
     private static final int POST_BREAK_DELAY_TICKS = 5;
-    private static final long POST_BREAK_DELAY_MS = 250L;
+    private static final long POST_BREAK_DELAY_MS = 260L;
+
+    // 2. Dodatkowy 1 tick buforu podczas kopania (dla spruce_log daje to 2 + 1 = 3 ticki = min. 155ms)
+    private static final int BREAK_DURATION_EXTRA_TICKS = 1;
+    private static final long TICK_DURATION_MS = 50L;
+    private static final long JITTER_BUFFER_MS = 5L;
+
+    // 3. Kwarantanna 600ms na zniszczony BlockPos (eliminuje AirLiquidBreak block=air, type=START_DIGGING po rollbacku predykcji)
+    private static final long BROKEN_POS_COOLDOWN_MS = 600L;
+    private static final Map<BlockPos, Long> RECENTLY_BROKEN_POSITIONS = new ConcurrentHashMap<>();
 
     // Stan bieżącego cyklu niszczenia
     private static BlockPos activeBreakPos = null;
     private static Direction activeBreakDir = null;
+    private static boolean hasActiveServerDig = false; // Gwarantuje max 1 pakiet STOP_DESTROY_BLOCK na 1 START_DESTROY_BLOCK
     private static long startBreakTimeMs = 0L;
     private static int startClientTick = -1;
     private static int miningTicksElapsed = 0;
+    private static int extraTicksRemaining = 0;
 
-    // Akumulator postępu według konserwatywnego przypadku widzianego przez GrimAC
+    // Akumulator postępu według matematyki GrimAC 1.21.4
     private static float grimAccumulatedDamage = 0.0f;
     private static float minObservedDelta = 1.0f;
 
@@ -46,13 +56,60 @@ public final class GrimBreakValidator {
     private static long lastFinishTimeMs = 0L;
     private static boolean lastBreakWasInsta = false;
 
+    // Strażnik TickTimer / Timer 1.21.4: blokuje wysłanie >1 ServerboundMovePlayerPacket przed ServerboundClientTickEndPacket
+    private static volatile boolean sentFlyingPacketThisTick = false;
+
     private GrimBreakValidator() {}
+
+    /**
+     * Wywoływane przy wysyłaniu ServerboundMovePlayerPacket: zwraca false, jeśli w tym ticku
+     * (przed CLIENT_TICK_END) wysłano już pakiet ruchu -> eliminuje TickTimer i Timer w 100%.
+     */
+    public static boolean allowFlyingPacket() {
+        if (sentFlyingPacketThisTick) {
+            return false;
+        }
+        sentFlyingPacketThisTick = true;
+        return true;
+    }
+
+    /**
+     * Wywoływane przy wysyłaniu ServerboundClientTickEndPacket (na końcu każdego ticku klienta).
+     */
+    public static void onClientTickEnd() {
+        sentFlyingPacketThisTick = false;
+    }
+
+    /**
+     * Odblokowuje pojedynczy pakiet ruchu po otrzymaniu teleportu z serwera (ClientboundPlayerPositionPacket).
+     */
+    public static void onServerTeleportReceived() {
+        sentFlyingPacketThisTick = false;
+    }
+
+    /**
+     * Sprawdza, czy dana pozycja znajduje się w kwarantannie po niedawnym zniszczeniu (ochrona przed AirLiquidBreak).
+     */
+    public static boolean isUnderQuarantine(BlockPos pos) {
+        if (pos == null) return false;
+        Long brokenAt = RECENTLY_BROKEN_POSITIONS.get(pos);
+        if (brokenAt != null) {
+            if (System.currentTimeMillis() - brokenAt < BROKEN_POS_COOLDOWN_MS) {
+                return true;
+            }
+            RECENTLY_BROKEN_POSITIONS.remove(pos);
+        }
+        return false;
+    }
 
     /**
      * Sprawdza, czy blok w ogóle może zostać uderzony (eliminuje AirLiquidBreak w GrimAC).
      */
     public static boolean isValidBreakTarget(Level level, BlockPos pos) {
         if (level == null || pos == null) {
+            return false;
+        }
+        if (isUnderQuarantine(pos)) {
             return false;
         }
         BlockState state = level.getBlockState(pos);
@@ -66,17 +123,15 @@ public final class GrimBreakValidator {
     }
 
     /**
-     * Sprawdza, czy minął wymagany przez GrimAC odstęp po zniszczeniu poprzedniego bloku.
+     * Sprawdza, czy minął wymagany przez GrimAC odstęp po zniszczeniu poprzedniego bloku (delay-threshold).
      */
     public static boolean canStartNewBreak(int currentClientTick) {
         if (lastBreakWasInsta) {
-            return true;
+            return (currentClientTick - lastFinishClientTick) >= 1
+                    && (System.currentTimeMillis() - lastFinishTimeMs) >= 55L;
         }
-        long now = System.currentTimeMillis();
-        if (currentClientTick - lastFinishClientTick < POST_BREAK_DELAY_TICKS) {
-            return false;
-        }
-        return (now - lastFinishTimeMs) >= POST_BREAK_DELAY_MS;
+        return (currentClientTick - lastFinishClientTick) >= POST_BREAK_DELAY_TICKS
+                && (System.currentTimeMillis() - lastFinishTimeMs) >= POST_BREAK_DELAY_MS;
     }
 
     /**
@@ -134,8 +189,8 @@ public final class GrimBreakValidator {
             speed *= submergedFactor;
         }
 
-        // Brak kontaktu z podłożem (onGround == false lub ruch pionowy dzieli prędkość przez 5.0f w GrimAC)
-        if (!player.onGround() || Math.abs(player.getDeltaMovement().y) > 0.003) {
+        // Brak kontaktu z podłożem (onGround == false dzieli prędkość przez 5.0f w GrimAC)
+        if (!player.onGround()) {
             speed /= 5.0f;
         }
 
@@ -154,8 +209,7 @@ public final class GrimBreakValidator {
     }
 
     /**
-     * Oblicza liczbę pełnych ticków kontynuacji (po ticku START_DESTROY_BLOCK),
-     * jakich GrimAC 1.21.4 potrzebuje przed zaakceptowaniem STOP_DESTROY_BLOCK.
+     * Oblicza liczbę pełnych ticków kontynuacji, jakich GrimAC 1.21.4 potrzebuje przed zaakceptowaniem STOP_DESTROY_BLOCK.
      */
     public static int getRequiredWaitTicks(LocalPlayer player, BlockGetter level, BlockPos pos, BlockState state) {
         float currentDelta = getGrimDestroyProgress(player, level, pos, state);
@@ -175,7 +229,7 @@ public final class GrimBreakValidator {
                 : currentDelta;
 
         int rawTicks = (int) Math.ceil(1.0 / (double) effectiveDelta);
-        return rawTicks + GRIM_SAFETY_EXTRA_TICKS;
+        return rawTicks + BREAK_DURATION_EXTRA_TICKS;
     }
 
     public static int getRequiredTicks(LocalPlayer player, BlockGetter level, BlockPos pos, BlockState state, boolean wasOnGroundLastTick) {
@@ -194,21 +248,24 @@ public final class GrimBreakValidator {
         if (waitTicks <= 0) {
             return 0L;
         }
-        return (waitTicks * TICK_MS) - JITTER_SAFETY_MS;
+        return ((long) waitTicks * TICK_DURATION_MS) + JITTER_BUFFER_MS;
     }
 
     /**
      * Rejestruje początek niszczenia bloku (w momencie wysyłania START_DESTROY_BLOCK).
      */
     public static void onStartBreak(LocalPlayer player, Level level, BlockPos pos, Direction dir, int currentClientTick) {
+        cleanupExpiredQuarantine();
         BlockState state = level.getBlockState(pos);
         float initialDelta = getGrimDestroyProgress(player, level, pos, state);
 
         activeBreakPos = pos.immutable();
         activeBreakDir = dir;
+        hasActiveServerDig = initialDelta < 1.0f;
         startBreakTimeMs = System.currentTimeMillis();
         startClientTick = currentClientTick;
         miningTicksElapsed = 0;
+        extraTicksRemaining = BREAK_DURATION_EXTRA_TICKS;
         minObservedDelta = initialDelta > 0.0f ? initialDelta : 1.0f;
         grimAccumulatedDamage = initialDelta;
     }
@@ -226,7 +283,7 @@ public final class GrimBreakValidator {
      * Aktualizuje stan niszczenia w kolejnym ticku (wywoływane raz na tick w continueDestroyBlock).
      */
     public static void onTickContinue(LocalPlayer player, Level level, BlockPos pos) {
-        if (activeBreakPos == null || !activeBreakPos.equals(pos)) {
+        if (!hasActiveServerDig || activeBreakPos == null || !activeBreakPos.equals(pos)) {
             return;
         }
         BlockState state = level.getBlockState(pos);
@@ -235,19 +292,24 @@ public final class GrimBreakValidator {
             minObservedDelta = delta;
         }
         miningTicksElapsed++;
-        grimAccumulatedDamage += delta;
+        if (grimAccumulatedDamage < 1.0f) {
+            grimAccumulatedDamage += delta;
+        } else if (extraTicksRemaining > 0) {
+            extraTicksRemaining--;
+        }
     }
 
     /**
-     * Zwraca true TYLKO wtedy, gdy zarówno liczba ticków, skumulowane obrażenia bloku,
-     * jak i czas w milisekundach spełniają wymagania GrimAC 1.21.4.
+     * Zwraca true TYLKO wtedy, gdy zarówno liczba ticków (>= 3 dla drewna), skumulowane obrażenia bloku (>= 1.0f),
+     * jak i czas w milisekundach (>= 155ms) spełniają wymagania break-threshold w GrimAC 1.21.4.
      */
     public static boolean canFinishBreak(LocalPlayer player, Level level, BlockPos pos) {
-        if (activeBreakPos == null || !activeBreakPos.equals(pos)) {
+        if (!hasActiveServerDig || activeBreakPos == null || !activeBreakPos.equals(pos)) {
             return false;
         }
         BlockState state = level.getBlockState(pos);
         if (state.isAir()) {
+            hasActiveServerDig = false;
             return false;
         }
 
@@ -257,24 +319,46 @@ public final class GrimBreakValidator {
         }
 
         long elapsedMs = System.currentTimeMillis() - startBreakTimeMs;
-        long requiredMs = getRequiredBreakDurationMs(player, level, pos, state);
+        long requiredMs = (long) Math.max(requiredWaitTicks, miningTicksElapsed) * TICK_DURATION_MS + JITTER_BUFFER_MS;
 
-        return miningTicksElapsed >= requiredWaitTicks
-                && grimAccumulatedDamage >= 1.0f
+        return grimAccumulatedDamage >= 1.0f
+                && extraTicksRemaining <= 0
+                && miningTicksElapsed >= Math.max(2, requiredWaitTicks)
                 && elapsedMs >= requiredMs;
+    }
+
+    /**
+     * Atomowo pobiera i unieważnia znacznik aktywnego kopania na serwerze,
+     * gwarantując wysłanie dokładnie JEDNEGO pakietu STOP_DESTROY_BLOCK na blok.
+     */
+    public static boolean consumeServerDigForFinish(BlockPos pos) {
+        if (!hasActiveServerDig || activeBreakPos == null || !activeBreakPos.equals(pos)) {
+            return false;
+        }
+        hasActiveServerDig = false;
+        return true;
     }
 
     /**
      * Wywoływane w momencie wysłania STOP_DESTROY_BLOCK / finalizacji zniszczenia.
      */
-    public static void onFinishBreak(int currentClientTick, boolean wasInsta) {
+    public static void onFinishBreak(BlockPos pos, int currentClientTick, boolean wasInsta) {
+        if (pos != null) {
+            RECENTLY_BROKEN_POSITIONS.put(pos.immutable(), System.currentTimeMillis());
+        }
+        hasActiveServerDig = false;
         activeBreakPos = null;
         activeBreakDir = null;
         grimAccumulatedDamage = 0.0f;
         miningTicksElapsed = 0;
+        extraTicksRemaining = 0;
         lastFinishClientTick = currentClientTick;
         lastFinishTimeMs = System.currentTimeMillis();
         lastBreakWasInsta = wasInsta;
+    }
+
+    public static void onFinishBreak(int currentClientTick, boolean wasInsta) {
+        onFinishBreak(activeBreakPos, currentClientTick, wasInsta);
     }
 
     public static void onFinishBreak(int currentClientTick) {
@@ -285,10 +369,12 @@ public final class GrimBreakValidator {
      * Resetuje stan np. przy ABORT_DESTROY_BLOCK.
      */
     public static void reset() {
+        hasActiveServerDig = false;
         activeBreakPos = null;
         activeBreakDir = null;
         grimAccumulatedDamage = 0.0f;
         miningTicksElapsed = 0;
+        extraTicksRemaining = 0;
     }
 
     public static BlockPos getActiveBreakPos() {
@@ -297,5 +383,15 @@ public final class GrimBreakValidator {
 
     public static Direction getActiveBreakDir() {
         return activeBreakDir;
+    }
+
+    private static void cleanupExpiredQuarantine() {
+        long now = System.currentTimeMillis();
+        Iterator<Map.Entry<BlockPos, Long>> it = RECENTLY_BROKEN_POSITIONS.entrySet().iterator();
+        while (it.hasNext()) {
+            if (now - it.next().getValue() >= BROKEN_POS_COOLDOWN_MS) {
+                it.remove();
+            }
+        }
     }
 }
