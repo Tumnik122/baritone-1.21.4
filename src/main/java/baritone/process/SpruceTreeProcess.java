@@ -281,6 +281,15 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
+        // Po zidentyfikowaniu kolumny 2x2, idź W GÓRĘ, aby znaleźć PRAWDZIWY czubek pnia (gdy bot stoi na dole):
+        while (highestLogY < playerPos.getY() + 45
+                && (level.getBlockState(new BlockPos(foundMinX, highestLogY + 1, foundMinZ)).is(Blocks.SPRUCE_LOG)
+                    || level.getBlockState(new BlockPos(foundMinX + 1, highestLogY + 1, foundMinZ)).is(Blocks.SPRUCE_LOG)
+                    || level.getBlockState(new BlockPos(foundMinX, highestLogY + 1, foundMinZ + 1)).is(Blocks.SPRUCE_LOG)
+                    || level.getBlockState(new BlockPos(foundMinX + 1, highestLogY + 1, foundMinZ + 1)).is(Blocks.SPRUCE_LOG))) {
+            highestLogY++;
+        }
+
         this.trunkMinX = foundMinX;
         this.trunkMinZ = foundMinZ;
         this.topLogY = highestLogY;
@@ -1263,6 +1272,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         int goal = trunkFound ? Math.max(1, (topLogY - baseSoilY)) * 4 : 150;
         boolean isChopping = (currentTargetPos != null && currentTargetType == TargetType.LOG);
 
+        SpruceTreeVisuals.setActiveMiningTarget(currentTargetPos);
         SpruceTreeVisuals.updateState(
                 true,
                 status,

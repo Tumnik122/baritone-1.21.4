@@ -2989,6 +2989,8 @@ namespace cyber_esp {
     constexpr uint32_t RGB_CYBER_RED    = 0xFF3300u; // #FF3300 (Pień 2x2 / obrys)
     constexpr uint32_t RGB_CYBER_ORANGE = 0xFF5500u; // #FF5500 (Ściany pnia / fala UV)
     constexpr uint32_t RGB_SCAN_HOT     = 0xFFBB33u; // Szczyt fali skanującej UV
+    constexpr uint32_t RGB_GOLD         = 0xFFD700u; // #FFD700 (Złoty akcent)
+    constexpr uint32_t RGB_HOLO_WHITE   = 0xE0FFFFu; // Holograficzny biało-błękitny
 
     __forceinline uint32_t packCyberARGB(uint8_t a, uint32_t rgb) noexcept {
         return (static_cast<uint32_t>(a) << 24) | (rgb & 0x00FFFFFFu);
@@ -3214,111 +3216,84 @@ extern "C" JNIEXPORT void JNICALL Java_com_astra_revolution_visuals_SpruceTreeVi
         const float maxY = static_cast<float>(static_cast<double>(in->topLogY + 1) - in->camY);
         const float trunkHeight = std::max(1.0f, maxY - minY);
 
-        const uint8_t trunkWallAlpha = static_cast<uint8_t>(84.0f + 16.0f * harmonic);
-        const uint32_t wallBotCol = cyber_esp::packCyberARGB(trunkWallAlpha, cyber_esp::RGB_CYBER_RED);
-        const uint32_t wallTopCol = cyber_esp::packCyberARGB(trunkWallAlpha, cyber_esp::RGB_CYBER_ORANGE);
+        // 1. Ultra-delikatna, przezroczysta kolumna 2x2 (Alpha 14-20, gradient Cyan -> Gold)
+        const uint8_t trunkWallAlpha = static_cast<uint8_t>(14.0f + 6.0f * harmonic);
+        const uint32_t wallBotCol = cyber_esp::packCyberARGB(trunkWallAlpha, cyber_esp::RGB_CYBER_CYAN);
+        const uint32_t wallTopCol = cyber_esp::packCyberARGB(trunkWallAlpha + 6, cyber_esp::RGB_GOLD);
 
         cyber_esp::emitBoxQuadsAVX2(
             solidQ, solidIdx, maxSolidQuadVerts,
-            minX - 0.006f, minY, minZ - 0.006f,
-            maxX + 0.006f, maxY, maxZ + 0.006f,
+            minX, minY, minZ,
+            maxX, maxY, maxZ,
             wallBotCol, wallTopCol
         );
 
-        const float bloomPad = 0.026f + 0.012f * harmonic;
-        const uint32_t trunkBloomCol = cyber_esp::packCyberARGB(static_cast<uint8_t>(38.0f + 18.0f * harmonic), cyber_esp::RGB_CYBER_RED);
-        cyber_esp::emitBoxQuadsAVX2(
-            bloomQ, bloomQIdx, maxBloomQuadVerts,
-            minX - bloomPad, minY, minZ - bloomPad,
-            maxX + bloomPad, maxY, maxZ + bloomPad,
-            trunkBloomCol, trunkBloomCol
+        // 2. Cyber Brackets [ ] na 8 narożnikach kolumny pnia
+        const uint32_t bracketCol = cyber_esp::packCyberARGB(255, 0xE0FFFFu);
+        cyber_esp::emitCyberBracketsAVX2(
+            bloomL, bloomLIdx, maxBloomLineVerts,
+            minX - 0.015f, minY, minZ - 0.015f,
+            maxX + 0.015f, maxY, maxZ + 0.015f,
+            bracketCol
         );
 
-        const uint32_t wireCore = cyber_esp::packCyberARGB(245, cyber_esp::RGB_CYBER_RED);
-        const uint32_t wireGlow = cyber_esp::packCyberARGB(140, cyber_esp::RGB_CYBER_ORANGE);
-        cyber_esp::emitBoxLinesAVX2(
-            bloomL, bloomLIdx, maxBloomLineVerts,
-            minX - 0.008f, minY, minZ - 0.008f,
-            maxX + 0.008f, maxY, maxZ + 0.008f,
-            wireCore, wireCore
-        );
-        cyber_esp::emitBoxLinesAVX2(
-            bloomL, bloomLIdx, maxBloomLineVerts,
-            minX - 0.030f, minY, minZ - 0.030f,
-            maxX + 0.030f, maxY, maxZ + 0.030f,
-            wireGlow, wireGlow
-        );
+        // 3. Pionowe filary laserowe na krawędziach
+        const uint32_t wireCore = cyber_esp::packCyberARGB(245, cyber_esp::RGB_CYBER_CYAN);
+        cyber_esp::emitCyberLine(bloomL, bloomLIdx, maxBloomLineVerts, minX, minY, minZ, wireCore, minX, maxY, minZ, wireCore);
+        cyber_esp::emitCyberLine(bloomL, bloomLIdx, maxBloomLineVerts, maxX, minY, minZ, wireCore, maxX, maxY, minZ, wireCore);
+        cyber_esp::emitCyberLine(bloomL, bloomLIdx, maxBloomLineVerts, maxX, minY, maxZ, wireCore, maxX, maxY, maxZ, wireCore);
+        cyber_esp::emitCyberLine(bloomL, bloomLIdx, maxBloomLineVerts, minX, minY, maxZ, wireCore, minX, maxY, maxZ, wireCore);
 
-        const float scanPhase = std::fmod(t * 0.55f, 1.0f);
+        // 4. Płynna fala skanująca UV (laser sweep ring)
+        const float scanPhase = std::fmod(t * 0.45f, 1.0f);
         const float scanCenterY = minY + scanPhase * trunkHeight;
-        const float bandHalfH = std::min(0.65f, trunkHeight * 0.12f);
-        const float bandMinY = std::max(minY, scanCenterY - bandHalfH);
-        const float bandMaxY = std::min(maxY, scanCenterY + bandHalfH);
-
-        if (bandMaxY > bandMinY + 0.01f) {
-            const uint32_t scanFadeCol = cyber_esp::packCyberARGB(15, cyber_esp::RGB_CYBER_ORANGE);
-            const uint32_t scanPeakCol = cyber_esp::packCyberARGB(145, cyber_esp::RGB_SCAN_HOT);
-            cyber_esp::emitBoxQuadsAVX2(
-                bloomQ, bloomQIdx, maxBloomQuadVerts,
-                minX - 0.022f, bandMinY, minZ - 0.022f,
-                maxX + 0.022f, bandMaxY, maxZ + 0.022f,
-                scanFadeCol, scanPeakCol
-            );
-
-            const uint32_t scanRingCol = cyber_esp::lerpCyberARGB(cyber_esp::RGB_CYBER_RED, cyber_esp::RGB_SCAN_HOT, harmonic, 250);
-            cyber_esp::emitBoxLinesAVX2(
-                bloomL, bloomLIdx, maxBloomLineVerts,
-                minX - 0.035f, bandMaxY - 0.02f, minZ - 0.035f,
-                maxX + 0.035f, bandMaxY + 0.02f, maxZ + 0.035f,
-                scanRingCol, scanRingCol
-            );
-        }
+        const uint32_t scanRingCol = cyber_esp::packCyberARGB(240, cyber_esp::RGB_GOLD);
+        cyber_esp::emitBoxLinesAVX2(
+            bloomL, bloomLIdx, maxBloomLineVerts,
+            minX - 0.030f, scanCenterY - 0.02f, minZ - 0.030f,
+            maxX + 0.030f, scanCenterY + 0.02f, maxZ + 0.030f,
+            scanRingCol, scanRingCol
+        );
     }
 
-    // 2. SCHODKOWA KORONA LIŚCI (LIŚCIE / LEAVES)
-    if (in->hasLeaves) {
-        if (in->tierCount > 0) {
-            const int32_t count = std::min(in->tierCount, MAX_CANOPY_TIERS);
-            for (int32_t i = 0; i < count; ++i) {
-                const SpruceTierBox& box = in->tiers[i];
-                const float x0 = static_cast<float>(static_cast<double>(box.minX) - in->camX);
-                const float y0 = static_cast<float>(static_cast<double>(box.minY) - in->camY);
-                const float z0 = static_cast<float>(static_cast<double>(box.minZ) - in->camZ);
-                const float x1 = static_cast<float>(static_cast<double>(box.maxX) - in->camX);
-                const float y1 = static_cast<float>(static_cast<double>(box.maxY) - in->camY);
-                const float z1 = static_cast<float>(static_cast<double>(box.maxZ) - in->camZ);
+    // 2. KORONA ŚWIERKU (Crown Halo Beacon at tree top zamiast sztucznej kanciastej piramidy)
+    if (in->hasLeaves && in->hasTrunk) {
+        const float tMinX = static_cast<float>(static_cast<double>(in->trunkMinX) - in->camX);
+        const float tMinZ = static_cast<float>(static_cast<double>(in->trunkMinZ) - in->camZ);
+        const float topY  = static_cast<float>(static_cast<double>(in->topLogY + 1) - in->camY);
 
-                cyber_esp::buildCanopyTier(
-                    x0, y0, z0, x1, y1, z1, harmonic,
-                    solidQ, solidIdx, maxSolidQuadVerts,
-                    bloomQ, bloomQIdx, maxBloomQuadVerts,
-                    bloomL, bloomLIdx, maxBloomLineVerts
-                );
-            }
-        } else if (in->hasTrunk) {
-            const float tMinX = static_cast<float>(static_cast<double>(in->trunkMinX) - in->camX);
-            const float tMinZ = static_cast<float>(static_cast<double>(in->trunkMinZ) - in->camZ);
-            const float topY  = static_cast<float>(static_cast<double>(in->topLogY + 1) - in->camY);
-            const float soilY = static_cast<float>(static_cast<double>(in->baseSoilY + 1) - in->camY);
-            const float canopyStartY = std::max(soilY + 3.0f, topY - 12.0f);
-            const float spanY = std::max(4.0f, (topY + 2.0f) - canopyStartY);
+        const float haloX0 = tMinX - 1.5f;
+        const float haloX1 = tMinX + 3.5f;
+        const float haloZ0 = tMinZ - 1.5f;
+        const float haloZ1 = tMinZ + 3.5f;
+        const float haloY0 = topY + 0.1f;
+        const float haloY1 = topY + 2.4f;
 
-            constexpr float radii[4] = { 3.0f, 2.0f, 1.0f, 0.0f };
-            for (int tier = 0; tier < 4; ++tier) {
-                const float r = radii[tier];
-                const float y0 = canopyStartY + (spanY * static_cast<float>(tier) / 4.0f);
-                const float y1 = canopyStartY + (spanY * static_cast<float>(tier + 1) / 4.0f);
+        const uint8_t crownWallAlpha = static_cast<uint8_t>(12.0f + 6.0f * harmonic);
+        const uint32_t crownWallCol = cyber_esp::packCyberARGB(crownWallAlpha, cyber_esp::RGB_CYBER_CYAN);
+        cyber_esp::emitBoxQuadsAVX2(
+            solidQ, solidIdx, maxSolidQuadVerts,
+            haloX0, haloY0, haloZ0,
+            haloX1, haloY1, haloZ1,
+            crownWallCol, crownWallCol
+        );
 
-                cyber_esp::buildCanopyTier(
-                    tMinX - r, y0, tMinZ - r,
-                    tMinX + 2.0f + r, y1, tMinZ + 2.0f + r,
-                    harmonic,
-                    solidQ, solidIdx, maxSolidQuadVerts,
-                    bloomQ, bloomQIdx, maxBloomQuadVerts,
-                    bloomL, bloomLIdx, maxBloomLineVerts
-                );
-            }
-        }
+        const uint32_t crownLineCol = cyber_esp::packCyberARGB(static_cast<uint8_t>(190.0f + 55.0f * harmonic), cyber_esp::RGB_CYBER_CYAN);
+        cyber_esp::emitCyberBracketsAVX2(
+            bloomL, bloomLIdx, maxBloomLineVerts,
+            haloX0, haloY0, haloZ0,
+            haloX1, haloY1, haloZ1,
+            crownLineCol
+        );
+
+        const float ringY = haloY0 + 0.5f + 0.4f * harmonic;
+        const uint32_t haloRingCol = cyber_esp::packCyberARGB(240, 0xE0FFFFu);
+        cyber_esp::emitBoxLinesAVX2(
+            bloomL, bloomLIdx, maxBloomLineVerts,
+            haloX0 - 0.04f, ringY - 0.02f, haloZ0 - 0.04f,
+            haloX1 + 0.04f, ringY + 0.02f, haloZ1 + 0.04f,
+            haloRingCol, haloRingCol
+        );
     }
 
     counts->solidQuadVertices = solidIdx;

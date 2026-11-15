@@ -60,10 +60,14 @@ public final class SpruceTreeVisuals {
     private static final int COL_TEXT_MUTED    = 0xFF8D99AE;
 
     // Pre-alokowane sekwencje tekstowe 3D (Zero-GC dla font.drawInBatch8xOutline)
-    private static final FormattedCharSequence LABEL_LEAVES_3D =
-            Component.literal("LIŚCIE / LEAVES").getVisualOrderText();
-    private static final FormattedCharSequence LABEL_LOGS_3D =
-            Component.literal("DREWNO / LOGS (2x2)").getVisualOrderText();
+    private static final FormattedCharSequence LABEL_TITLE_3D =
+            Component.literal("✦ ASTRA 2x2 SPRUCE FARM ✦").getVisualOrderText();
+
+    private static BlockPos activeMiningPos = null;
+
+    public static void setActiveMiningTarget(BlockPos pos) {
+        activeMiningPos = (pos != null) ? pos.immutable() : null;
+    }
 
     // =========================================================================
     // UKŁAD PAMIĘCI DIRECT BYTEBUFFER (JNI <-> C++20 AVX2)
@@ -401,9 +405,9 @@ public final class SpruceTreeVisuals {
     }
 
     /**
-     * Renderuje unoszące się etykiety 3D w świecie:
-     * - "LIŚCIE / LEAVES" wycentrowane nad koroną (biało-błękitny puls harmoniczny)
-     * - "DREWNO / LOGS (2x2)" z boku kolumny pnia (neonowy pomarańcz)
+     * Renderuje unoszącą się, taktyczną plakietkę 3D nad koroną drzewa:
+     * - "✦ ASTRA 2x2 SPRUCE FARM ✦" (biało-błękitny neon)
+     * - Wysokość pnia, status farmy i postęp (czytelny, niezasłaniający widoku gracza)
      */
     private static void renderWorldHolographicLabels(
             Minecraft mc, Camera camera, double camX, double camY, double camZ, float timeSec
@@ -412,44 +416,36 @@ public final class SpruceTreeVisuals {
         MultiBufferSource.BufferSource bufferSource = mc.renderBuffers().bufferSource();
         float harmonic = 0.5f + 0.5f * Mth.sin(timeSec * 3.14159265f);
 
-        // 1. Etykieta nad koroną liści: LIŚCIE / LEAVES
-        if (hasLeaves) {
-            double lx = (canopyTierCount > 0) ? canopyTopCenterX : (trunkMinX + 1.0);
-            double ly = (canopyTierCount > 0) ? (canopyTopCenterY + 0.65) : (topLogY + 3.45);
-            double lz = (canopyTierCount > 0) ? canopyTopCenterZ : (trunkMinZ + 1.0);
-
-            int textCol = lerpRgb(COL_CYBER_CYAN, COL_HOLO_WHITE, 0.45f + 0.55f * harmonic, 255);
-            int outlineCol = 0xCC031B24;
-
-            drawBillboardText3D(
-                    font, bufferSource, camera,
-                    LABEL_LEAVES_3D,
-                    (float) (lx - camX), (float) (ly - camY), (float) (lz - camZ),
-                    textCol, outlineCol, 0.026f
-            );
-        }
-
-        // 2. Etykieta z boku pnia 2x2: DREWNO / LOGS (2x2)
         if (hasTrunk) {
             double centerX = trunkMinX + 1.0;
             double centerZ = trunkMinZ + 1.0;
-            double dirX = camX - centerX;
-            double dirZ = camZ - centerZ;
-            double len = Math.max(0.001, Math.hypot(dirX, dirZ));
+            double topY = topLogY + 3.2;
 
-            double sideX = centerX + (dirX / len) * 1.45;
-            double sideY = baseSoilY + 1.0 + Math.max(1.5, (topLogY - baseSoilY) * 0.35);
-            double sideZ = centerZ + (dirZ / len) * 1.45;
+            double dist = Math.hypot(camX - centerX, camZ - centerZ);
+            // Nie wyświetlaj napisu prosto w twarz, gdy gracz ścina pień z bliska (< 3.2m):
+            if (dist > 3.2D && dist < 64.0D) {
+                int titleCol = lerpRgb(COL_CYBER_CYAN, COL_HOLO_WHITE, 0.45f + 0.55f * harmonic, 255);
+                int outlineCol = 0xCC031B24;
 
-            int textCol = lerpRgb(COL_CYBER_ORANGE, 0xFFFF9933, harmonic, 255);
-            int outlineCol = 0xCC240800;
+                drawBillboardText3D(
+                        font, bufferSource, camera,
+                        LABEL_TITLE_3D,
+                        (float) (centerX - camX), (float) (topY - camY), (float) (centerZ - camZ),
+                        titleCol, outlineCol, 0.026f
+                );
 
-            drawBillboardText3D(
-                    font, bufferSource, camera,
-                    LABEL_LOGS_3D,
-                    (float) (sideX - camX), (float) (sideY - camY), (float) (sideZ - camZ),
-                    textCol, outlineCol, 0.024f
-            );
+                int height = Math.max(1, topLogY - baseSoilY + 1);
+                FormattedCharSequence subText = Component.literal(
+                        "§fH: §a" + height + "m §8| §fStatus: §e" + currentStatus.displayName + " §8| §6" + choppedLogsCount + "§7/§e" + targetLogsGoal
+                ).getVisualOrderText();
+
+                drawBillboardText3D(
+                        font, bufferSource, camera,
+                        subText,
+                        (float) (centerX - camX), (float) (topY - 0.36 - camY), (float) (centerZ - camZ),
+                        COL_TEXT_PRIMARY, outlineCol, 0.020f
+                );
+            }
         }
 
         bufferSource.endBatch();
@@ -665,39 +661,108 @@ public final class SpruceTreeVisuals {
             float z0 = (float) (trunkMinZ - camZ);
             float y0 = (float) ((baseSoilY + 1) - camY);
             float y1 = (float) ((topLogY + 1) - camY);
+            float trunkHeight = Math.max(1.0f, y1 - y0);
 
-            sIdx = emitBoxQuadsBuf(SOLID_QUAD_BUF, sIdx, x0, y0, z0, x0 + 2f, y1, z0 + 2f,
-                    withAlpha(COL_CYBER_RED, 88), withAlpha(COL_CYBER_ORANGE, 88));
-            bLIdx = emitBoxLinesBuf(BLOOM_LINE_BUF, bLIdx, x0 - 0.008f, y0, z0 - 0.008f,
-                    x0 + 2.008f, y1, z0 + 2.008f, withAlpha(COL_CYBER_RED, 245));
+            // 1. Ultra-delikatna, przezroczysta kolumna 2x2 (Alpha 14-20, gradient Cyan -> Gold)
+            // Zero zasłaniania widoku!
+            int wallBotCol = withAlpha(COL_CYBER_CYAN, (int) (14 + 6 * harmonic));
+            int wallTopCol = withAlpha(COL_GOLD, (int) (20 + 6 * harmonic));
+            sIdx = emitBoxQuadsBuf(SOLID_QUAD_BUF, sIdx, x0, y0, z0, x0 + 2.0f, y1, z0 + 2.0f, wallBotCol, wallTopCol);
 
-            float scanY = y0 + ((t * 0.55f) % 1.0f) * Math.max(1.0f, y1 - y0);
-            bLIdx = emitBoxLinesBuf(BLOOM_LINE_BUF, bLIdx, x0 - 0.03f, scanY, z0 - 0.03f,
-                    x0 + 2.03f, scanY + 0.04f, z0 + 2.03f, withAlpha(0xFFBB33, 240));
+            // 2. Neonowe filary laserowe na 4 pionowych krawędziach pnia (Additive Bloom)
+            int laserCol = withAlpha(COL_CYBER_CYAN, 245);
+            bLIdx = emitVerticalLaserPillars(BLOOM_LINE_BUF, bLIdx, x0, y0, z0, x0 + 2.0f, y1, z0 + 2.0f, laserCol);
+
+            // 3. Cyber Brackets [ ] na 8 narożnikach kolumny pnia
+            int bracketCol = withAlpha(COL_HOLO_WHITE, 255);
+            bLIdx = emitCyberBrackets(BLOOM_LINE_BUF, bLIdx, x0 - 0.015f, y0, z0 - 0.015f, x0 + 2.015f, y1, z0 + 2.015f, bracketCol);
+
+            // 4. Płynna fala skanująca UV (laser sweep ring)
+            float scanPhase = (t * 0.45f) % 1.0f;
+            float scanY = y0 + scanPhase * trunkHeight;
+            int ringCol = withAlpha(COL_GOLD, 230);
+            bLIdx = emitBoxLinesBuf(BLOOM_LINE_BUF, bLIdx, x0 - 0.03f, scanY - 0.02f, z0 - 0.03f, x0 + 2.03f, scanY + 0.02f, z0 + 2.03f, ringCol);
         }
 
+        // 5. Zwieńczenie korony (Crown Halo Beacon) zamiast sztucznej kanciastej piramidy:
         if (hasLeaves && hasTrunk) {
             float tMinX = (float) (trunkMinX - camX);
             float tMinZ = (float) (trunkMinZ - camZ);
             float topY = (float) ((topLogY + 1) - camY);
-            float startY = topY - 12.0f;
-            float[] radii = { 3f, 2f, 1f, 0f };
-            for (int tier = 0; tier < 4; tier++) {
-                float r = radii[tier];
-                float ty0 = startY + tier * 3.5f;
-                float ty1 = ty0 + 3.5f;
-                sIdx = emitBoxQuadsBuf(SOLID_QUAD_BUF, sIdx, tMinX - r, ty0, tMinZ - r,
-                        tMinX + 2f + r, ty1, tMinZ + 2f + r,
-                        withAlpha(COL_CYBER_CYAN, 72), withAlpha(COL_CYBER_CYAN, 72));
-                bLIdx = emitBoxLinesBuf(BLOOM_LINE_BUF, bLIdx, tMinX - r, ty0, tMinZ - r,
-                        tMinX + 2f + r, ty1, tMinZ + 2f + r,
-                        withAlpha(COL_CYBER_CYAN, (int) (200 + 55 * harmonic)));
-            }
+
+            float haloX0 = tMinX - 1.5f;
+            float haloX1 = tMinX + 3.5f;
+            float haloZ0 = tMinZ - 1.5f;
+            float haloZ1 = tMinZ + 3.5f;
+            float haloY0 = topY + 0.1f;
+            float haloY1 = topY + 2.4f;
+
+            // Delikatne halo korony
+            int haloWallCol = withAlpha(COL_CYBER_CYAN, (int) (12 + 6 * harmonic));
+            sIdx = emitBoxQuadsBuf(SOLID_QUAD_BUF, sIdx, haloX0, haloY0, haloZ0, haloX1, haloY1, haloZ1, haloWallCol, haloWallCol);
+
+            int haloLineCol = withAlpha(COL_CYBER_CYAN, (int) (190 + 55 * harmonic));
+            bLIdx = emitCyberBrackets(BLOOM_LINE_BUF, bLIdx, haloX0, haloY0, haloZ0, haloX1, haloY1, haloZ1, haloLineCol);
+
+            float beaconRingY = haloY0 + 0.5f + 0.4f * harmonic;
+            bLIdx = emitBoxLinesBuf(BLOOM_LINE_BUF, bLIdx, haloX0 - 0.04f, beaconRingY - 0.02f, haloZ0 - 0.04f, haloX1 + 0.04f, beaconRingY + 0.02f, haloZ1 + 0.04f, withAlpha(COL_HOLO_WHITE, 240));
+        }
+
+        // 6. Podświetlenie aktywnego bloku niszczonego przez siekierę
+        if (activeMiningPos != null && activelyChopping) {
+            float mx0 = (float) (activeMiningPos.getX() - camX);
+            float my0 = (float) (activeMiningPos.getY() - camY);
+            float mz0 = (float) (activeMiningPos.getZ() - camZ);
+
+            int targetBracketCol = withAlpha(COL_CYBER_RED, (int) (220 + 35 * harmonic));
+            bLIdx = emitCyberBrackets(BLOOM_LINE_BUF, bLIdx, mx0 - 0.01f, my0 - 0.01f, mz0 - 0.01f, mx0 + 1.01f, my0 + 1.01f, mz0 + 1.01f, targetBracketCol);
         }
 
         OUT_COUNTS_BUF.putInt(0, sIdx);
         OUT_COUNTS_BUF.putInt(4, bQIdx);
         OUT_COUNTS_BUF.putInt(8, bLIdx);
+    }
+
+    private static int emitCyberBrackets(
+            ByteBuffer b, int idx, float x0, float y0, float z0, float x1, float y1, float z1, int c
+    ) {
+        float dx = Math.min(0.42f, (x1 - x0) * 0.22f);
+        float dy = Math.min(0.42f, (y1 - y0) * 0.25f);
+        float dz = Math.min(0.42f, (z1 - z0) * 0.22f);
+
+        float[] cx = {x0, x1, x1, x0, x0, x1, x1, x0};
+        float[] cy = {y0, y0, y0, y0, y1, y1, y1, y1};
+        float[] cz = {z0, z0, z1, z1, z0, z0, z1, z1};
+
+        float[] sx = { 1f, -1f, -1f,  1f,  1f, -1f, -1f,  1f};
+        float[] sy = { 1f,  1f,  1f,  1f, -1f, -1f, -1f, -1f};
+        float[] sz = { 1f,  1f, -1f, -1f,  1f,  1f, -1f, -1f};
+
+        for (int i = 0; i < 8; i++) {
+            float ex = cx[i] + sx[i] * dx;
+            float ey = cy[i] + sy[i] * dy;
+            float ez = cz[i] + sz[i] * dz;
+
+            idx = putVert(b, idx, cx[i], cy[i], cz[i], c);
+            idx = putVert(b, idx, ex, cy[i], cz[i], c);
+
+            idx = putVert(b, idx, cx[i], cy[i], cz[i], c);
+            idx = putVert(b, idx, cx[i], ey, cz[i], c);
+
+            idx = putVert(b, idx, cx[i], cy[i], cz[i], c);
+            idx = putVert(b, idx, cx[i], cy[i], ez, c);
+        }
+        return idx;
+    }
+
+    private static int emitVerticalLaserPillars(
+            ByteBuffer b, int idx, float x0, float y0, float z0, float x1, float y1, float z1, int c
+    ) {
+        idx = putVert(b, idx, x0, y0, z0, c); idx = putVert(b, idx, x0, y1, z0, c);
+        idx = putVert(b, idx, x1, y0, z0, c); idx = putVert(b, idx, x1, y1, z0, c);
+        idx = putVert(b, idx, x1, y0, z1, c); idx = putVert(b, idx, x1, y1, z1, c);
+        idx = putVert(b, idx, x0, y0, z1, c); idx = putVert(b, idx, x0, y1, z1, c);
+        return idx;
     }
 
     private static int putVert(ByteBuffer b, int idx, float x, float y, float z, int col) {
