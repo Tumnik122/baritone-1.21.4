@@ -57,6 +57,8 @@ public class MixinNetworkManager {
     @Final
     private PacketFlow receiving;
 
+    @org.spongepowered.asm.mixin.Unique private int argon$movePacketsThisTick = 0;
+
     @Inject(
             method = "sendPacket",
             at = @At("HEAD"),
@@ -67,29 +69,31 @@ public class MixinNetworkManager {
             return;
         }
 
-        // 1. Zsynchronizowany koniec ticku klienta (1.21.2+):
-        if (packet instanceof ServerboundClientTickEndPacket) {
+        Minecraft mc = Minecraft.getInstance();
+
+        if (packet instanceof ServerboundMovePlayerPacket move) {
+            argon$movePacketsThisTick++;
+            if (mc.player != null && mc.player.onGround() && !move.isOnGround()) {
+                System.out.println("[GrimDiag] MovePacket z onGround=false mimo player.onGround()==true! typ="
+                        + move.getClass().getSimpleName() + " y=" + move.getY(mc.player.getY()));
+            }
+            if (argon$movePacketsThisTick > 1) {
+                System.out.println("[GrimDiag] Podwojny MovePlayerPacket w 1 ticku (" + argon$movePacketsThisTick
+                        + "): " + move.getClass().getSimpleName());
+            }
+        }
+        else if (packet instanceof ServerboundClientTickEndPacket) {
+            if (argon$movePacketsThisTick == 0 && mc.player != null) {
+                System.out.println("[GrimDiag] ClientTickEnd bez MovePlayerPacket!");
+            }
+            argon$movePacketsThisTick = 0;
             GrimBreakValidator.onClientTickEnd();
         }
         else if (packet instanceof ServerboundSetCarriedItemPacket carried) {
             GrimBreakValidator.onServerSlotChange(carried.getSlot());
         }
-        // 2. Ostateczna zapora na poziomie sieci przed AirLiquidBreak (START_DIGGING / FINISHED_DIGGING na AIR):
         else if (packet instanceof ServerboundPlayerActionPacket actionPacket) {
             GrimBreakValidator.onPlayerAction(actionPacket);
-            ServerboundPlayerActionPacket.Action action = actionPacket.getAction();
-            if (action == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK
-                    || action == ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK) {
-                Minecraft mc = Minecraft.getInstance();
-                ClientLevel level = mc.level;
-                if (level != null) {
-                    BlockPos targetPos = actionPacket.getPos();
-                    if (level.getBlockState(targetPos).isAir() || GrimBreakValidator.isUnderQuarantine(targetPos)) {
-                        ci.cancel();
-                        return;
-                    }
-                }
-            }
         }
 
         for (IBaritone ibaritone : BaritoneAPI.getProvider().getAllBaritones()) {

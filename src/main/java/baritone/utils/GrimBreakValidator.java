@@ -49,7 +49,7 @@ public final class GrimBreakValidator {
     private static int miningTicksElapsed = 0;
     private static int extraTicksRemaining = 0;
     private static long currentClientTick = 0L;
-    private static long lastDamageTick = -1L;
+    private static int lastDamagePlayerTick = -1;
 
     // Akumulator postępu według matematyki GrimAC 1.21.4
     private static float grimAccumulatedDamage = 0.0f;
@@ -288,7 +288,7 @@ public final class GrimBreakValidator {
         startClientTick = currentClientTick;
         miningTicksElapsed = 0;
         extraTicksRemaining = 0;
-        lastDamageTick = -1L;
+        lastDamagePlayerTick = -1;
 
         if (initialDelta >= 1.0f) {
             // Instabreak (liście motyką, miękkie bloki): nie blokuj canFinishBreak
@@ -324,10 +324,10 @@ public final class GrimBreakValidator {
         if (!hasActiveServerDig || activeBreakPos == null || !activeBreakPos.equals(pos)) {
             return;
         }
-        if (isInstabreak || lastDamageTick == currentClientTick) {
+        if (isInstabreak || lastDamagePlayerTick == player.tickCount) {
             return;
         }
-        lastDamageTick = currentClientTick;
+        lastDamagePlayerTick = player.tickCount;
 
         BlockState state = level.getBlockState(pos);
         float delta = getGrimDestroyProgress(player, level, pos, state);
@@ -430,7 +430,7 @@ public final class GrimBreakValidator {
         grimAccumulatedDamage = 0.0f;
         miningTicksElapsed = 0;
         extraTicksRemaining = 0;
-        lastDamageTick = -1L;
+        lastDamagePlayerTick = -1;
     }
 
     public static BlockPos getActiveBreakPos() {
