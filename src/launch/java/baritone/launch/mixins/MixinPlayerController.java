@@ -43,6 +43,10 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
     @Override
     public abstract BlockPos getCurrentBlock();
 
+    @Accessor("destroyBlockPos")
+    @Override
+    public abstract void setCurrentBlock(BlockPos pos);
+
     @Invoker("ensureHasSentCarriedItem")
     @Override
     public abstract void callSyncCurrentPlayItem();
@@ -67,6 +71,15 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
     private long argon$targetBlockPosLong = Long.MIN_VALUE;
     @org.spongepowered.asm.mixin.Unique
     private long argon$lastDestroyedPosLong = Long.MIN_VALUE;
+    @org.spongepowered.asm.mixin.Unique
+    private final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap argon$recentDestroyedBlocks = new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
+
+    @org.spongepowered.asm.mixin.Unique
+    private boolean argon$isRecentlyDestroyed(long posLong, long now) {
+        this.argon$recentDestroyedBlocks.long2LongEntrySet().removeIf(e -> e.getLongValue() < now);
+        return this.argon$recentDestroyedBlocks.containsKey(posLong);
+    }
+
     @org.spongepowered.asm.mixin.Unique
     private int argon$lastContinueTick = -1;
     @org.spongepowered.asm.mixin.Unique
@@ -98,47 +111,58 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             net.minecraft.core.Direction direction,
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
         net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
-        if (mc.level != null && mc.player != null) {
-            net.minecraft.world.level.block.state.BlockState state = mc.level.getBlockState(pos);
-            if (state.isAir() || (state.getBlock() instanceof net.minecraft.world.level.block.LiquidBlock) || state.getDestroySpeed(mc.level, pos) < 0.0f) {
+        if (mc.level == null || mc.player == null) {
+            this.setIsHittingBlock(false);
+            cir.setReturnValue(false);
+            return;
+        }
+
+        net.minecraft.world.level.block.state.BlockState state = mc.level.getBlockState(pos);
+        if (state.isAir() || (state.getBlock() instanceof net.minecraft.world.level.block.LiquidBlock) || state.getDestroySpeed(mc.level, pos) < 0.0f) {
+            this.setIsHittingBlock(false);
+            this.argon$diggingActiveOnServer = false;
+            this.argon$targetBlockPosLong = Long.MIN_VALUE;
+            cir.setReturnValue(false);
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long posLong = pos.asLong();
+        if (posLong == this.argon$lastDestroyedPosLong || argon$isRecentlyDestroyed(posLong, now)) {
+            this.setIsHittingBlock(false);
+            cir.setReturnValue(false);
+            return;
+        }
+
+        // BEZWZGLĘDNA OCHRONA BLOKU POD NOGAMI (Argon 4 & dj):
+        // Nigdy nie pozwól na niszczenie bloku podłogi bezpośrednio pod stopami gracza, gdy bot tuneluje!
+        if (pos.equals(mc.player.blockPosition().below())) {
+            baritone.api.IBaritone primaryBaritone = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
+            if (primaryBaritone != null && primaryBaritone.getCustomGoalProcess().isActive()) {
                 this.setIsHittingBlock(false);
                 this.argon$diggingActiveOnServer = false;
                 this.argon$targetBlockPosLong = Long.MIN_VALUE;
                 cir.setReturnValue(false);
                 return;
             }
+        }
 
-            // BEZWZGLĘDNA OCHRONA BLOKU POD NOGAMI (Argon 4 & dj):
-            // Nigdy nie pozwól na niszczenie bloku podłogi bezpośrednio pod stopami gracza, gdy bot tuneluje!
-            if (pos.equals(mc.player.blockPosition().below())) {
-                baritone.api.IBaritone primaryBaritone = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
-                if (primaryBaritone != null && primaryBaritone.getCustomGoalProcess().isActive()) {
-                    this.setIsHittingBlock(false);
-                    this.argon$diggingActiveOnServer = false;
-                    this.argon$targetBlockPosLong = Long.MIN_VALUE;
-                    cir.setReturnValue(false);
-                    return;
-                }
-            }
-
-            // KRYTYCZNA OCHRONA (Argon 4 & dj):
-            // Nigdy nie wysyłaj pakietu kopania bloku wymagającego właściwego narzędzia (np. Deepslate/kamień)
-            // złym narzędziem (np. łopatą w klatce przejściowej po gravelu)!
-            if (state.requiresCorrectToolForDrops()) {
-                net.minecraft.world.item.ItemStack held = mc.player.getMainHandItem();
-                if (!held.isCorrectToolForDrops(state)) {
-                    this.setDestroyProgress(0.0f);
-                    this.argon$miningTicks = 0;
-                    this.setIsHittingBlock(false);
-                    this.argon$diggingActiveOnServer = false;
-                    this.argon$targetBlockPosLong = Long.MIN_VALUE;
-                    cir.setReturnValue(false);
-                    return;
-                }
+        // KRYTYCZNA OCHRONA (Argon 4 & dj):
+        // Nigdy nie wysyłaj pakietu kopania bloku wymagającego właściwego narzędzia (np. Deepslate/kamień)
+        // złym narzędziem (np. łopatą w klatce przejściowej po gravelu)!
+        if (state.requiresCorrectToolForDrops()) {
+            net.minecraft.world.item.ItemStack held = mc.player.getMainHandItem();
+            if (!held.isCorrectToolForDrops(state)) {
+                this.setDestroyProgress(0.0f);
+                this.argon$miningTicks = 0;
+                this.setIsHittingBlock(false);
+                this.argon$diggingActiveOnServer = false;
+                this.argon$targetBlockPosLong = Long.MIN_VALUE;
+                cir.setReturnValue(false);
+                return;
             }
         }
 
-        long posLong = pos.asLong();
         BlockPos current = this.getCurrentBlock();
         if (current != null && (current.asLong() == this.argon$lastDestroyedPosLong || !this.argon$diggingActiveOnServer)) {
             this.setIsHittingBlock(false);
@@ -173,10 +197,10 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
                 || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value;
 
         // KRYTYCZNA OCHRONA ANTY-FASTBREAK 0ms (Argon 4 & dj):
-        // Na serwerach z GrimAC żaden pień drzewa ani blok o twardości > 0 nie może być natychmiast
+        // Na serwerach z GrimAC żaden pień drzewa, liść ani blok o twardości > 0 nie może być natychmiast
         // zniszczony w ticku 0 przez waniliowe startDestroyBlock (np. przy siekierze Efficiency 10).
-        // Wymuszamy wysłanie START_DESTROY_BLOCK i wejście w kontrolowany cykl continueDestroyBlock (min. 3 ticki).
-        if (isGrim && currentState != null && (currentState.is(net.minecraft.tags.BlockTags.LOGS) || currentState.getDestroySpeed(mc.level, pos) >= 1.0f)) {
+        // Wymuszamy wysłanie START_DESTROY_BLOCK i wejście w kontrolowany cykl continueDestroyBlock.
+        if (isGrim && currentState != null && currentState.getDestroySpeed(mc.level, pos) > 0.0f) {
             if (currentState.getDestroyProgress(mc.player, mc.level, pos) >= 1.0f) {
                 BlockPos cur = this.getCurrentBlock();
                 if (cur != null && this.isHittingBlock() && !cur.equals(pos)) {
@@ -194,6 +218,7 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
                         direction,
                         seq
                 ));
+                this.setCurrentBlock(pos);
                 this.setIsHittingBlock(true);
                 this.setDestroyProgress(0.0f);
                 this.destroyDelay = 0;
@@ -313,19 +338,23 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             }
 
             // Na serwerach wieloosobowych z GrimAC:
-            // Dopóki nie minęła wymagana liczba ticków, nie pozwól na przedwczesne wysłanie STOP_DESTROY_BLOCK (>= 1.0f).
-            // Przeliczamy i ustawiamy postęp tak, aby animacja pęknięć faz 0..9 renderowała się w 100% płynnie i naturalnie!
-            float vanillaDelta = state.getDestroyProgress(mc.player, mc.level, pos);
+            // Dopóki nie minęła wymagana liczba ticków (reqTicks), BEZWZGLĘDNIE anulujemy continueDestroyBlock,
+            // aby waniliowy kod nie wysłał przedwczesnego STOP_DESTROY_BLOCK (np. przy efficiency delta >= 1.0f).
             if (this.argon$miningTicks < reqTicks) {
                 float visualProgress = Math.min(0.95f, (float) this.argon$miningTicks / (float) Math.max(1, reqTicks));
-                this.setDestroyProgress(Math.max(0.0f, visualProgress - vanillaDelta));
-            } else {
-                // KRYTYCZNA NAPRAWA (Argon 4 & dj):
-                // Wymagana liczba ticków GrimAC minęła! Ustawiamy 1.0f, aby waniliowe continueDestroyBlock
-                // w tym samym ticku natychmiast zniszczyło blok i legalnie wysłało pakiet STOP_DESTROY_BLOCK!
-                this.setDestroyProgress(1.0f);
-                this.argon$miningTicks = 0;
+                this.setDestroyProgress(visualProgress);
+                mc.level.destroyBlockProgress(mc.player.getId(), pos, (int) (visualProgress * 10.0f));
+                this.destroyDelay = 0;
+                cir.setReturnValue(true);
+                return;
             }
+
+            // Wymagana liczba ticków GrimAC minęła! Ustawiamy 1.0f i pozwalamy waniliowemu
+            // continueDestroyBlock legalnie wysłać STOP_DESTROY_BLOCK w tym samym ticku!
+            this.argon$recentDestroyedBlocks.put(pos.asLong(), System.currentTimeMillis() + 3000L);
+            this.setDestroyProgress(1.0f);
+            this.destroyDelay = 0;
+            this.argon$miningTicks = 0;
         } else if (baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
             this.destroyDelay = 0;
         }
@@ -335,7 +364,9 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             method = "destroyBlock",
             at = @org.spongepowered.asm.mixin.injection.At("RETURN"))
     private void onBlockDestroyed(BlockPos pos, org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
-        this.argon$lastDestroyedPosLong = pos.asLong();
+        long pLong = pos.asLong();
+        this.argon$recentDestroyedBlocks.put(pLong, System.currentTimeMillis() + 3000L);
+        this.argon$lastDestroyedPosLong = pLong;
         this.argon$diggingActiveOnServer = false;
         this.argon$miningTicks = 0;
         this.argon$targetBlockPosLong = Long.MIN_VALUE;

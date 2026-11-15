@@ -92,6 +92,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
     private int minRequiredBreakTicks = 1;
     private int interBlockReleaseTicks = 0;
     private long blockMiningStartTimeMs = 0L;
+    private final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap recentlyBrokenBlocks = new it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap();
 
     // Liczniki ticków i kontrola stanów
     private int stateTicks = 0;
@@ -254,6 +255,26 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         }
 
         if (highestLogY == Integer.MIN_VALUE) {
+            // Fallback: jeśli drzewo zostało częściowo wycięte i został pojedynczy pień/kłoda (np. przy ziemi)
+            for (int dy = 3; dy >= -15; dy--) {
+                int y = playerPos.getY() + dy;
+                for (int dx = -7; dx <= 7; dx++) {
+                    for (int dz = -7; dz <= 7; dz++) {
+                        BlockPos checkPos = new BlockPos(playerPos.getX() + dx, y, playerPos.getZ() + dz);
+                        if (level.getBlockState(checkPos).is(Blocks.SPRUCE_LOG)) {
+                            highestLogY = y;
+                            foundMinX = checkPos.getX();
+                            foundMinZ = checkPos.getZ();
+                            break;
+                        }
+                    }
+                    if (highestLogY != Integer.MIN_VALUE) break;
+                }
+                if (highestLogY != Integer.MIN_VALUE) break;
+            }
+        }
+
+        if (highestLogY == Integer.MIN_VALUE) {
             if (stateTicks % 50 == 0) {
                 logDirect("§e[Astra/Spruce2x2] Oczekiwanie na wykrycie pnia 2x2 spruce_log...");
             }
@@ -268,7 +289,13 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         logDirect(String.format("§b[Astra/Spruce2x2] Wykryto pien 2x2: X=%d, Z=%d, TopY=%d, SoilY=%d (wysokosc: %d)",
                 trunkMinX, trunkMinZ, topLogY, baseSoilY, (topLogY - baseSoilY + 1)));
 
-        transitionTo(State.DROP_ONTO_TREE);
+        // Jeśli gracz znajduje się już przy podstawie drzewa / na ziemi (np. po rozłączeniu / restarcie bota):
+        if (player.getY() <= baseSoilY + 3.0D) {
+            logDirect("§a[Astra/Spruce2x2] Gracz znajduje się już przy podstawie pnia -> bezpośrednie żniwa (ZERO_WASD_HARVEST_LOOP).");
+            transitionTo(State.ZERO_WASD_HARVEST_LOOP);
+        } else {
+            transitionTo(State.DROP_ONTO_TREE);
+        }
         return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
     }
 
@@ -361,37 +388,60 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             }
         }
 
-        // PODFAZA A (Liście - Motyka / Ręka): szukamy widocznych liści spruce_leaves w reachu <= 3.9
-        BlockHitResult leafHit = findBestBreakableTarget(player, level, true);
-        if (leafHit != null) {
-            BlockPos leafPos = leafHit.getBlockPos();
-            BlockState leafState = level.getBlockState(leafPos);
+        // Jeśli dotarliśmy w pobliże ziemi (baseSoilY + 2.5), priorytetem jest natychmiastowe ścięcie
+        // pozostałości pnia 2x2, aby nie zostawiać ostatniej kłody na ziemi!
+        boolean nearGround = (player.getY() <= baseSoilY + 2.5D);
 
-            selectHoeOrWarn(player, leafState);
+        BlockHitResult primaryHit = nearGround
+                ? findBestBreakableTarget(player, level, false)
+                : findBestBreakableTarget(player, level, true);
 
-            this.currentTargetPos = leafPos;
-            this.currentTargetType = TargetType.LEAF;
+        if (primaryHit != null) {
+            BlockPos targetPos = primaryHit.getBlockPos();
+            BlockState targetState = level.getBlockState(targetPos);
+            boolean isLog = targetState.is(Blocks.SPRUCE_LOG);
 
-            applyGcdRotation(player, leafHit.getLocation());
-            startOrContinueBreaking(player, level, leafPos, leafHit.getDirection());
+            if (isLog) {
+                if (!selectAxeOrWarn(player, targetState)) {
+                    return cancelProcess();
+                }
+                this.currentTargetPos = targetPos;
+                this.currentTargetType = TargetType.LOG;
+            } else {
+                selectHoeOrWarn(player, targetState);
+                this.currentTargetPos = targetPos;
+                this.currentTargetType = TargetType.LEAF;
+            }
+
+            applyGcdRotation(player, primaryHit.getLocation());
+            startOrContinueBreaking(player, level, targetPos, primaryHit.getDirection());
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
-        // PODFAZA B (Pień 2x2 - Siekiera): brak liści w reachu 3.9 -> ścinamy warstwy drewna
-        BlockHitResult logHit = findBestBreakableTarget(player, level, false);
-        if (logHit != null) {
-            BlockPos logPos = logHit.getBlockPos();
-            BlockState logState = level.getBlockState(logPos);
+        // Druga faza: cel alternatywny (drewno jeśli w powietrzu, liście jeśli na ziemi)
+        BlockHitResult secondaryHit = nearGround
+                ? findBestBreakableTarget(player, level, true)
+                : findBestBreakableTarget(player, level, false);
 
-            if (!selectAxeOrWarn(player, logState)) {
-                return cancelProcess();
+        if (secondaryHit != null) {
+            BlockPos targetPos = secondaryHit.getBlockPos();
+            BlockState targetState = level.getBlockState(targetPos);
+            boolean isLog = targetState.is(Blocks.SPRUCE_LOG);
+
+            if (isLog) {
+                if (!selectAxeOrWarn(player, targetState)) {
+                    return cancelProcess();
+                }
+                this.currentTargetPos = targetPos;
+                this.currentTargetType = TargetType.LOG;
+            } else {
+                selectHoeOrWarn(player, targetState);
+                this.currentTargetPos = targetPos;
+                this.currentTargetType = TargetType.LEAF;
             }
 
-            this.currentTargetPos = logPos;
-            this.currentTargetType = TargetType.LOG;
-
-            applyGcdRotation(player, logHit.getLocation());
-            startOrContinueBreaking(player, level, logPos, logHit.getDirection());
+            applyGcdRotation(player, secondaryHit.getLocation());
+            startOrContinueBreaking(player, level, targetPos, secondaryHit.getDirection());
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
 
@@ -655,6 +705,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             } else if (lastBreakingType == TargetType.LEAF) {
                 totalChoppedLeaves++;
             }
+            recentlyBrokenBlocks.put(lastBreakingPos.asLong(), System.currentTimeMillis() + 3000L);
             lastBreakingPos = null;
             lastBreakingType = TargetType.NONE;
             currentBlockBreakProgress = 0.0f;
@@ -665,7 +716,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         }
 
         BlockState targetState = level.getBlockState(pos);
-        if (targetState.isAir()) {
+        if (targetState.isAir() || recentlyBrokenBlocks.containsKey(pos.asLong())) {
             stopDigging();
             return;
         }
@@ -714,7 +765,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             blockMiningStartTimeMs = System.currentTimeMillis();
 
             int reqTicks = GrimBreakValidator.getRequiredTicks(player, level, pos, targetState, player.onGround());
-            minRequiredBreakTicks = (currentTargetType == TargetType.LOG) ? Math.max(3, reqTicks) : Math.max(2, reqTicks);
+            minRequiredBreakTicks = (currentTargetType == TargetType.LOG) ? Math.max(6, reqTicks) : Math.max(4, reqTicks);
 
             // Błyskawiczny pakiet START_DESTROY_BLOCK w tym samym ticku:
             ctx.playerController().clickBlock(pos, safeSide);
@@ -739,6 +790,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             } else if (lastBreakingType == TargetType.LEAF) {
                 totalChoppedLeaves++;
             }
+            recentlyBrokenBlocks.put(lastBreakingPos.asLong(), System.currentTimeMillis() + 3000L);
         }
         boolean wasLog = (lastBreakingType == TargetType.LOG);
         this.currentTargetPos = null;
@@ -747,7 +799,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         this.lastBreakingType = TargetType.NONE;
         this.currentBlockBreakProgress = 0.0f;
         this.currentBlockDamageTicks = 0;
-        this.interBlockReleaseTicks = wasLog ? 5 : 2;
+        this.interBlockReleaseTicks = 0;
         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
         if (ctx.playerController() != null) {
             ctx.playerController().resetBlockRemoving();
@@ -763,11 +815,20 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         BlockPos eyeBlockPos = BlockPos.containing(eyePos);
         List<BlockHitResult> validHits = new ArrayList<>();
 
+        long now = System.currentTimeMillis();
+        recentlyBrokenBlocks.long2LongEntrySet().removeIf(e -> e.getLongValue() < now);
+
         int radius = 4;
         for (int dy = radius; dy >= -radius; dy--) {
             for (int dx = -radius; dx <= radius; dx++) {
                 for (int dz = -radius; dz <= radius; dz++) {
                     BlockPos pos = eyeBlockPos.offset(dx, dy, dz);
+
+                    // Zabezpieczenie przed AirLiquidBreak: nigdy nie celuj w blok niedawno rozbity (bufor serwera/ping)
+                    if (recentlyBrokenBlocks.containsKey(pos.asLong())) {
+                        continue;
+                    }
+
                     BlockState state = level.getBlockState(pos);
 
                     if (leavesMode) {
@@ -775,7 +836,8 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
                             continue;
                         }
                     } else {
-                        if (!state.is(Blocks.SPRUCE_LOG) || !isWithin2x2TrunkColumn(pos)) {
+                        // Pień: akceptujemy bloki pnia w kolumnie 2x2, a także wszelkie pnie bezpośrednio obok gracza na ziemi
+                        if (!state.is(Blocks.SPRUCE_LOG) || (!isWithin2x2TrunkColumn(pos) && eyePos.distanceToSqr(Vec3.atCenterOf(pos)) > 6.0D)) {
                             continue;
                         }
                     }
@@ -802,9 +864,18 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             // Liście: najbliższy cel dla jak najmniejszego obrotu
             validHits.sort(Comparator.comparingDouble(h -> h.getLocation().distanceToSqr(eyePos)));
         } else {
-            // Pień: bezwzględnie najwyższa warstwa Y w dół, aby gracz równo opadał
+            // Pień: warstwami od góry do dołu (-Y).
+            // KRYTYCZNE (Argon 4 & dj): Kłoda, na której gracz stoi, MUSI być ścięta jako OSTATNIA w danej warstwie!
+            // Ścięcie kłody pod stopami jako pierwszej powoduje natychmiastowe opadnięcie gracza i pozostawienie
+            // pozostałych 3 kłód warstwy wiszących w powietrzu poza zasięgiem reach (3.9m)!
+            BlockPos feetBlock = BlockPos.containing(player.getX(), player.getY() - 0.2D, player.getZ());
             validHits.sort(Comparator
                     .comparingInt((BlockHitResult h) -> -h.getBlockPos().getY())
+                    .thenComparingInt((BlockHitResult h) -> {
+                        BlockPos p = h.getBlockPos();
+                        boolean underFeet = (p.getX() == feetBlock.getX() && p.getZ() == feetBlock.getZ());
+                        return underFeet ? 1 : 0; // 0 (inne kłody warstwy) przed 1 (kłoda pod stopami)
+                    })
                     .thenComparingDouble(h -> h.getLocation().distanceToSqr(eyePos)));
         }
 
@@ -819,16 +890,23 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             return new BlockHitResult(eyePos, Direction.UP, targetPos, false);
         }
 
-        List<Vec3> samplePoints = new ArrayList<>(7);
+        List<Vec3> samplePoints = new ArrayList<>(13);
         samplePoints.add(Vec3.atCenterOf(targetPos));
 
         for (Direction dir : Direction.values()) {
             samplePoints.add(Vec3.atCenterOf(targetPos).add(
-                    dir.getStepX() * 0.48D,
-                    dir.getStepY() * 0.48D,
-                    dir.getStepZ() * 0.48D
+                    dir.getStepX() * 0.46D,
+                    dir.getStepY() * 0.46D,
+                    dir.getStepZ() * 0.46D
             ));
         }
+
+        // Dodatkowe punkty próbkowania na górnej powierzchni bloku
+        samplePoints.add(new Vec3(targetPos.getX() + 0.5D, targetPos.getY() + 0.95D, targetPos.getZ() + 0.5D));
+        samplePoints.add(new Vec3(targetPos.getX() + 0.25D, targetPos.getY() + 0.95D, targetPos.getZ() + 0.5D));
+        samplePoints.add(new Vec3(targetPos.getX() + 0.75D, targetPos.getY() + 0.95D, targetPos.getZ() + 0.5D));
+        samplePoints.add(new Vec3(targetPos.getX() + 0.5D, targetPos.getY() + 0.95D, targetPos.getZ() + 0.25D));
+        samplePoints.add(new Vec3(targetPos.getX() + 0.5D, targetPos.getY() + 0.95D, targetPos.getZ() + 0.75D));
 
         for (Vec3 point : samplePoints) {
             if (eyePos.distanceToSqr(point) > MAX_GRIM_REACH_SQ) {
@@ -848,6 +926,21 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
                 return result;
             }
         }
+
+        // Bezpiecznik dla bloku tuż obok gracza (odległość <= 2.2m) - wybór odsłoniętej ściany
+        if (eyePos.distanceToSqr(Vec3.atCenterOf(targetPos)) <= 5.0D) {
+            for (Direction dir : Direction.values()) {
+                BlockPos neighbor = targetPos.relative(dir);
+                BlockState nState = level.getBlockState(neighbor);
+                if (nState.isAir() || nState.canBeReplaced()) {
+                    Vec3 faceCenter = Vec3.atCenterOf(targetPos).add(dir.getStepX() * 0.5D, dir.getStepY() * 0.5D, dir.getStepZ() * 0.5D);
+                    if (eyePos.distanceToSqr(faceCenter) <= MAX_GRIM_REACH_SQ) {
+                        return new BlockHitResult(faceCenter, dir, targetPos, false);
+                    }
+                }
+            }
+        }
+
         return null;
     }
 
@@ -1028,10 +1121,12 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
     // =========================================================================
 
     private boolean is2x2SpruceTrunk(Level level, int x, int y, int z) {
-        return level.getBlockState(new BlockPos(x, y, z)).is(Blocks.SPRUCE_LOG)
-                && level.getBlockState(new BlockPos(x + 1, y, z)).is(Blocks.SPRUCE_LOG)
-                && level.getBlockState(new BlockPos(x, y, z + 1)).is(Blocks.SPRUCE_LOG)
-                && level.getBlockState(new BlockPos(x + 1, y, z + 1)).is(Blocks.SPRUCE_LOG);
+        int logCount = 0;
+        if (level.getBlockState(new BlockPos(x, y, z)).is(Blocks.SPRUCE_LOG)) logCount++;
+        if (level.getBlockState(new BlockPos(x + 1, y, z)).is(Blocks.SPRUCE_LOG)) logCount++;
+        if (level.getBlockState(new BlockPos(x, y, z + 1)).is(Blocks.SPRUCE_LOG)) logCount++;
+        if (level.getBlockState(new BlockPos(x + 1, y, z + 1)).is(Blocks.SPRUCE_LOG)) logCount++;
+        return logCount >= 2;
     }
 
     public boolean isWithin2x2TrunkColumn(BlockPos pos) {
@@ -1047,8 +1142,10 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
 
     private int findSoilBaseY(Level level, int minX, int startY, int minZ) {
         for (int y = startY; y >= startY - 45; y--) {
-            Block b = level.getBlockState(new BlockPos(minX, y, minZ)).getBlock();
-            if (isSoilBlock(b)) {
+            if (isSoilBlock(level.getBlockState(new BlockPos(minX, y, minZ)).getBlock())
+                    || isSoilBlock(level.getBlockState(new BlockPos(minX + 1, y, minZ)).getBlock())
+                    || isSoilBlock(level.getBlockState(new BlockPos(minX, y, minZ + 1)).getBlock())
+                    || isSoilBlock(level.getBlockState(new BlockPos(minX + 1, y, minZ + 1)).getBlock())) {
                 return y;
             }
         }

@@ -378,8 +378,12 @@ public final class BaritonePlayerController implements IPlayerController {
             markInteracted();
         }
 
+        final boolean isGrim = Baritone.settings().antiCheatCompatibility.value
+                || Baritone.settings().grimCompat.value
+                || Baritone.settings().antiCheatCompat.value;
+
         boolean isTrueInstamine = (state.getDestroySpeed(mc.level, loc) == 0.0f)
-                || (initialDelta >= 1.0f && !state.is(net.minecraft.tags.BlockTags.LOGS) && state.getDestroySpeed(mc.level, loc) < 0.5f);
+                || (!isGrim && initialDelta >= 1.0f && !state.is(net.minecraft.tags.BlockTags.LOGS) && state.getDestroySpeed(mc.level, loc) < 0.5f);
         if (isTrueInstamine || mc.level.getBlockState(loc).isAir()) {
             // Instamine zakończony — zablokuj późniejszy ABORT_DESTROY_BLOCK
             ((IPlayerControllerMP) mc.gameMode).setIsHittingBlock(false);

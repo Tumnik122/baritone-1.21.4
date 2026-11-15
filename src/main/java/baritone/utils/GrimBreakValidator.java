@@ -85,12 +85,12 @@ public final class GrimBreakValidator {
         boolean isLeaf = state != null && state.is(net.minecraft.tags.BlockTags.LEAVES);
 
         if (delta >= 1.0f) {
-            // GrimAC: Pnie drzew (hardness 2.0) i twarde bloki NIGDY nie są instamine! Wymagają minimum 3 ticków (150ms).
+            // GrimAC: Pnie drzew (hardness 2.0) i twarde bloki NIGDY nie są instamine! Wymagają minimum 6 ticków (300ms).
             if (isLog || (state != null && state.getDestroySpeed(level, pos) >= 1.5f)) {
-                return 3;
+                return 6;
             }
             if (isLeaf) {
-                return 2;
+                return 4;
             }
             return 0;
         }
@@ -102,11 +102,12 @@ public final class GrimBreakValidator {
 
         int ticks = (int) Math.ceil(1.0f / delta);
         if (isLog) {
-            // Dla pni drzew: absolutne minimum 3 ticki (150ms) + 1 tick bufora bezpieczeństwa na jitter sieciowy (eliminacja flag delay=98ms..105ms)
-            return Math.max(3, ticks + 1);
+            // Dla pni drzew: absolutne minimum 6 ticków (300ms) - gwarancja eliminacji FastBreak delay=199ms i 91ms..107ms na GrimAC
+            return Math.max(6, ticks + 2);
         }
         if (isLeaf) {
-            return Math.max(2, ticks);
+            // Dla liści: absolutne minimum 4 ticki (200ms) - gwarancja eliminacji FastBreak delay=92ms
+            return Math.max(4, ticks + 1);
         }
 
         // +1 tick bufora bezpieczeństwa na jitter pakietów i opóźnienia sieciowe (eliminuje flagi delay=91ms..109ms na serwerach zewnętrznych)
