@@ -139,13 +139,22 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
 
         // KRYTYCZNA OCHRONA GRIMAC (FastBreak delay=38..56ms, 91ms, 199ms):
         // Wymuszamy przestrzeganie odstępu 5 ticków (260ms) między kolejnymi blokami nie-instabreak!
-        if (this.destroyDelay > 0 || !baritone.utils.GrimBreakValidator.canStartNewBreak(mc.player.tickCount)) {
+        if (baritone.Baritone.isPrimaryActive()) {
+            if (this.destroyDelay > 0 || !baritone.utils.GrimBreakValidator.canStartNewBreak(mc.player.tickCount)) {
+                if (this.destroyDelay > 0) {
+                    this.destroyDelay--;
+                }
+                this.setIsHittingBlock(false);
+                cir.setReturnValue(false);
+                return;
+            }
+        } else {
             if (this.destroyDelay > 0) {
                 this.destroyDelay--;
+                this.setIsHittingBlock(false);
+                cir.setReturnValue(false);
+                return;
             }
-            this.setIsHittingBlock(false);
-            cir.setReturnValue(false);
-            return;
         }
 
         // BEZWZGLĘDNA OCHRONA BLOKU POD NOGAMI (Argon 4 & dj):
@@ -305,6 +314,11 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
                 || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value;
 
         if (isGrim) {
+            // Po #stop lub gdy żaden proces Baritone nie jest aktywny, manualne kopanie gracza działa w 100% waniliowo!
+            if (!baritone.Baritone.isPrimaryActive()) {
+                return;
+            }
+
             long currentPosLong = pos.asLong();
             net.minecraft.world.item.ItemStack currentTool = mc.player.getMainHandItem();
             boolean toolChanged = !net.minecraft.world.item.ItemStack.isSameItemSameComponents(this.argon$lastMiningTool, currentTool);

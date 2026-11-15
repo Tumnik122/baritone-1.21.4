@@ -757,8 +757,9 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         // Synchronizacja trzymanego narzędzia (eliminacja rozbieżności prędkości w GrimAC)
         ctx.playerController().syncHeldItem();
 
-        // Bezpiecznik zacięcia na bloku (watchdog): jeśli kopiemy blok znacznie dłużej niż wymagany czas (ghost block / desync)
-        if (currentBlockDamageTicks > Math.max(50, minRequiredBreakTicks + 30)) {
+        // Bezpiecznik zacięcia na bloku (watchdog): dynamiczny próg na podstawie oczekiwanych ticków
+        int maxWatchdogTicks = Math.max(80, minRequiredBreakTicks * 2 + 20);
+        if (currentBlockDamageTicks > maxWatchdogTicks) {
             ctx.playerController().resetBlockRemoving();
             lastBreakingPos = null;
             lastBreakingType = TargetType.NONE;
@@ -1103,7 +1104,15 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         for (int i = 0; i < 9; i++) {
             ItemStack stack = inv.getItem(i);
             if (!stack.isEmpty() && stack.getDestroySpeed(leafState) > 1.5F) {
-                inv.selected = i;
+                if (inv.selected != i) {
+                    if (lastBreakingPos != null) {
+                        ctx.playerController().resetBlockRemoving();
+                        lastBreakingPos = null;
+                        lastBreakingType = TargetType.NONE;
+                    }
+                    inv.selected = i;
+                    ctx.playerController().syncHeldItem();
+                }
                 return true;
             }
         }
@@ -1115,13 +1124,21 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         AutoToolManager.selectBestTool(logState);
         Inventory inv = player.getInventory();
         ItemStack held = inv.getItem(inv.selected);
-        if (held.getDestroySpeed(logState) > 1.5F) {
+        if (held.getDestroySpeed(logState) > 1.5F && held.getItem() instanceof net.minecraft.world.item.AxeItem) {
             return true;
         }
         for (int i = 0; i < 9; i++) {
             ItemStack stack = inv.getItem(i);
-            if (!stack.isEmpty() && stack.getDestroySpeed(logState) > 1.5F) {
-                inv.selected = i;
+            if (!stack.isEmpty() && stack.getDestroySpeed(logState) > 1.5F && stack.getItem() instanceof net.minecraft.world.item.AxeItem) {
+                if (inv.selected != i) {
+                    if (lastBreakingPos != null) {
+                        ctx.playerController().resetBlockRemoving();
+                        lastBreakingPos = null;
+                        lastBreakingType = TargetType.NONE;
+                    }
+                    inv.selected = i;
+                    ctx.playerController().syncHeldItem();
+                }
                 return true;
             }
         }
@@ -1134,7 +1151,10 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         for (int i = 0; i < 9; i++) {
             ItemStack stack = inv.getItem(i);
             if (!stack.isEmpty() && stack.is(targetItem)) {
-                inv.selected = i;
+                if (inv.selected != i) {
+                    inv.selected = i;
+                    ctx.playerController().syncHeldItem();
+                }
                 return true;
             }
         }

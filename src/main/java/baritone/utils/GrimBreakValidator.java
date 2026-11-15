@@ -3,6 +3,7 @@ package baritone.utils;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
@@ -42,10 +43,13 @@ public final class GrimBreakValidator {
     private static BlockPos activeBreakPos = null;
     private static Direction activeBreakDir = null;
     private static boolean hasActiveServerDig = false; // Gwarantuje max 1 pakiet STOP_DESTROY_BLOCK na 1 START_DESTROY_BLOCK
+    private static boolean isInstabreak = false;
     private static long startBreakTimeMs = 0L;
     private static int startClientTick = -1;
     private static int miningTicksElapsed = 0;
     private static int extraTicksRemaining = 0;
+    private static long currentClientTick = 0L;
+    private static long lastDamageTick = -1L;
 
     // Akumulator postępu według matematyki GrimAC 1.21.4
     private static float grimAccumulatedDamage = 0.0f;
@@ -56,20 +60,15 @@ public final class GrimBreakValidator {
     private static long lastFinishTimeMs = 0L;
     private static boolean lastBreakWasInsta = false;
 
-    // Strażnik TickTimer / Timer 1.21.4: blokuje wysłanie >1 ServerboundMovePlayerPacket przed ServerboundClientTickEndPacket
+    // Strażnik TickTimer / Timer 1.21.4
     private static volatile boolean sentFlyingPacketThisTick = false;
 
     private GrimBreakValidator() {}
 
     /**
-     * Wywoływane przy wysyłaniu ServerboundMovePlayerPacket: zwraca false, jeśli w tym ticku
-     * (przed CLIENT_TICK_END) wysłano już pakiet ruchu -> eliminuje TickTimer i Timer w 100%.
+     * Zwraca true - nigdy nie dropujemy pakietów ruchu gracza, aby uniknąć Simulation 0.078400.
      */
     public static boolean allowFlyingPacket() {
-        if (sentFlyingPacketThisTick) {
-            return false;
-        }
-        sentFlyingPacketThisTick = true;
         return true;
     }
 
@@ -78,6 +77,26 @@ public final class GrimBreakValidator {
      */
     public static void onClientTickEnd() {
         sentFlyingPacketThisTick = false;
+        currentClientTick++;
+    }
+
+    /**
+     * Zmiana slota w trakcie kopania unieważnia wykop po stronie GrimAC.
+     */
+    public static void onServerSlotChange(int newSlot) {
+        reset();
+    }
+
+    /**
+     * Reaguje na pakiety akcji gracza (anulowanie / zakończenie niszczenia).
+     */
+    public static void onPlayerAction(ServerboundPlayerActionPacket packet) {
+        if (packet == null) return;
+        ServerboundPlayerActionPacket.Action action = packet.getAction();
+        if (action == ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK
+                || action == ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK) {
+            reset();
+        }
     }
 
     /**
@@ -255,19 +274,37 @@ public final class GrimBreakValidator {
      * Rejestruje początek niszczenia bloku (w momencie wysyłania START_DESTROY_BLOCK).
      */
     public static void onStartBreak(LocalPlayer player, Level level, BlockPos pos, Direction dir, int currentClientTick) {
+        if (player == null || level == null || pos == null) {
+            reset();
+            return;
+        }
         cleanupExpiredQuarantine();
         BlockState state = level.getBlockState(pos);
         float initialDelta = getGrimDestroyProgress(player, level, pos, state);
 
         activeBreakPos = pos.immutable();
         activeBreakDir = dir;
-        hasActiveServerDig = initialDelta < 1.0f;
         startBreakTimeMs = System.currentTimeMillis();
         startClientTick = currentClientTick;
         miningTicksElapsed = 0;
-        extraTicksRemaining = BREAK_DURATION_EXTRA_TICKS;
-        minObservedDelta = initialDelta > 0.0f ? initialDelta : 1.0f;
-        grimAccumulatedDamage = initialDelta;
+        extraTicksRemaining = 0;
+        lastDamageTick = -1L;
+
+        if (initialDelta >= 1.0f) {
+            // Instabreak (liście motyką, miękkie bloki): nie blokuj canFinishBreak
+            isInstabreak = true;
+            hasActiveServerDig = true;
+            grimAccumulatedDamage = initialDelta;
+            minObservedDelta = initialDelta;
+        } else if (initialDelta > 0.0f) {
+            isInstabreak = false;
+            hasActiveServerDig = true;
+            grimAccumulatedDamage = 0.0f; // W wanilii START_DESTROY_BLOCK zeruje postęp
+            minObservedDelta = initialDelta;
+            extraTicksRemaining = BREAK_DURATION_EXTRA_TICKS;
+        } else {
+            reset();
+        }
     }
 
     /**
@@ -283,34 +320,49 @@ public final class GrimBreakValidator {
      * Aktualizuje stan niszczenia w kolejnym ticku (wywoływane raz na tick w continueDestroyBlock).
      */
     public static void onTickContinue(LocalPlayer player, Level level, BlockPos pos) {
+        if (player == null || level == null || pos == null) return;
         if (!hasActiveServerDig || activeBreakPos == null || !activeBreakPos.equals(pos)) {
             return;
         }
+        if (isInstabreak || lastDamageTick == currentClientTick) {
+            return;
+        }
+        lastDamageTick = currentClientTick;
+
         BlockState state = level.getBlockState(pos);
         float delta = getGrimDestroyProgress(player, level, pos, state);
-        if (delta > 0.0f && delta < minObservedDelta) {
+        if (delta <= 0.0f) return;
+        if (delta >= 1.0f) {
+            isInstabreak = true;
+            grimAccumulatedDamage = delta;
+            return;
+        }
+
+        if (delta < minObservedDelta) {
             minObservedDelta = delta;
         }
+        grimAccumulatedDamage += delta;
         miningTicksElapsed++;
-        if (grimAccumulatedDamage < 1.0f) {
-            grimAccumulatedDamage += delta;
-        } else if (extraTicksRemaining > 0) {
+        if (extraTicksRemaining > 0) {
             extraTicksRemaining--;
         }
     }
 
     /**
-     * Zwraca true TYLKO wtedy, gdy zarówno liczba ticków (>= 3 dla drewna), skumulowane obrażenia bloku (>= 1.0f),
-     * jak i czas w milisekundach (>= 155ms) spełniają wymagania break-threshold w GrimAC 1.21.4.
+     * Zwraca true, gdy liczba ticków, obrażenia bloku oraz czas w milisekundach spełniają wymagania GrimAC.
      */
     public static boolean canFinishBreak(LocalPlayer player, Level level, BlockPos pos) {
+        if (player == null || level == null || pos == null) return false;
+
+        BlockState state = level.getBlockState(pos);
+        if (state.isAir() || state.getDestroyProgress(player, level, pos) >= 1.0f) {
+            return true;
+        }
         if (!hasActiveServerDig || activeBreakPos == null || !activeBreakPos.equals(pos)) {
             return false;
         }
-        BlockState state = level.getBlockState(pos);
-        if (state.isAir()) {
-            hasActiveServerDig = false;
-            return false;
+        if (isInstabreak) {
+            return true;
         }
 
         int requiredWaitTicks = getRequiredWaitTicks(player, level, pos, state);
@@ -318,12 +370,14 @@ public final class GrimBreakValidator {
             return true; // Instabreak
         }
 
+        int minTicks = Math.max(1, requiredWaitTicks);
         long elapsedMs = System.currentTimeMillis() - startBreakTimeMs;
-        long requiredMs = (long) Math.max(requiredWaitTicks, miningTicksElapsed) * TICK_DURATION_MS + JITTER_BUFFER_MS;
+        // Próg zakotwiczony wyłącznie na minTicks (nigdy na miningTicksElapsed, aby nie uciekał w pętli!)
+        long requiredMs = Math.max(0L, (long) minTicks * TICK_DURATION_MS - JITTER_BUFFER_MS);
 
         return grimAccumulatedDamage >= 1.0f
                 && extraTicksRemaining <= 0
-                && miningTicksElapsed >= Math.max(2, requiredWaitTicks)
+                && miningTicksElapsed >= minTicks
                 && elapsedMs >= requiredMs;
     }
 
@@ -370,11 +424,13 @@ public final class GrimBreakValidator {
      */
     public static void reset() {
         hasActiveServerDig = false;
+        isInstabreak = false;
         activeBreakPos = null;
         activeBreakDir = null;
         grimAccumulatedDamage = 0.0f;
         miningTicksElapsed = 0;
         extraTicksRemaining = 0;
+        lastDamageTick = -1L;
     }
 
     public static BlockPos getActiveBreakPos() {

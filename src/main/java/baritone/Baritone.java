@@ -362,6 +362,9 @@ public class Baritone implements IBaritone {
         if (primary.getFarmProcess() != null && primary.getFarmProcess().isActive()) {
             return true;
         }
+        if (primary instanceof Baritone b && b.getSpruceTreeProcess() != null && b.getSpruceTreeProcess().isActive()) {
+            return true;
+        }
         if (primary.getGetToBlockProcess() != null && primary.getGetToBlockProcess().isActive()) {
             return true;
         }

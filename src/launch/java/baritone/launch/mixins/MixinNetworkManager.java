@@ -35,6 +35,7 @@ import net.minecraft.network.protocol.game.ClientboundPlayerPositionPacket;
 import net.minecraft.network.protocol.game.ServerboundClientTickEndPacket;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
+import net.minecraft.network.protocol.game.ServerboundSetCarriedItemPacket;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -70,17 +71,12 @@ public class MixinNetworkManager {
         if (packet instanceof ServerboundClientTickEndPacket) {
             GrimBreakValidator.onClientTickEnd();
         }
-        // 2. Eliminacja TickTimer (type=flying, packets=1 / type=end, packets=2) oraz Timer:
-        // GrimAC zlicza pakiety ruchu pomiędzy kolejnymi ServerboundClientTickEndPacket.
-        // Odrzucamy duplikaty pakietów ruchu w obrębie tego samego ticku!
-        else if (packet instanceof ServerboundMovePlayerPacket) {
-            if (!GrimBreakValidator.allowFlyingPacket()) {
-                ci.cancel();
-                return;
-            }
+        else if (packet instanceof ServerboundSetCarriedItemPacket carried) {
+            GrimBreakValidator.onServerSlotChange(carried.getSlot());
         }
-        // 3. Ostateczna zapora na poziomie sieci przed AirLiquidBreak (START_DIGGING / FINISHED_DIGGING na AIR):
+        // 2. Ostateczna zapora na poziomie sieci przed AirLiquidBreak (START_DIGGING / FINISHED_DIGGING na AIR):
         else if (packet instanceof ServerboundPlayerActionPacket actionPacket) {
+            GrimBreakValidator.onPlayerAction(actionPacket);
             ServerboundPlayerActionPacket.Action action = actionPacket.getAction();
             if (action == ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK
                     || action == ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK) {
