@@ -2,6 +2,7 @@ package com.astra.revolution.gui;
 
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.platform.Window;
+import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -485,6 +486,10 @@ public class BaritoneBypassScreen extends Screen {
     private String activePresetName = "GrimAC 2.3.65 Strict";
     private float statusPulsePhase = 0.0f;
 
+    // 3D Perspective & Liquid Glass Pop-out (Zero-Alloc)
+    private float smoothTiltX = 0.0f;
+    private float smoothTiltY = 0.0f;
+
     public BaritoneBypassScreen() {
         this(null);
     }
@@ -860,8 +865,19 @@ public class BaritoneBypassScreen extends Screen {
 
     @Override
     public void renderBackground(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-        // Celowo puste: zapobiega podwójnemu nakładaniu domyślnego rozmycia 1.21.4,
-        // nasze okno korzysta z autorskiego szkła Obsidian SDF.
+        float alpha = Mth.clamp(this.openProgress, 0.0f, 1.0f);
+        if (this.minecraft != null && this.minecraft.level != null) {
+            if (alpha > 0.05f) {
+                try {
+                    this.renderBlurredBackground();
+                } catch (Throwable ignored) {}
+            }
+            int topDim = ((int) (0x9A * alpha) << 24) | 0x060913;
+            int botDim = ((int) (0xC4 * alpha) << 24) | 0x0B1221;
+            g.fillGradient(0, 0, this.width, this.height, topDim, botDim);
+        } else {
+            g.fillGradient(0, 0, this.width, this.height, 0xFF070B14, 0xFF0F172A);
+        }
     }
 
     @Override
@@ -877,60 +893,86 @@ public class BaritoneBypassScreen extends Screen {
         searchFocusAnim = Mth.lerp(dt * 12.0f, searchFocusAnim, searchFocused ? 1.0f : 0.0f);
         scrollCurrent = Mth.lerp(dt * 14.0f, scrollCurrent, scrollTarget);
 
+        // 0. Odśwież tło przed renderowaniem okna (likwiduje w 100% kaskadę powielonych klatek!)
+        this.renderBackground(g, mouseX, mouseY, partialTick);
+        g.flush();
+
         float winX = (this.width - WIN_WIDTH) * 0.5f;
         float winY = (this.height - WIN_HEIGHT) * 0.5f + (1.0f - ease) * 14.0f;
+        float cx = winX + WIN_WIDTH * 0.5f;
+        float cy = winY + WIN_HEIGHT * 0.5f;
 
-        // 1. Głęboki, kierunkowy Drop-Shadow 0x90000000 (blur = 16px, offsetY = +8px) BEZ efektu Glow-Box
+        float nx = Mth.clamp((mouseX - cx) / (WIN_WIDTH * 0.5f), -1.0f, 1.0f);
+        float ny = Mth.clamp((mouseY - cy) / (WIN_HEIGHT * 0.5f), -1.0f, 1.0f);
+        this.smoothTiltX = Mth.lerp(dt * 12.0f, this.smoothTiltX, -ny * 3.5f * ease);
+        this.smoothTiltY = Mth.lerp(dt * 12.0f, this.smoothTiltY, nx * 4.2f * ease);
+
+        // 1. Głęboki kierunkowy cień lewitujący (przesunięcie paralaksy przeciwnie do kursora)
+        float shadowOffX = -nx * 14.0f * ease;
+        float shadowOffY = 8.0f - ny * 10.0f * ease;
         VenturaSdfRenderer.drawDropShadow(
-                winX, winY, WIN_WIDTH, WIN_HEIGHT,
-                WIN_RADIUS, 16.0f, 8.0f, COL_WINDOW_SHADOW
+                winX + shadowOffX, winY + shadowOffY, WIN_WIDTH, WIN_HEIGHT,
+                WIN_RADIUS, 24.0f, 10.0f, COL_WINDOW_SHADOW
         );
 
-        // 2. Główna tafla okna z wąską 1-pikselową ramką 0x28A78BFA
-        VenturaSdfRenderer.drawRoundedRect(
-                winX, winY, WIN_WIDTH, WIN_HEIGHT,
-                WIN_RADIUS, COL_BG_MAIN, COL_BORDER_WINDOW, 1.0f
-        );
+        // 2. 3D Pop-out i nachylenie okna
+        PoseStack pose = g.pose();
+        pose.pushPose();
+        try {
+            float popZ = 20.0f * ease;
+            pose.translate(cx, cy, popZ);
+            pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(this.smoothTiltY));
+            pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(this.smoothTiltX));
+            pose.translate(-cx, -cy, 0.0f);
 
-        // 2. Panel boczny (Sidebar)
-        VenturaSdfRenderer.drawRoundedRect4(
-                winX, winY, SIDEBAR_WIDTH, WIN_HEIGHT,
-                WIN_RADIUS, 0.0f, 0.0f, WIN_RADIUS,
-                COL_BG_SIDEBAR, 0x00000000, 0.0f
-        );
-        // Pionowa linia podziału Sidebar | Content
-        VenturaSdfRenderer.drawRoundedRect(winX + SIDEBAR_WIDTH, winY, 1.0f, WIN_HEIGHT, 0.0f, COL_DIVIDER, 0, 0.0f);
+            // Główna tafla okna z wąską 1-pikselową ramką
+            VenturaSdfRenderer.drawRoundedRect(
+                    winX, winY, WIN_WIDTH, WIN_HEIGHT,
+                    WIN_RADIUS, COL_BG_MAIN, COL_BORDER_WINDOW, 1.0f
+            );
 
-        // 3. Górny pasek (Topbar)
-        float contentX = winX + SIDEBAR_WIDTH + 1.0f;
-        float contentW = WIN_WIDTH - SIDEBAR_WIDTH - 1.0f;
-        VenturaSdfRenderer.drawRoundedRect4(
-                contentX, winY, contentW, TOPBAR_HEIGHT,
-                0.0f, WIN_RADIUS, 0.0f, 0.0f,
-                COL_BG_TOPBAR, 0x00000000, 0.0f
-        );
-        VenturaSdfRenderer.drawRoundedRect(contentX, winY + TOPBAR_HEIGHT, contentW, 1.0f, 0.0f, COL_DIVIDER, 0, 0.0f);
+            // Panel boczny (Sidebar)
+            VenturaSdfRenderer.drawRoundedRect4(
+                    winX, winY, SIDEBAR_WIDTH, WIN_HEIGHT,
+                    WIN_RADIUS, 0.0f, 0.0f, WIN_RADIUS,
+                    COL_BG_SIDEBAR, 0x00000000, 0.0f
+            );
+            // Pionowa linia podziału Sidebar | Content
+            VenturaSdfRenderer.drawRoundedRect(winX + SIDEBAR_WIDTH, winY, 1.0f, WIN_HEIGHT, 0.0f, COL_DIVIDER, 0, 0.0f);
 
-        // 4. Renderowanie zawartości panelu bocznego
-        renderSidebar(g, winX, winY, mouseX, mouseY, dt);
+            // Górny pasek (Topbar)
+            float contentX = winX + SIDEBAR_WIDTH + 1.0f;
+            float contentW = WIN_WIDTH - SIDEBAR_WIDTH - 1.0f;
+            VenturaSdfRenderer.drawRoundedRect4(
+                    contentX, winY, contentW, TOPBAR_HEIGHT,
+                    0.0f, WIN_RADIUS, 0.0f, 0.0f,
+                    COL_BG_TOPBAR, 0x00000000, 0.0f
+            );
+            VenturaSdfRenderer.drawRoundedRect(contentX, winY + TOPBAR_HEIGHT, contentW, 1.0f, 0.0f, COL_DIVIDER, 0, 0.0f);
 
-        // 5. Renderowanie górnego paska (Wyszukiwarka + Telemetria + Przełącznik do GUI Litematica)
-        renderTopbar(g, contentX, winY, contentW, mouseX, mouseY);
+            // Renderowanie zawartości panelu bocznego
+            renderSidebar(g, winX, winY, mouseX, mouseY, dt);
 
-        // 6. Obszar kart ustawień z przycinaniem Scissor i paskiem przewijania SDF
-        float viewX = contentX;
-        float viewY = winY + TOPBAR_HEIGHT + 1.0f;
-        float viewW = contentW;
-        float viewH = WIN_HEIGHT - TOPBAR_HEIGHT - 1.0f;
+            // Renderowanie górnego paska (Wyszukiwarka + Telemetria + Przełącznik do GUI Litematica)
+            renderTopbar(g, contentX, winY, contentW, mouseX, mouseY);
 
-        g.flush();
-        VenturaSdfRenderer.enableScissor((int) viewX, (int) viewY, (int) viewW, (int) viewH);
-        renderCardsViewport(g, viewX, viewY, viewW, viewH, mouseX, mouseY, dt);
-        g.flush();
-        VenturaSdfRenderer.disableScissor();
+            // Obszar kart ustawień z przycinaniem Scissor i paskiem przewijania SDF
+            float viewX = contentX;
+            float viewY = winY + TOPBAR_HEIGHT + 1.0f;
+            float viewW = contentW;
+            float viewH = WIN_HEIGHT - TOPBAR_HEIGHT - 1.0f;
 
-        // 7. Płynny pasek przewijania SDF z podświetleniem pozycji
-        renderSdfScrollbar(viewX + viewW - 8.5f, viewY + 8.0f, viewH - 16.0f, viewH, mouseX, mouseY, dt);
+            g.flush();
+            VenturaSdfRenderer.enableScissor((int) viewX, (int) viewY, (int) viewW, (int) viewH);
+            renderCardsViewport(g, viewX, viewY, viewW, viewH, mouseX, mouseY, dt);
+            g.flush();
+            VenturaSdfRenderer.disableScissor();
+
+            // Płynny pasek przewijania SDF z podświetleniem pozycji
+            renderSdfScrollbar(viewX + viewW - 8.5f, viewY + 8.0f, viewH - 16.0f, viewH, mouseX, mouseY, dt);
+        } finally {
+            pose.popPose();
+        }
 
         // 8. Moduł HUD Keybinds (Draggable w ClickGUI)
         KeybindsHudRenderer.render(g, partialTick);

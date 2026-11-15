@@ -137,25 +137,36 @@ public final class SmoothFontRenderer {
         if (text == null || text.isEmpty()) {
             return;
         }
-        SdfShaderManager shader = SdfShaderManager.getInstance();
-        shader.beginFontBatch(proj, this.textureId);
+        GlStateBackup backup = new GlStateBackup();
+        backup.capture();
+        try {
+            GL11.glEnable(GL11.GL_BLEND);
+            GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+            GL11.glDisable(GL11.GL_DEPTH_TEST);
+            GL11.glDisable(GL11.GL_CULL_FACE);
 
-        float cursorX = x;
-        for (int i = 0; i < text.length(); i++) {
-            char ch = text.charAt(i);
-            Glyph g = glyphs.getOrDefault(ch, glyphs.get(' '));
-            if (g == null) {
-                continue;
+            SdfShaderManager shader = SdfShaderManager.getInstance();
+            shader.beginFontBatch(proj, this.textureId);
+
+            float cursorX = x;
+            for (int i = 0; i < text.length(); i++) {
+                char ch = text.charAt(i);
+                Glyph g = glyphs.getOrDefault(ch, glyphs.get(' '));
+                if (g == null) {
+                    continue;
+                }
+                shader.pushQuadToBatch(
+                        cursorX, y,
+                        g.widthGui, g.heightGui,
+                        g.u0, g.v0, g.u1, g.v1,
+                        argbColor
+                );
+                cursorX += g.advanceGui;
             }
-            shader.pushQuadToBatch(
-                    cursorX, y,
-                    g.widthGui, g.heightGui,
-                    g.u0, g.v0, g.u1, g.v1,
-                    argbColor
-            );
-            cursorX += g.advanceGui;
+            shader.flushBatch();
+        } finally {
+            backup.restore();
         }
-        shader.flushBatch();
     }
 
     private static Font loadBestSansFont(int awtPointSize) {

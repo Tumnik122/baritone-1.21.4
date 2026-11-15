@@ -1,6 +1,7 @@
 package com.astra.revolution.gui;
 
 import com.mojang.blaze3d.vertex.PoseStack;
+import org.joml.Matrix4f;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.PlayerFaceRenderer;
@@ -189,6 +190,10 @@ public class ModernAestheticTitleScreen extends Screen {
     private final float[] fireflyAlpha = new float[FIREFLY_COUNT];
     private boolean firefliesInitialized = false;
 
+    // Smooth TrueType Font Engine (4x oversampled anti-aliased font)
+    private baritone.bypass.modern.SmoothFontRenderer smoothFont;
+    private boolean smoothFontAttempted = false;
+
     public ModernAestheticTitleScreen() {
         super(Component.literal("Title Screen"));
     }
@@ -196,6 +201,8 @@ public class ModernAestheticTitleScreen extends Screen {
     @Override
     protected void init() {
         super.init();
+        // Usuń obce widgety wstrzykiwane przez inne mody/klienty (np. CorzClient), zapobiegając poziomym pasom i błędom FBO
+        this.clearWidgets();
 
         try {
             this.lastFrameNanos = System.nanoTime();
@@ -691,56 +698,214 @@ public class ModernAestheticTitleScreen extends Screen {
         pose.popPose();
     }
 
+    private void ensureSmoothFont() {
+        if (this.smoothFont == null && !this.smoothFontAttempted) {
+            this.smoothFontAttempted = true;
+            try {
+                this.smoothFont = new baritone.bypass.modern.SmoothFontRenderer(9.5f);
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * Niezawodny renderer tekstu Liquid Glass:
+     * 1. Próbuje wyrenderować tekst przez SmoothFontRenderer z poprawną matrycą ortograficzną Blaze3D.
+     * 2. Jeśli SmoothFont jest niedostępny lub rzuci wyjątek, natychmiast renderuje ostry tekst Vanilla
+     *    z dokładnym pozycjonowaniem i cieniem (zero ryzyka zniknięcia tekstu!).
+     */
+    private void drawSmoothOrVanillaText(GuiGraphics graphics, String text, float x, float y, int color, boolean shadow, float scale) {
+        if (text == null || text.isEmpty()) return;
+        ensureSmoothFont();
+        if (this.smoothFont != null && this.smoothFont.isAvailable()) {
+            try {
+                float guiW = (float) Math.max(1, graphics.guiWidth());
+                float guiH = (float) Math.max(1, graphics.guiHeight());
+                Matrix4f orthoProj = new Matrix4f().setOrtho(0.0f, guiW, guiH, 0.0f, -1000.0f, 3000.0f)
+                        .mul(graphics.pose().last().pose());
+
+                if (shadow) {
+                    int shadowCol = (color & 0xFF000000) != 0 ? 0x99000000 : 0x55000000;
+                    this.smoothFont.drawString(orthoProj, text, x + 0.65f, y + 0.65f, shadowCol);
+                }
+                this.smoothFont.drawString(orthoProj, text, x, y, color);
+                return;
+            } catch (Throwable ignored) {
+            }
+        }
+
+        // Vanilla Font Fallback (100% niezawodny, perfekcyjna ostrość i cień)
+        PoseStack pose = graphics.pose();
+        pose.pushPose();
+        if (Math.abs(scale - 1.0f) > 0.01f) {
+            pose.translate(x, y, 0.0f);
+            pose.scale(scale, scale, 1.0f);
+            graphics.drawString(this.font, text, 0, 0, color, shadow);
+        } else {
+            graphics.drawString(this.font, text, (int) x, (int) y, color, shadow);
+        }
+        pose.popPose();
+    }
+
+    /**
+     * 10/10 God-Tier Liquid Glass Substrate:
+     * - Multi-pass dynamic drop-shadow rzucany przeciwnie do wektora kursora myszy
+     * - Dwutonowy głęboki gradient akrylowego szkła
+     * - Wewnętrzna poświata chromatyczna Cauchy'ego (akcent neonu)
+     * - Dwukolorowy fizyczny bevel (góra jaśniejsza, dół ciemniejszy)
+     * - Lśniący łuk krawędziowy (specular rim arc)
+     * - Dynamiczny ukośny promień światła (light sweep) sunący po szkle na hoverze
+     */
+    private void renderLiquidGlassPill(GuiGraphics graphics, float x, float y, float w, float h, int radius, float hoverAnim, int accentColor, boolean drawSheen) {
+        int ix = (int) x;
+        int iy = (int) y;
+        int iw = (int) w;
+        int ih = (int) h;
+        int r = radius > 0 ? radius : (int) (h * 0.5f);
+
+        // 1. Dynamic Directional Soft Drop-Shadow w 3D
+        float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
+        float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
+        int shadowOffX = (int) (-nx * 6.0f * hoverAnim);
+        int shadowOffY = (int) (2.5f - ny * 5.0f * hoverAnim);
+
+        drawRoundedRect(graphics, ix + shadowOffX - 3, iy + shadowOffY, iw + 6, ih + 4, r + 2, 0x1A000000);
+        drawRoundedRect(graphics, ix + shadowOffX - 1, iy + shadowOffY - 1, iw + 2, ih + 2, r + 1, 0x2E000000);
+
+        // 2. Base Frosted Liquid Glass Substrate
+        int bgTop = lerpColor(hoverAnim, 0x580E1726, 0x8A1E293B);
+        int bgBot = lerpColor(hoverAnim, 0x38070B14, 0x5C0F172A);
+        drawRoundedVerticalGradient(graphics, ix, iy, iw, ih, r, bgTop, bgBot);
+
+        // 3. Inner Chromatic Glow / Cauchy Neon Accent
+        if (hoverAnim > 0.02f) {
+            int innerGlowCol = (accentColor & 0x00FFFFFF) | (((int) (hoverAnim * 0x35)) << 24);
+            drawRoundedBorder(graphics, ix + 1, iy + 1, iw - 2, ih - 2, r - 1, 1, innerGlowCol, 0x05FFFFFF);
+        }
+
+        // 4. Outer Glass Bevel Rim
+        int borderTop = lerpColor(hoverAnim, 0x4D64748B, (accentColor & 0x00FFFFFF) | 0xCC000000);
+        int borderBot = lerpColor(hoverAnim, 0x20334155, 0x33475569);
+        drawRoundedBorder(graphics, ix, iy, iw, ih, r, 1, borderTop, borderBot);
+
+        // 5. Specular Curved Top Arc
+        int specAlpha = (int) (Mth.lerp(hoverAnim, 130.0f, 210.0f));
+        int specCol = (specAlpha << 24) | 0x00FFFFFF;
+        int specDim = (Math.max(10, specAlpha / 5) << 24) | 0x00FFFFFF;
+        int rimMargin = (int) (r * 0.7f);
+        if (iw > rimMargin * 2) {
+            graphics.fill(ix + rimMargin, iy + 1, ix + iw - rimMargin, iy + 2, specCol);
+            graphics.fill(ix + rimMargin - 3, iy + 1, ix + rimMargin, iy + 2, specDim);
+            graphics.fill(ix + iw - rimMargin, iy + 1, ix + iw - rimMargin + 3, iy + 2, specDim);
+        }
+
+        // 6. Dynamic Glossy Light Sweep
+        if (drawSheen && hoverAnim > 0.05f) {
+            float cycle = (this.totalElapsedTime * 1.5f) % 2.8f;
+            if (cycle < 1.4f) {
+                float sweepNorm = cycle / 1.4f;
+                int sheenW = 28;
+                int sheenX = (int) (ix - sheenW + sweepNorm * (iw + sheenW * 2));
+                int clampLeft = Math.max(ix + 2, sheenX);
+                int clampRight = Math.min(ix + iw - 2, sheenX + sheenW);
+                if (clampRight > clampLeft) {
+                    int sheenAlpha = (int) (hoverAnim * 0x30);
+                    int sheenColor = (sheenAlpha << 24) | 0x00E0F2FE;
+                    for (int row = 2; row < ih - 2; row++) {
+                        int rowShift = (int) ((row - ih * 0.5f) * 0.45f);
+                        int lx = Math.max(ix + 3, clampLeft + rowShift);
+                        int rx = Math.min(ix + iw - 3, clampRight + rowShift);
+                        if (rx > lx) {
+                            graphics.fill(lx, iy + row, rx, iy + row + 1, sheenColor);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private void renderModePills(GuiGraphics graphics, boolean nativeActive) {
-        // --- Singleplayer Pill ---
-        float spLift = -2.5f * this.spHoverAnim;
+        ensureSmoothFont();
+
+        // --- Singleplayer Pill (10/10 God-Tier Liquid Glass & 3D Tilt) ---
+        float spLift = -3.0f * this.spHoverAnim;
         int spRadius = (int) (this.modePillH * 0.5f);
 
-        if (!nativeActive) {
-            int spBg = lerpColor(this.spHoverAnim, COL_GLASS_BASE, COL_GLASS_HOVER);
-            int spBorder = lerpColor(this.spHoverAnim, COL_BORDER_NORMAL, COL_BORDER_HOVER);
-            drawRoundedRect(graphics, (int) this.spPillX, (int) (this.spPillY + spLift),
-                    (int) this.modePillW, (int) this.modePillH, spRadius, spBg);
-            drawRoundedBorder(graphics, (int) this.spPillX, (int) (this.spPillY + spLift),
-                    (int) this.modePillW, (int) this.modePillH, spRadius, 1, spBorder, spBorder);
-            graphics.fill((int) (this.spPillX + spRadius), (int) (this.spPillY + spLift + 1),
-                    (int) (this.spPillX + this.modePillW - spRadius), (int) (this.spPillY + spLift + 2), COL_SPECULAR_RIM);
-            renderUserVectorIcon(graphics, (int) (this.spPillX + 24.0f), (int) (this.spPillY + spLift + this.modePillH * 0.5f));
+        PoseStack pose = graphics.pose();
+        pose.pushPose();
+        try {
+            float cx = this.spPillX + this.modePillW * 0.5f;
+            float cy = this.spPillY + this.modePillH * 0.5f;
+            if (this.spHoverAnim > 0.01f) {
+                float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
+                float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
+                pose.translate(cx, cy, 18.0f * this.spHoverAnim);
+                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 9.5f * this.spHoverAnim));
+                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 7.5f * this.spHoverAnim));
+                pose.translate(-cx, -cy, 0.0f);
+            }
+
+            if (!nativeActive) {
+                renderLiquidGlassPill(graphics, this.spPillX, this.spPillY + spLift, this.modePillW, this.modePillH,
+                        spRadius, this.spHoverAnim, 0xFF38BDF8, true);
+                renderUserVectorIcon(graphics, (int) (this.spPillX + 24.0f), (int) (this.spPillY + spLift + this.modePillH * 0.5f));
+            }
+
+            // Singleplayer Label (100% widoczny, zoptymalizowany)
+            int spTextCol = lerpColor(this.spHoverAnim, 0xFFE2E8F0, 0xFFFFFFFF);
+            float spLabelW = (this.smoothFont != null && this.smoothFont.isAvailable())
+                    ? this.smoothFont.getStringWidth("Singleplayer")
+                    : this.font.width("Singleplayer");
+            float fontH = (this.smoothFont != null && this.smoothFont.isAvailable())
+                    ? this.smoothFont.getFontHeight()
+                    : this.font.lineHeight;
+            float spTextX = this.spPillX + (this.modePillW - spLabelW) * 0.5f + 8.0f;
+            float spTextY = this.spPillY + spLift + (this.modePillH - fontH) * 0.5f;
+            drawSmoothOrVanillaText(graphics, "Singleplayer", spTextX, spTextY, spTextCol, true, 1.0f);
+        } finally {
+            pose.popPose();
         }
 
-        // User label
-        float spLabelW = this.font.width("Singleplayer");
-        int spTextX = (int) (this.spPillX + (this.modePillW - spLabelW) * 0.5f + 8.0f);
-        int spTextY = (int) (this.spPillY + spLift + (this.modePillH - this.font.lineHeight) * 0.5f + 0.5f);
-        graphics.drawString(this.font, "Singleplayer", spTextX, spTextY,
-                lerpColor(this.spHoverAnim, 0xFFE2E8F0, 0xFFFFFFFF), false);
-
-        // --- Multiplayer Pill ---
-        float mpLift = -2.5f * this.mpHoverAnim;
+        // --- Multiplayer Pill (10/10 God-Tier Liquid Glass & 3D Tilt) ---
+        float mpLift = -3.0f * this.mpHoverAnim;
         int mpRadius = (int) (this.modePillH * 0.5f);
 
-        if (!nativeActive) {
-            int mpBg = lerpColor(this.mpHoverAnim, COL_GLASS_BASE, COL_GLASS_HOVER);
-            int mpBorder = lerpColor(this.mpHoverAnim, COL_BORDER_NORMAL, COL_BORDER_HOVER);
-            drawRoundedRect(graphics, (int) this.mpPillX, (int) (this.mpPillY + mpLift),
-                    (int) this.modePillW, (int) this.modePillH, mpRadius, mpBg);
-            drawRoundedBorder(graphics, (int) this.mpPillX, (int) (this.mpPillY + mpLift),
-                    (int) this.modePillW, (int) this.modePillH, mpRadius, 1, mpBorder, mpBorder);
-            graphics.fill((int) (this.mpPillX + mpRadius), (int) (this.mpPillY + mpLift + 1),
-                    (int) (this.mpPillX + this.modePillW - mpRadius), (int) (this.mpPillY + mpLift + 2), COL_SPECULAR_RIM);
-            renderMultiUserVectorIcon(graphics, (int) (this.mpPillX + 24.0f), (int) (this.mpPillY + mpLift + this.modePillH * 0.5f));
-        }
+        pose.pushPose();
+        try {
+            float cx = this.mpPillX + this.modePillW * 0.5f;
+            float cy = this.mpPillY + this.modePillH * 0.5f;
+            if (this.mpHoverAnim > 0.01f) {
+                float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
+                float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
+                pose.translate(cx, cy, 18.0f * this.mpHoverAnim);
+                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 9.5f * this.mpHoverAnim));
+                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 7.5f * this.mpHoverAnim));
+                pose.translate(-cx, -cy, 0.0f);
+            }
 
-        // Multi-user label
-        float mpLabelW = this.font.width("Multiplayer");
-        int mpTextX = (int) (this.mpPillX + (this.modePillW - mpLabelW) * 0.5f + 9.0f);
-        int mpTextY = (int) (this.mpPillY + mpLift + (this.modePillH - this.font.lineHeight) * 0.5f + 0.5f);
-        graphics.drawString(this.font, "Multiplayer", mpTextX, mpTextY,
-                lerpColor(this.mpHoverAnim, 0xFFE2E8F0, 0xFFFFFFFF), false);
+            if (!nativeActive) {
+                renderLiquidGlassPill(graphics, this.mpPillX, this.mpPillY + mpLift, this.modePillW, this.modePillH,
+                        mpRadius, this.mpHoverAnim, 0xFFA855F7, true);
+                renderMultiUserVectorIcon(graphics, (int) (this.mpPillX + 24.0f), (int) (this.mpPillY + mpLift + this.modePillH * 0.5f));
+            }
+
+            // Multiplayer Label (100% widoczny, zoptymalizowany)
+            int mpTextCol = lerpColor(this.mpHoverAnim, 0xFFE2E8F0, 0xFFFFFFFF);
+            float mpLabelW = (this.smoothFont != null && this.smoothFont.isAvailable())
+                    ? this.smoothFont.getStringWidth("Multiplayer")
+                    : this.font.width("Multiplayer");
+            float fontH = (this.smoothFont != null && this.smoothFont.isAvailable())
+                    ? this.smoothFont.getFontHeight()
+                    : this.font.lineHeight;
+            float mpTextX = this.mpPillX + (this.modePillW - mpLabelW) * 0.5f + 9.0f;
+            float mpTextY = this.mpPillY + mpLift + (this.modePillH - fontH) * 0.5f;
+            drawSmoothOrVanillaText(graphics, "Multiplayer", mpTextX, mpTextY, mpTextCol, true, 1.0f);
+        } finally {
+            pose.popPose();
+        }
     }
 
     private void renderContinueCard(GuiGraphics graphics, boolean nativeActive) {
-        float contLift = -2.0f * this.continueHoverAnim;
+        float contLift = -2.5f * this.continueHoverAnim;
         int radius = 14;
 
         int cx = (int) this.continueX;
@@ -748,52 +913,60 @@ public class ModernAestheticTitleScreen extends Screen {
         int cw = (int) this.cardW;
         int ch = (int) this.continueH;
 
-        if (!nativeActive) {
-            int contBg = lerpColor(this.continueHoverAnim, COL_GLASS_BASE, COL_GLASS_HOVER);
-            int contBorder = lerpColor(this.continueHoverAnim, COL_BORDER_NORMAL, COL_BORDER_HOVER);
-            drawRoundedRect(graphics, cx, cy, cw, ch, radius, contBg);
-            drawRoundedBorder(graphics, cx, cy, cw, ch, radius, 1, contBorder, contBorder);
-            graphics.fill(cx + radius, cy + 1, cx + cw - radius, cy + 2, COL_SPECULAR_RIM);
-        }
-
-        // Anarchia.gg Server Icon Badge
-        float badgeSize = ch - 16.0f;
-        int bx = cx + 8;
-        int by = cy + 8;
-        drawRoundedRect(graphics, bx, by, (int) badgeSize, (int) badgeSize, 8, 0xFF1E293B);
-        drawRoundedBorder(graphics, bx, by, (int) badgeSize, (int) badgeSize, 8, 1, 0xFF475569, 0xFF334155);
-
-        try {
-            graphics.blit(RenderType::guiTextured, ANARCHIA_ICON, bx + 2, by + 2, 0.0f, 0.0f, (int) badgeSize - 4, (int) badgeSize - 4, (int) badgeSize - 4, (int) badgeSize - 4);
-        } catch (Throwable t) {
-            int initX = (int) (bx + (badgeSize - this.lastServerInitialsWidth) * 0.5f);
-            int initY = (int) (by + (badgeSize - this.font.lineHeight) * 0.5f + 1.0f);
-            graphics.drawString(this.font, this.lastServerInitials, initX, initY, 0xFFFFFFFF, true);
-        }
-
-        // Continue Subtitle & Server Name
         PoseStack pose = graphics.pose();
-        int textX = (int) (bx + badgeSize + 10.0f);
-
         pose.pushPose();
-        pose.translate(textX, cy + 9.0f, 0.0f);
-        pose.scale(0.82f, 0.82f, 1.0f);
-        graphics.drawString(this.font, this.continueSubtitle, 0, 0, 0xFF94A3B8, false);
-        pose.popPose();
+        try {
+            float midX = cx + cw * 0.5f;
+            float midY = cy + ch * 0.5f;
+            if (this.continueHoverAnim > 0.01f) {
+                float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
+                float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
+                pose.translate(midX, midY, 15.0f * this.continueHoverAnim);
+                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 8.0f * this.continueHoverAnim));
+                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 6.0f * this.continueHoverAnim));
+                pose.translate(-midX, -midY, 0.0f);
+            }
 
-        graphics.drawString(this.font, this.lastServerName, textX, (int) (cy + 22.0f), 0xFFF8FAFC, false);
+            if (!nativeActive) {
+                renderLiquidGlassPill(graphics, cx, cy, cw, ch, radius, this.continueHoverAnim, 0xFFF59E0B, true);
+            }
 
-        // Circular Play Button
-        if (!nativeActive) {
-            int playX = (int) this.playCircleX;
-            int playY = (int) (this.playCircleY + contLift);
-            int playR = (int) this.playCircleR;
-            float playHover = Math.max(this.continueHoverAnim * 0.5f, this.continuePlayHoverAnim);
-            int playBg = lerpColor(playHover, 0x33FFFFFF, 0x66FFFFFF);
+            // Anarchia.gg Server Icon Badge (Embossed Golden Shield)
+            float badgeSize = ch - 16.0f;
+            int bx = cx + 8;
+            int by = cy + 8;
+            drawRoundedRect(graphics, bx, by, (int) badgeSize, (int) badgeSize, 8, 0xFF1E293B);
+            int badgeBorder = lerpColor(this.continueHoverAnim, 0xFF475569, 0xFFF59E0B);
+            drawRoundedBorder(graphics, bx, by, (int) badgeSize, (int) badgeSize, 8, 1, badgeBorder, 0xFF334155);
 
-            drawCircle(graphics, playX, playY, playR, playBg);
-            drawCircleOutline(graphics, playX, playY, playR, 0x80FFFFFF);
-            renderPlayTriangleIcon(graphics, playX, playY, 5.0f, 0xFFFFFFFF);
+            try {
+                graphics.blit(RenderType::guiTextured, ANARCHIA_ICON, bx + 2, by + 2, 0.0f, 0.0f, (int) badgeSize - 4, (int) badgeSize - 4, (int) badgeSize - 4, (int) badgeSize - 4);
+            } catch (Throwable t) {
+                int initX = (int) (bx + (badgeSize - this.lastServerInitialsWidth) * 0.5f);
+                int initY = (int) (by + (badgeSize - this.font.lineHeight) * 0.5f + 1.0f);
+                graphics.drawString(this.font, this.lastServerInitials, initX, initY, 0xFFFFFFFF, true);
+            }
+
+            // Continue Subtitle & Server Name (100% widoczne, krystaliczne Liquid Glass)
+            int textX = (int) (bx + badgeSize + 10.0f);
+            drawSmoothOrVanillaText(graphics, this.continueSubtitle, textX, cy + 9.0f, 0xFF94A3B8, true, 0.82f);
+            drawSmoothOrVanillaText(graphics, this.lastServerName, textX, cy + 22.0f, 0xFFF8FAFC, true, 1.0f);
+
+            // Circular Play Button (Glowing Liquid Disc)
+            if (!nativeActive) {
+                float playHover = Math.max(this.continueHoverAnim * 0.5f, this.continuePlayHoverAnim);
+                int playX = (int) (this.playCircleX + playHover * 2.5f);
+                int playY = (int) (this.playCircleY + contLift);
+                int playR = (int) this.playCircleR;
+                int playBg = lerpColor(playHover, 0x33FFFFFF, 0x77FFFFFF);
+                int playRing = lerpColor(playHover, 0x66FFFFFF, 0xFFFFFFFF);
+
+                drawCircle(graphics, playX, playY, playR, playBg);
+                drawCircleOutline(graphics, playX, playY, playR, playRing);
+                renderPlayTriangleIcon(graphics, playX, playY, 5.0f, 0xFFFFFFFF);
+            }
+        } finally {
+            pose.popPose();
         }
     }
 
@@ -899,9 +1072,7 @@ public class ModernAestheticTitleScreen extends Screen {
         int radius = (int) (dh * 0.5f);
 
         if (!nativeActive) {
-            drawRoundedRect(graphics, dx, dy, dw, dh, radius, COL_GLASS_BASE);
-            drawRoundedBorder(graphics, dx, dy, dw, dh, radius, 1, COL_BORDER_NORMAL, COL_BORDER_NORMAL);
-            graphics.fill(dx + radius, dy + 1, dx + dw - radius, dy + 2, COL_SPECULAR_RIM);
+            renderLiquidGlassPill(graphics, dx, dy, dw, dh, radius, 0.25f, 0xFF38BDF8, false);
         }
 
         int midY = (int) (dy + dh * 0.5f);
@@ -953,50 +1124,64 @@ public class ModernAestheticTitleScreen extends Screen {
         int ph = (int) this.profilePillH;
         int radius = (int) (ph * 0.5f);
 
-        if (!nativeActive) {
-            int bg = lerpColor(this.profileHoverAnim, COL_GLASS_BASE, COL_GLASS_HOVER);
-            int border = lerpColor(this.profileHoverAnim, COL_BORDER_NORMAL, COL_BORDER_HOVER);
-            drawRoundedRect(graphics, px, py, pw, ph, radius, bg);
-            drawRoundedBorder(graphics, px, py, pw, ph, radius, 1, border, border);
-            graphics.fill(px + radius, py + 1, px + pw - radius, py + 2, COL_SPECULAR_RIM);
-        }
-
-        // Player Head
-        int headSize = 18;
-        int headX = px + 5;
-        int headY = (int) (py + (ph - headSize) * 0.5f);
-        if (this.playerSkin != null) {
-            PlayerFaceRenderer.draw(graphics, this.playerSkin, headX, headY, headSize);
-        } else {
-            drawRoundedRect(graphics, headX, headY, headSize, headSize, 4, 0xFF334155);
-        }
-
-        // Username
-        int nameX = headX + headSize + 6;
-        int textY = (int) (py + (ph - this.font.lineHeight) * 0.5f + 0.5f);
-        graphics.drawString(this.font, this.cachedPlayerName, nameX, textY, 0xFFF8FAFC, false);
-
-        // Pulsing Emerald Dot + "Online"
-        int dotX = nameX + this.cachedPlayerNameWidth + 8;
-        int dotY = (int) (py + ph * 0.5f);
-        float pulse = 0.65f + 0.35f * (float) Math.sin(this.totalElapsedTime * 3.5f);
-        int dotAlpha = (int) (pulse * 255.0f);
-        drawCircle(graphics, dotX, dotY, 3, (dotAlpha << 24) | 0x0022C55E);
-
         PoseStack pose = graphics.pose();
         pose.pushPose();
-        pose.translate(dotX + 6.0f, textY + 1.0f, 0.0f);
-        pose.scale(0.85f, 0.85f, 1.0f);
-        graphics.drawString(this.font, ONLINE_STATUS_TEXT, 0, 0, 0xFF86EFAC, false);
-        pose.popPose();
+        try {
+            float midX = px + pw * 0.5f;
+            float midY = py + ph * 0.5f;
+            if (this.profileHoverAnim > 0.01f) {
+                float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
+                float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
+                pose.translate(midX, midY, 12.0f * this.profileHoverAnim);
+                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 7.5f * this.profileHoverAnim));
+                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 5.5f * this.profileHoverAnim));
+                pose.translate(-midX, -midY, 0.0f);
+            }
 
-        // Triple Dots "•••"
-        int dotsX = (int) (this.profileDotsX + this.profileDotsW * 0.5f);
-        int dotsY = (int) (py + ph * 0.5f);
-        int dotsCol = lerpColor(this.profileDotsHoverAnim, 0xFF94A3B8, 0xFFFFFFFF);
-        graphics.fill(dotsX - 4, dotsY - 1, dotsX - 2, dotsY + 1, dotsCol);
-        graphics.fill(dotsX - 1, dotsY - 1, dotsX + 1, dotsY + 1, dotsCol);
-        graphics.fill(dotsX + 2, dotsY - 1, dotsX + 4, dotsY + 1, dotsCol);
+            if (!nativeActive) {
+                renderLiquidGlassPill(graphics, px, py, pw, ph, radius, this.profileHoverAnim, 0xFF22C55E, false);
+            }
+
+            // Player Head (Rounded Avatar Frame z lśniącą obwódką)
+            int headSize = 18;
+            int headX = px + 5;
+            int headY = (int) (py + (ph - headSize) * 0.5f);
+            if (this.playerSkin != null) {
+                PlayerFaceRenderer.draw(graphics, this.playerSkin, headX, headY, headSize);
+                drawRoundedBorder(graphics, headX, headY, headSize, headSize, 4, 1, 0x99FFFFFF, 0x44CBD5E1);
+            } else {
+                drawRoundedRect(graphics, headX, headY, headSize, headSize, 4, 0xFF334155);
+            }
+
+            // Username (100% widoczne, ostry font Liquid Glass)
+            int nameX = headX + headSize + 6;
+            float textCenterY = py + (ph - 9.0f) * 0.5f;
+            drawSmoothOrVanillaText(graphics, this.cachedPlayerName, nameX, textCenterY, 0xFFF8FAFC, true, 1.0f);
+
+            // Pulsing Emerald Dot + Radar Wave Halo + "Online"
+            int dotX = nameX + this.cachedPlayerNameWidth + 8;
+            int dotY = (int) (py + ph * 0.5f);
+            float pulse = 0.65f + 0.35f * (float) Math.sin(this.totalElapsedTime * 3.5f);
+            int dotAlpha = (int) (pulse * 255.0f);
+            drawCircle(graphics, dotX, dotY, 3, (dotAlpha << 24) | 0x0022C55E);
+
+            // Dynamiczny pierścień radaru
+            int haloR = 4 + (int) (pulse * 2.0f);
+            int haloAlpha = (int) ((1.0f - pulse) * 110.0f);
+            drawCircleOutline(graphics, dotX, dotY, haloR, (haloAlpha << 24) | 0x0022C55E);
+
+            drawSmoothOrVanillaText(graphics, ONLINE_STATUS_TEXT, dotX + 7.0f, textCenterY, 0xFF86EFAC, true, 0.85f);
+
+            // Triple Dots "•••"
+            int dotsX = (int) (this.profileDotsX + this.profileDotsW * 0.5f);
+            int dotsY = (int) (py + ph * 0.5f);
+            int dotsCol = lerpColor(this.profileDotsHoverAnim, 0xFF94A3B8, 0xFFFFFFFF);
+            graphics.fill(dotsX - 4, dotsY - 1, dotsX - 2, dotsY + 1, dotsCol);
+            graphics.fill(dotsX - 1, dotsY - 1, dotsX + 1, dotsY + 1, dotsCol);
+            graphics.fill(dotsX + 2, dotsY - 1, dotsX + 4, dotsY + 1, dotsCol);
+        } finally {
+            pose.popPose();
+        }
 
         // Profile Popover Dropdown
         if (this.profileMenuAnim > 0.1f) {
@@ -1044,15 +1229,30 @@ public class ModernAestheticTitleScreen extends Screen {
     // =========================================================================
 
     private static void renderUserVectorIcon(GuiGraphics graphics, int cx, int cy) {
+        // Głowa z subtelnym cieniem i lśniącym akcentem
+        drawCircle(graphics, cx, cy - 3, 3, 0x33000000);
         drawCircle(graphics, cx, cy - 3, 2, 0xFFFFFFFF);
+        graphics.fill(cx - 1, cy - 4, cx + 1, cy - 3, 0xFF38BDF8);
+
+        // Tułów / ramiona z łukiem Liquid Glass
+        drawRoundedRect(graphics, cx - 5, cy + 1, 10, 5, 2, 0x33000000);
         drawRoundedRect(graphics, cx - 4, cy + 1, 8, 4, 2, 0xFFFFFFFF);
+        graphics.fill(cx - 3, cy + 1, cx + 3, cy + 2, 0x99BAE6FD);
     }
 
     private static void renderMultiUserVectorIcon(GuiGraphics graphics, int cx, int cy) {
-        drawCircle(graphics, cx + 3, cy - 3, 2, 0x99FFFFFF);
-        drawRoundedRect(graphics, cx - 1, cy + 1, 7, 3, 1, 0x99FFFFFF);
+        // Tło - drugi użytkownik (lekko cofnięty w głąb z fioletowym tonem)
+        drawCircle(graphics, cx + 4, cy - 3, 2, 0x88CBD5E1);
+        drawRoundedRect(graphics, cx, cy + 1, 8, 4, 2, 0x88CBD5E1);
+
+        // Pierwszy plan - główny użytkownik
+        drawCircle(graphics, cx - 2, cy - 2, 3, 0x33000000);
         drawCircle(graphics, cx - 2, cy - 2, 2, 0xFFFFFFFF);
-        drawRoundedRect(graphics, cx - 5, cy + 2, 7, 4, 2, 0xFFFFFFFF);
+        graphics.fill(cx - 3, cy - 3, cx - 1, cy - 2, 0xFFA855F7);
+
+        drawRoundedRect(graphics, cx - 6, cy + 2, 9, 5, 2, 0x33000000);
+        drawRoundedRect(graphics, cx - 5, cy + 2, 8, 4, 2, 0xFFFFFFFF);
+        graphics.fill(cx - 4, cy + 2, cx + 2, cy + 3, 0x99E9D5FF);
     }
 
     private static void renderPlayTriangleIcon(GuiGraphics graphics, int cx, int cy, float size, int color) {

@@ -91,6 +91,10 @@ public final class KeybindsHudRenderer {
     private static float headerHoverAnim = 0.0f;
     private static boolean widthInitialized = false;
 
+    // 3D Liquid Glass Perspective Tilt (Zero-Alloc)
+    private static float hudTiltX = 0.0f;
+    private static float hudTiltY = 0.0f;
+
     // Timer klatki (prymitywy Zero-Alloc)
     private static long lastFrameNanos = 0L;
     private static float elapsedSeconds = 0.0f;
@@ -290,9 +294,37 @@ public final class KeybindsHudRenderer {
             if (headerHoverAnim < 0.004f) headerHoverAnim = 0.0f;
             else if (headerHoverAnim > 0.996f) headerHoverAnim = 1.0f;
 
-            // =================================================================
-            // 2. JEDNOLITA BRYŁA LIQUID GLASS (MONOCHROME LILAC & OBSIDIAN)
-            // =================================================================
+            // 3D Perspective Tilt dla Liquid Glass
+            float targetTiltX = 0.0f;
+            float targetTiltY = 0.0f;
+            if (inClickGui && headerHovered) {
+                double mouseX = mc.mouseHandler.xpos() * ((double) screenW / (double) mc.getWindow().getWidth());
+                double mouseY = mc.mouseHandler.ypos() * ((double) screenH / (double) mc.getWindow().getHeight());
+                float cx = x + boxWidth * 0.5f;
+                float cy = y + boxHeight * 0.5f;
+                float nx = Math.max(-1.0f, Math.min(1.0f, ((float) mouseX - cx) / Math.max(1.0f, boxWidth * 0.5f)));
+                float ny = Math.max(-1.0f, Math.min(1.0f, ((float) mouseY - cy) / Math.max(1.0f, boxHeight * 0.5f)));
+                targetTiltX = -ny * 6.0f;
+                targetTiltY = nx * 7.5f;
+            }
+            hudTiltX += (targetTiltX - hudTiltX) * widgetLerpSpeed;
+            hudTiltY += (targetTiltY - hudTiltY) * widgetLerpSpeed;
+
+            final com.mojang.blaze3d.vertex.PoseStack pose = g.pose();
+            pose.pushPose();
+            try {
+                if (Math.abs(hudTiltX) > 0.05f || Math.abs(hudTiltY) > 0.05f || headerHoverAnim > 0.05f) {
+                    float cx = x + boxWidth * 0.5f;
+                    float cy = y + boxHeight * 0.5f;
+                    pose.translate(cx, cy, 14.0f * headerHoverAnim);
+                    pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(hudTiltY));
+                    pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(hudTiltX));
+                    pose.translate(-cx, -cy, 0.0f);
+                }
+
+                // =================================================================
+                // 2. JEDNOLITA BRYŁA LIQUID GLASS (MONOCHROME LILAC & OBSIDIAN)
+                // =================================================================
 
             // A. Miękki cień zewnętrzny
             drawRoundedBoxSafe(
@@ -569,9 +601,12 @@ public final class KeybindsHudRenderer {
             } finally {
                 g.disableScissor();
             }
-        } catch (Throwable ignored) {
-            // Fail-safe: błąd renderowania HUD nigdy nie crashuje gry
+        } finally {
+            pose.popPose();
         }
+    } catch (Throwable ignored) {
+        // Fail-safe: błąd renderowania HUD nigdy nie crashuje gry
+    }
     }
 
     // =========================================================================
