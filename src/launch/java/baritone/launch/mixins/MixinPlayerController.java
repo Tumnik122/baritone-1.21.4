@@ -94,6 +94,22 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
     @org.spongepowered.asm.mixin.Unique
     private net.minecraft.world.item.ItemStack argon$lastMiningTool = net.minecraft.world.item.ItemStack.EMPTY;
 
+    @org.spongepowered.asm.mixin.Unique
+    private static boolean argon$isBaritoneActive() {
+        baritone.api.IBaritone primary = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
+        if (primary == null) return false;
+        if (primary.getPathingBehavior().isPathing()) return true;
+        if (primary.getPathingControlManager() != null
+                && primary.getPathingControlManager().mostRecentInControl().map(baritone.api.process.IBaritoneProcess::isActive).orElse(false)) {
+            return true;
+        }
+        if (primary.getMineProcess() != null && primary.getMineProcess().isActive()) return true;
+        if (primary.getCustomGoalProcess() != null && primary.getCustomGoalProcess().isActive()) return true;
+        if (primary.getFollowProcess() != null && primary.getFollowProcess().isActive()) return true;
+        if (primary.getBuilderProcess() != null && primary.getBuilderProcess().isActive()) return true;
+        return false;
+    }
+
     /**
      * Zeroes destroyDelay at the HEAD of startDestroyBlock so that the
      * vanilla check (destroyDelay > 0 → skip mining) does NOT fire for
@@ -117,6 +133,12 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         if (mc.level == null || mc.player == null) {
             this.setIsHittingBlock(false);
             cir.setReturnValue(false);
+            return;
+        }
+
+        // Po #stop lub w trakcie manualnej rozgrywki przez dj: 100% waniliowe zachowanie klienta!
+        // Żadnych blokad 3-sekundowych, żadnych modyfikacji destroyDelay czy fałszywych zwrotów false!
+        if (!argon$isBaritoneActive()) {
             return;
         }
 
@@ -271,6 +293,11 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable<Boolean> cir) {
         net.minecraft.client.Minecraft mc = net.minecraft.client.Minecraft.getInstance();
         if (mc.player == null || mc.level == null) return;
+
+        // Po #stop lub w trakcie manualnego kopania przez gracza: 100% waniliowe naliczanie i pakiety!
+        if (!argon$isBaritoneActive()) {
+            return;
+        }
 
         net.minecraft.world.level.block.state.BlockState state = mc.level.getBlockState(pos);
         if (state.isAir() || (state.getBlock() instanceof net.minecraft.world.level.block.LiquidBlock)) {

@@ -758,7 +758,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         ctx.playerController().syncHeldItem();
 
         // Bezpiecznik zacięcia na bloku (watchdog): dynamiczny próg na podstawie oczekiwanych ticków
-        int maxWatchdogTicks = Math.max(80, minRequiredBreakTicks * 2 + 20);
+        int maxWatchdogTicks = Math.max(120, minRequiredBreakTicks * 3 + 40);
         if (currentBlockDamageTicks > maxWatchdogTicks) {
             ctx.playerController().resetBlockRemoving();
             lastBreakingPos = null;

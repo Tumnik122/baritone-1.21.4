@@ -375,10 +375,12 @@ public final class GrimBreakValidator {
         // Próg zakotwiczony wyłącznie na minTicks (nigdy na miningTicksElapsed, aby nie uciekał w pętli!)
         long requiredMs = Math.max(0L, (long) minTicks * TICK_DURATION_MS - JITTER_BUFFER_MS);
 
-        return grimAccumulatedDamage >= 1.0f
-                && extraTicksRemaining <= 0
-                && miningTicksElapsed >= minTicks
-                && elapsedMs >= requiredMs;
+        // Gwarancja braku deadlocka na 95%:
+        // Spełnienie wymaganych ticków i milisekund GrimAC przy osiągnięciu delty lub po +2 tickach bufora
+        boolean timeAndTicksSatisfied = (miningTicksElapsed >= minTicks && elapsedMs >= requiredMs);
+        boolean damageSatisfied = (grimAccumulatedDamage >= 1.0f && extraTicksRemaining <= 0);
+
+        return timeAndTicksSatisfied && (damageSatisfied || miningTicksElapsed >= minTicks + 2);
     }
 
     /**

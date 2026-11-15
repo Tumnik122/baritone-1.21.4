@@ -724,8 +724,8 @@ public class ModernAestheticTitleScreen extends Screen {
                         .mul(graphics.pose().last().pose());
 
                 if (shadow) {
-                    int shadowCol = (color & 0xFF000000) != 0 ? 0x99000000 : 0x55000000;
-                    this.smoothFont.drawString(orthoProj, text, x + 0.65f, y + 0.65f, shadowCol);
+                    // Mocny cień separujący zapewniający 100% czytelności na ultraczystym, przezroczystym szkle
+                    this.smoothFont.drawString(orthoProj, text, x + 0.85f, y + 0.85f, 0xDD020617);
                 }
                 this.smoothFont.drawString(orthoProj, text, x, y, color);
                 return;
@@ -747,13 +747,13 @@ public class ModernAestheticTitleScreen extends Screen {
     }
 
     /**
-     * 10/10 God-Tier Liquid Glass Substrate:
-     * - Zewnętrzny neonowy bloom halo w barwie akcentu (dzięki temu przycisk od razu odcina się od tła i świeci)
-     * - Wielowarstwowy dynamiczny directional drop shadow
-     * - Prawdziwe luminescencyjne szkło akrylowe (wyraziste, soczyste barwy z przezroczystością)
-     * - Podwójna fazka optyczna (inner highlight rim 0x55FFFFFF + outer 1.5px glowing accent border)
+     * 10/10 VisionOS Ultra-Transparent Liquid Glass Substrate:
+     * - ZERO przyciemniających cieni pod kapsułą (środek szkła jest w 100% przezroczysty, tło prześwituje krystalicznie!)
+     * - Bardzo niska przezroczystość wnętrza (12% do 22% alpha) z luminescencyjnym tintem barwnym
+     * - Zewnętrzny neonowy bloom halo w barwie akcentu
+     * - Podwójna refrakcyjna faza optyczna (inner highlight rim 0x55FFFFFF + outer 1.5px glowing accent border)
      * - 2-pikselowy krystaliczny odblask światła na górnej krawędzi (0xEEFFFFFF i 0x77FFFFFF)
-     * - Aktywny i ambientowy promień światła (Glossy Specular Light Sweep)
+     * - Lśniący promień światła (Glossy Specular Light Sweep) przecinający przezroczystą taflę szkła
      */
     private void renderLiquidGlassPill(GuiGraphics graphics, float x, float y, float w, float h, int radius, float hoverAnim, int accentColor, boolean drawSheen) {
         int ix = (int) x;
@@ -762,68 +762,70 @@ public class ModernAestheticTitleScreen extends Screen {
         int ih = (int) h;
         int r = radius > 0 ? radius : (int) (h * 0.5f);
 
-        // 1. Zewnętrzny Ambient Bloom / Neon Glow Halo (Widoczne podświetlenie otaczające przycisk)
-        int haloAlpha = (int) (Mth.lerp(hoverAnim, 35.0f, 95.0f));
+        // 1. Zewnętrzny Ambient Bloom Halo (Świecąca poświata poza granicami przycisku, nie zasłania środka!)
+        int haloAlpha = (int) (Mth.lerp(hoverAnim, 30.0f, 90.0f));
         int haloCol = (accentColor & 0x00FFFFFF) | (haloAlpha << 24);
         int softHaloAlpha = (int) (haloAlpha * 0.45f);
         int softHaloCol = (accentColor & 0x00FFFFFF) | (softHaloAlpha << 24);
 
-        // Szerokie miękkie halo
-        drawRoundedRect(graphics, ix - 3, iy - 2, iw + 6, ih + 4, r + 2, softHaloCol);
-        // Bliskie intensywne halo
-        drawRoundedRect(graphics, ix - 1, iy - 1, iw + 2, ih + 2, r + 1, haloCol);
+        // Subtelne rozmyte halo na zewnątrz (obrys)
+        drawRoundedBorder(graphics, ix - 3, iy - 2, iw + 6, ih + 4, r + 2, 2, softHaloCol, 0x00FFFFFF);
+        drawRoundedBorder(graphics, ix - 1, iy - 1, iw + 2, ih + 2, r + 1, 1, haloCol, softHaloCol);
 
-        // 2. Dynamic Directional Soft Drop-Shadow w 3D (rzuca cień przeciwnie do pozycji myszy)
+        // 2. Miękki directional drop shadow WYŁĄCZNIE pod spodem przycisku (nie przyciemnia przezroczystego wnętrza!)
         float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
         float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
-        int shadowOffX = (int) (-nx * 8.0f * hoverAnim);
-        int shadowOffY = (int) (3.5f - ny * 6.0f * hoverAnim);
+        int shadowOffX = (int) (-nx * 7.0f * hoverAnim);
+        int shadowOffY = (int) (3.0f - ny * 5.0f * hoverAnim);
+        int rimMargin = (int) (r * 0.65f);
 
-        drawRoundedRect(graphics, ix + shadowOffX - 2, iy + shadowOffY, iw + 4, ih + 4, r + 2, 0x33000000);
-        drawRoundedRect(graphics, ix + shadowOffX, iy + shadowOffY + 1, iw, ih + 2, r + 1, 0x4D000000);
+        int shAlpha = (int) (Mth.lerp(hoverAnim, 45.0f, 95.0f));
+        int shCol1 = (shAlpha << 24) | 0x00020617;
+        int shCol2 = ((shAlpha / 2) << 24) | 0x00020617;
+        // Pasek cienia rzucany w dół poza obrys szkła
+        graphics.fill(ix + rimMargin + shadowOffX, iy + ih + shadowOffY - 1, ix + iw - rimMargin + shadowOffX, iy + ih + shadowOffY + 2, shCol1);
+        graphics.fill(ix + rimMargin + shadowOffX - 2, iy + ih + shadowOffY + 1, ix + iw - rimMargin + shadowOffX + 2, iy + ih + shadowOffY + 4, shCol2);
 
-        // 3. Base Frosted Liquid Glass Substrate (Prawdziwe, nasycone szkło z luminescencją)
-        int accR = (accentColor >> 16) & 0xFF;
-        int accG = (accentColor >> 8) & 0xFF;
-        int accB = accentColor & 0xFF;
-
-        int tintAlphaTop = (int) (Mth.lerp(hoverAnim, 115.0f, 185.0f));
-        int tintAlphaBot = (int) (Mth.lerp(hoverAnim, 75.0f, 135.0f));
-        int glassTop = (tintAlphaTop << 24) | ((accR / 6 + 18) << 16) | ((accG / 6 + 32) << 8) | (accB / 5 + 50);
-        int glassBot = (tintAlphaBot << 24) | ((accR / 9 + 8) << 16) | ((accG / 9 + 16) << 8) | (accB / 8 + 28);
+        // 3. Ultraczyste, przezroczyste wnętrze Liquid Glass (12% do 24% alpha — tapeta 8K prześwituje krystalicznie!)
+        int tintAlphaTop = (int) (Mth.lerp(hoverAnim, 34.0f, 60.0f)); // 13% do 23% alpha
+        int tintAlphaBot = (int) (Mth.lerp(hoverAnim, 16.0f, 34.0f)); // 6% do 13% alpha
+        int glassTop = (tintAlphaTop << 24) | (accentColor & 0x00FFFFFF);
+        int glassBot = (tintAlphaBot << 24) | (accentColor & 0x00FFFFFF);
         drawRoundedVerticalGradient(graphics, ix, iy, iw, ih, r, glassTop, glassBot);
 
-        // 4. Wewnętrzna luminescencja Liquid Glass (refrakcja światła w masie szklanej)
-        int innerRefractCol = (accentColor & 0x00FFFFFF) | (((int) (Mth.lerp(hoverAnim, 40.0f, 110.0f))) << 24);
-        drawRoundedBorder(graphics, ix + 1, iy + 1, iw - 2, ih - 2, r - 1, 1, innerRefractCol, 0x15FFFFFF);
+        // 4. Wewnętrzny krystaliczny highlight refrakcyjny (0x44FFFFFF góra -> 0x10FFFFFF dół)
+        int innerGlowCol = (accentColor & 0x00FFFFFF) | (((int) (Mth.lerp(hoverAnim, 35.0f, 85.0f))) << 24);
+        drawRoundedBorder(graphics, ix + 1, iy + 1, iw - 2, ih - 2, r - 1, 1, 0x48FFFFFF, innerGlowCol);
 
-        // 5. Wyrazisty Outer Glass Bevel Rim (Dwukolorowa ramka fizyczna)
-        int borderAlpha = (int) (Mth.lerp(hoverAnim, 160.0f, 255.0f));
+        // 5. Wyrazisty zewnętrzny Bevel Rim w kolorze akcentu (lśniąca krawędź szkła)
+        int borderAlpha = (int) (Mth.lerp(hoverAnim, 180.0f, 255.0f));
         int borderTop = (accentColor & 0x00FFFFFF) | (borderAlpha << 24);
-        int borderBot = (accentColor & 0x00FFFFFF) | ((borderAlpha / 3) << 24);
+        int borderBot = (accentColor & 0x00FFFFFF) | ((borderAlpha / 2) << 24);
         drawRoundedBorder(graphics, ix, iy, iw, ih, r, 1, borderTop, borderBot);
 
-        // 6. Dwupikselowy krystaliczny Specular Reflection Arc na górnej krawędzi szkła
-        int specAlpha1 = (int) (Mth.lerp(hoverAnim, 210.0f, 255.0f));
-        int specAlpha2 = (int) (Mth.lerp(hoverAnim, 80.0f, 160.0f));
+        // 6. Dwupikselowy krystaliczny Specular Reflection Arc na szczycie soczewki szkła
+        int specAlpha1 = (int) (Mth.lerp(hoverAnim, 220.0f, 255.0f));
+        int specAlpha2 = (int) (Mth.lerp(hoverAnim, 90.0f, 170.0f));
         int specCol1 = (specAlpha1 << 24) | 0x00FFFFFF;
         int specCol2 = (specAlpha2 << 24) | 0x00FFFFFF;
-        int rimMargin = (int) (r * 0.6f);
         if (iw > rimMargin * 2) {
+            // Pierwsza linia (czysty, krystaliczny błysk 0xFFFFFF)
             graphics.fill(ix + rimMargin, iy + 1, ix + iw - rimMargin, iy + 2, specCol1);
+            // Druga linia (rozproszona grubość soczewki szkła)
             graphics.fill(ix + rimMargin + 2, iy + 2, ix + iw - rimMargin - 2, iy + 3, specCol2);
+            // Zmiękczenia na łukach
             int dimSpec = ((specAlpha1 / 4) << 24) | 0x00FFFFFF;
             graphics.fill(ix + rimMargin - 3, iy + 1, ix + rimMargin, iy + 2, dimSpec);
             graphics.fill(ix + iw - rimMargin, iy + 1, ix + iw - rimMargin + 3, iy + 2, dimSpec);
         }
 
         // 7. Dolny odblask podłoża (ground bounce light)
-        int botBounceCol = (((int) (Mth.lerp(hoverAnim, 30.0f, 70.0f))) << 24) | 0x00FFFFFF;
+        int botBounceCol = (((int) (Mth.lerp(hoverAnim, 35.0f, 80.0f))) << 24) | 0x00FFFFFF;
         if (iw > rimMargin * 2) {
             graphics.fill(ix + rimMargin + 4, iy + ih - 2, ix + iw - rimMargin - 4, iy + ih - 1, botBounceCol);
         }
 
-        // 8. Dynamic Glossy Light Sweep (Zarówno na hoverze jak i w tle w trybie idle)
+        // 8. Dynamic Glossy Light Sweep (Lśniący promień światła przecinający przezroczystą taflę)
         if (drawSheen) {
             float sweepSpeed = (hoverAnim > 0.1f) ? 1.6f : 0.6f;
             float cycle = (this.totalElapsedTime * sweepSpeed) % 3.6f;
@@ -834,8 +836,8 @@ public class ModernAestheticTitleScreen extends Screen {
                 int clampLeft = Math.max(ix + 2, sheenX);
                 int clampRight = Math.min(ix + iw - 2, sheenX + sheenW);
                 if (clampRight > clampLeft) {
-                    int sheenAlpha = (int) (Mth.lerp(hoverAnim, 35.0f, 100.0f));
-                    int sheenColor = (sheenAlpha << 24) | 0x00E0F2FE;
+                    int sheenAlpha = (int) (Mth.lerp(hoverAnim, 40.0f, 110.0f));
+                    int sheenColor = (sheenAlpha << 24) | 0x00FFFFFF;
                     for (int row = 2; row < ih - 2; row++) {
                         int rowShift = (int) ((row - ih * 0.5f) * 0.45f);
                         int lx = Math.max(ix + 3, clampLeft + rowShift);
