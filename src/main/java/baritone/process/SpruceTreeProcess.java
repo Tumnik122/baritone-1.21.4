@@ -716,16 +716,20 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         }
 
         BlockState targetState = level.getBlockState(pos);
-        if (targetState.isAir() || recentlyBrokenBlocks.containsKey(pos.asLong())) {
+        if (targetState.isAir()) {
             stopDigging();
             return;
         }
+        if (recentlyBrokenBlocks.containsKey(pos.asLong())) {
+            if (targetState.is(Blocks.SPRUCE_LOG) || targetState.is(Blocks.SPRUCE_LEAVES)) {
+                recentlyBrokenBlocks.remove(pos.asLong());
+            } else {
+                stopDigging();
+                return;
+            }
+        }
 
         if (mc.gameMode == null) return;
-
-        if (mc.gameMode instanceof baritone.utils.accessor.IPlayerControllerMP mp) {
-            mp.setDestroyDelay(0);
-        }
 
         Direction safeSide = side != null ? side : Direction.UP;
 
@@ -738,7 +742,7 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
             currentBlockDamageTicks = 0;
             currentBlockBreakProgress = 0.0f;
             interBlockReleaseTicks = 0;
-            // Brak return - kliknięcie w nowy blok w tym samym ticku!
+            // Brak return - kliknięcie w nowy blok po odczekaniu cooldownu
         }
 
         // Synchronizacja trzymanego narzędzia (eliminacja rozbieżności prędkości w GrimAC)
@@ -756,18 +760,22 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         }
 
         // 3. TICK 0: PIERWSZY KONTAKT Z NOWYM BLOKIEM
-        // Kliknięcie następuje NATYCHMIASTOWO w tym samym ticku co rotacja (żądanie dj)!
+        // Kliknięcie następuje po upłynięciu legalnego odstępu GrimAC (eliminacja FastBreak delay=38..56ms, 91ms, 199ms)
         if (lastBreakingPos == null) {
+            if (!GrimBreakValidator.canStartNewBreak(player.tickCount)) {
+                return;
+            }
+
             lastBreakingPos = pos.immutable();
             lastBreakingType = currentTargetType;
             currentBlockDamageTicks = 0;
             currentBlockBreakProgress = 0.0f;
             blockMiningStartTimeMs = System.currentTimeMillis();
 
-            int reqTicks = GrimBreakValidator.getRequiredTicks(player, level, pos, targetState, player.onGround());
+            int reqTicks = GrimBreakValidator.getRequiredWaitTicks(player, level, pos, targetState);
             minRequiredBreakTicks = (currentTargetType == TargetType.LOG) ? Math.max(6, reqTicks) : Math.max(4, reqTicks);
 
-            // Błyskawiczny pakiet START_DESTROY_BLOCK w tym samym ticku:
+            // Pakiet START_DESTROY_BLOCK:
             ctx.playerController().clickBlock(pos, safeSide);
             player.swing(InteractionHand.MAIN_HAND);
             return;
@@ -824,12 +832,20 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
                 for (int dz = -radius; dz <= radius; dz++) {
                     BlockPos pos = eyeBlockPos.offset(dx, dy, dz);
 
-                    // Zabezpieczenie przed AirLiquidBreak: nigdy nie celuj w blok niedawno rozbity (bufor serwera/ping)
-                    if (recentlyBrokenBlocks.containsKey(pos.asLong())) {
+                    BlockState state = level.getBlockState(pos);
+                    if (state.isAir()) {
                         continue;
                     }
 
-                    BlockState state = level.getBlockState(pos);
+                    // Zabezpieczenie przed AirLiquidBreak oraz weryfikacja resyncu GrimAC:
+                    // Jeśli serwer cofnął zniszczenie kłody lub liścia, zdejmij kwarantannę, aby nie zostawić wiszącego pnia!
+                    if (recentlyBrokenBlocks.containsKey(pos.asLong())) {
+                        if (state.is(Blocks.SPRUCE_LOG) || state.is(Blocks.SPRUCE_LEAVES)) {
+                            recentlyBrokenBlocks.remove(pos.asLong());
+                        } else {
+                            continue;
+                        }
+                    }
 
                     if (leavesMode) {
                         if (!state.is(Blocks.SPRUCE_LEAVES)) {

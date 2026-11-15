@@ -31,6 +31,9 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
     @Shadow
     private int destroyDelay;
 
+    @Shadow
+    public abstract boolean destroyBlock(BlockPos pos);
+
     @Accessor("isDestroying")
     @Override
     public abstract void setIsHittingBlock(boolean isHittingBlock);
@@ -134,6 +137,14 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             return;
         }
 
+        // KRYTYCZNA OCHRONA GRIMAC (FastBreak delay=38..56ms, 91ms, 199ms):
+        // Wymuszamy przestrzeganie odstępu 5 ticków (250ms) między kolejnymi blokami nie-instabreak!
+        if (!baritone.utils.GrimBreakValidator.canStartNewBreak(mc.player.tickCount)) {
+            this.setIsHittingBlock(false);
+            cir.setReturnValue(false);
+            return;
+        }
+
         // BEZWZGLĘDNA OCHRONA BLOKU POD NOGAMI (Argon 4 & dj):
         // Nigdy nie pozwól na niszczenie bloku podłogi bezpośrednio pod stopami gracza, gdy bot tuneluje!
         if (pos.equals(mc.player.blockPosition().below())) {
@@ -191,6 +202,7 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
         this.argon$miningTicks = 0;
         this.argon$diggingActiveOnServer = true;
         this.setDestroyProgress(0.0f);
+        baritone.utils.GrimBreakValidator.onStartBreak(mc.player, mc.level, pos, direction, mc.player.tickCount);
 
         boolean isGrim = baritone.api.BaritoneAPI.getSettings().antiCheatCompatibility.value
                 || baritone.api.BaritoneAPI.getSettings().grimCompat.value
@@ -324,13 +336,12 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             this.argon$lastContinueTick = currentTick;
             this.argon$miningTicks++;
 
-            state = mc.level.getBlockState(pos);
-            int reqTicks = baritone.utils.GrimBreakValidator.getRequiredTicks(
-                    mc.player, mc.level, pos, state, mc.player.onGround()
-            );
+            baritone.utils.GrimBreakValidator.onTickContinue(mc.player, mc.level, pos);
 
-            // W GrimAC, aby nie było 5-tickowego opóźnienia między kolejnymi krokami kopania tego samego bloku:
-            this.destroyDelay = 0;
+            state = mc.level.getBlockState(pos);
+            int reqTicks = baritone.utils.GrimBreakValidator.getRequiredWaitTicks(
+                    mc.player, mc.level, pos, state
+            );
 
             // W Singleplayer nie blokujemy postępu kopania - waniliowe naliczanie działa w 100% naturalnie
             if (mc.hasSingleplayerServer()) {
@@ -338,9 +349,9 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             }
 
             // Na serwerach wieloosobowych z GrimAC:
-            // Dopóki nie minęła wymagana liczba ticków (reqTicks), BEZWZGLĘDNIE anulujemy continueDestroyBlock,
-            // aby waniliowy kod nie wysłał przedwczesnego STOP_DESTROY_BLOCK (np. przy efficiency delta >= 1.0f).
-            if (this.argon$miningTicks < reqTicks) {
+            // Dopóki canFinishBreak nie zwróci true (kryteria tickowe, delta i czasowe),
+            // BEZWZGLĘDNIE anulujemy continueDestroyBlock, aby nie wysłać przedwczesnego STOP_DESTROY_BLOCK!
+            if (!baritone.utils.GrimBreakValidator.canFinishBreak(mc.player, mc.level, pos)) {
                 float visualProgress = Math.min(0.95f, (float) this.argon$miningTicks / (float) Math.max(1, reqTicks));
                 this.setDestroyProgress(visualProgress);
                 mc.level.destroyBlockProgress(mc.player.getId(), pos, (int) (visualProgress * 10.0f));
@@ -349,12 +360,34 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
                 return;
             }
 
-            // Wymagana liczba ticków GrimAC minęła! Ustawiamy 1.0f i pozwalamy waniliowemu
-            // continueDestroyBlock legalnie wysłać STOP_DESTROY_BLOCK w tym samym ticku!
+            // Wymagany czas i delta GrimAC minęły w 100%!
+            boolean isInsta = baritone.utils.GrimBreakValidator.getGrimDestroyProgress(mc.player, mc.level, pos, state) >= 1.0f
+                    && state.getDestroySpeed(mc.level, pos) == 0.0f;
+            baritone.utils.GrimBreakValidator.onFinishBreak(currentTick, isInsta);
+
             this.argon$recentDestroyedBlocks.put(pos.asLong(), System.currentTimeMillis() + 3000L);
-            this.setDestroyProgress(1.0f);
-            this.destroyDelay = 0;
+            this.argon$lastDestroyedPosLong = pos.asLong();
+
+            this.callStartPrediction(mc.level, seq -> {
+                this.destroyBlock(pos);
+                return new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
+                        net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK,
+                        pos,
+                        direction,
+                        seq
+                );
+            });
+
+            this.setDestroyProgress(0.0f);
+            this.destroyDelay = isInsta ? 0 : 5; // Waniliowe 5 ticków (250ms) dla kłód/bloków nie-instabreak!
+            mc.level.destroyBlockProgress(mc.player.getId(), pos, -1);
             this.argon$miningTicks = 0;
+            this.argon$diggingActiveOnServer = false;
+            this.argon$targetBlockPosLong = Long.MIN_VALUE;
+            this.argon$targetBlockState = null;
+            this.setIsHittingBlock(false);
+            cir.setReturnValue(true);
+            return;
         } else if (baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
             this.destroyDelay = 0;
         }
