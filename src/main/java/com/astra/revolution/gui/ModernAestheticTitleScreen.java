@@ -748,12 +748,12 @@ public class ModernAestheticTitleScreen extends Screen {
 
     /**
      * 10/10 God-Tier Liquid Glass Substrate:
-     * - Multi-pass dynamic drop-shadow rzucany przeciwnie do wektora kursora myszy
-     * - Dwutonowy głęboki gradient akrylowego szkła
-     * - Wewnętrzna poświata chromatyczna Cauchy'ego (akcent neonu)
-     * - Dwukolorowy fizyczny bevel (góra jaśniejsza, dół ciemniejszy)
-     * - Lśniący łuk krawędziowy (specular rim arc)
-     * - Dynamiczny ukośny promień światła (light sweep) sunący po szkle na hoverze
+     * - Zewnętrzny neonowy bloom halo w barwie akcentu (dzięki temu przycisk od razu odcina się od tła i świeci)
+     * - Wielowarstwowy dynamiczny directional drop shadow
+     * - Prawdziwe luminescencyjne szkło akrylowe (wyraziste, soczyste barwy z przezroczystością)
+     * - Podwójna fazka optyczna (inner highlight rim 0x55FFFFFF + outer 1.5px glowing accent border)
+     * - 2-pikselowy krystaliczny odblask światła na górnej krawędzi (0xEEFFFFFF i 0x77FFFFFF)
+     * - Aktywny i ambientowy promień światła (Glossy Specular Light Sweep)
      */
     private void renderLiquidGlassPill(GuiGraphics graphics, float x, float y, float w, float h, int radius, float hoverAnim, int accentColor, boolean drawSheen) {
         int ix = (int) x;
@@ -762,53 +762,79 @@ public class ModernAestheticTitleScreen extends Screen {
         int ih = (int) h;
         int r = radius > 0 ? radius : (int) (h * 0.5f);
 
-        // 1. Dynamic Directional Soft Drop-Shadow w 3D
+        // 1. Zewnętrzny Ambient Bloom / Neon Glow Halo (Widoczne podświetlenie otaczające przycisk)
+        int haloAlpha = (int) (Mth.lerp(hoverAnim, 35.0f, 95.0f));
+        int haloCol = (accentColor & 0x00FFFFFF) | (haloAlpha << 24);
+        int softHaloAlpha = (int) (haloAlpha * 0.45f);
+        int softHaloCol = (accentColor & 0x00FFFFFF) | (softHaloAlpha << 24);
+
+        // Szerokie miękkie halo
+        drawRoundedRect(graphics, ix - 3, iy - 2, iw + 6, ih + 4, r + 2, softHaloCol);
+        // Bliskie intensywne halo
+        drawRoundedRect(graphics, ix - 1, iy - 1, iw + 2, ih + 2, r + 1, haloCol);
+
+        // 2. Dynamic Directional Soft Drop-Shadow w 3D (rzuca cień przeciwnie do pozycji myszy)
         float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
         float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
-        int shadowOffX = (int) (-nx * 6.0f * hoverAnim);
-        int shadowOffY = (int) (2.5f - ny * 5.0f * hoverAnim);
+        int shadowOffX = (int) (-nx * 8.0f * hoverAnim);
+        int shadowOffY = (int) (3.5f - ny * 6.0f * hoverAnim);
 
-        drawRoundedRect(graphics, ix + shadowOffX - 3, iy + shadowOffY, iw + 6, ih + 4, r + 2, 0x1A000000);
-        drawRoundedRect(graphics, ix + shadowOffX - 1, iy + shadowOffY - 1, iw + 2, ih + 2, r + 1, 0x2E000000);
+        drawRoundedRect(graphics, ix + shadowOffX - 2, iy + shadowOffY, iw + 4, ih + 4, r + 2, 0x33000000);
+        drawRoundedRect(graphics, ix + shadowOffX, iy + shadowOffY + 1, iw, ih + 2, r + 1, 0x4D000000);
 
-        // 2. Base Frosted Liquid Glass Substrate
-        int bgTop = lerpColor(hoverAnim, 0x580E1726, 0x8A1E293B);
-        int bgBot = lerpColor(hoverAnim, 0x38070B14, 0x5C0F172A);
-        drawRoundedVerticalGradient(graphics, ix, iy, iw, ih, r, bgTop, bgBot);
+        // 3. Base Frosted Liquid Glass Substrate (Prawdziwe, nasycone szkło z luminescencją)
+        int accR = (accentColor >> 16) & 0xFF;
+        int accG = (accentColor >> 8) & 0xFF;
+        int accB = accentColor & 0xFF;
 
-        // 3. Inner Chromatic Glow / Cauchy Neon Accent
-        if (hoverAnim > 0.02f) {
-            int innerGlowCol = (accentColor & 0x00FFFFFF) | (((int) (hoverAnim * 0x35)) << 24);
-            drawRoundedBorder(graphics, ix + 1, iy + 1, iw - 2, ih - 2, r - 1, 1, innerGlowCol, 0x05FFFFFF);
-        }
+        int tintAlphaTop = (int) (Mth.lerp(hoverAnim, 115.0f, 185.0f));
+        int tintAlphaBot = (int) (Mth.lerp(hoverAnim, 75.0f, 135.0f));
+        int glassTop = (tintAlphaTop << 24) | ((accR / 6 + 18) << 16) | ((accG / 6 + 32) << 8) | (accB / 5 + 50);
+        int glassBot = (tintAlphaBot << 24) | ((accR / 9 + 8) << 16) | ((accG / 9 + 16) << 8) | (accB / 8 + 28);
+        drawRoundedVerticalGradient(graphics, ix, iy, iw, ih, r, glassTop, glassBot);
 
-        // 4. Outer Glass Bevel Rim
-        int borderTop = lerpColor(hoverAnim, 0x4D64748B, (accentColor & 0x00FFFFFF) | 0xCC000000);
-        int borderBot = lerpColor(hoverAnim, 0x20334155, 0x33475569);
+        // 4. Wewnętrzna luminescencja Liquid Glass (refrakcja światła w masie szklanej)
+        int innerRefractCol = (accentColor & 0x00FFFFFF) | (((int) (Mth.lerp(hoverAnim, 40.0f, 110.0f))) << 24);
+        drawRoundedBorder(graphics, ix + 1, iy + 1, iw - 2, ih - 2, r - 1, 1, innerRefractCol, 0x15FFFFFF);
+
+        // 5. Wyrazisty Outer Glass Bevel Rim (Dwukolorowa ramka fizyczna)
+        int borderAlpha = (int) (Mth.lerp(hoverAnim, 160.0f, 255.0f));
+        int borderTop = (accentColor & 0x00FFFFFF) | (borderAlpha << 24);
+        int borderBot = (accentColor & 0x00FFFFFF) | ((borderAlpha / 3) << 24);
         drawRoundedBorder(graphics, ix, iy, iw, ih, r, 1, borderTop, borderBot);
 
-        // 5. Specular Curved Top Arc
-        int specAlpha = (int) (Mth.lerp(hoverAnim, 130.0f, 210.0f));
-        int specCol = (specAlpha << 24) | 0x00FFFFFF;
-        int specDim = (Math.max(10, specAlpha / 5) << 24) | 0x00FFFFFF;
-        int rimMargin = (int) (r * 0.7f);
+        // 6. Dwupikselowy krystaliczny Specular Reflection Arc na górnej krawędzi szkła
+        int specAlpha1 = (int) (Mth.lerp(hoverAnim, 210.0f, 255.0f));
+        int specAlpha2 = (int) (Mth.lerp(hoverAnim, 80.0f, 160.0f));
+        int specCol1 = (specAlpha1 << 24) | 0x00FFFFFF;
+        int specCol2 = (specAlpha2 << 24) | 0x00FFFFFF;
+        int rimMargin = (int) (r * 0.6f);
         if (iw > rimMargin * 2) {
-            graphics.fill(ix + rimMargin, iy + 1, ix + iw - rimMargin, iy + 2, specCol);
-            graphics.fill(ix + rimMargin - 3, iy + 1, ix + rimMargin, iy + 2, specDim);
-            graphics.fill(ix + iw - rimMargin, iy + 1, ix + iw - rimMargin + 3, iy + 2, specDim);
+            graphics.fill(ix + rimMargin, iy + 1, ix + iw - rimMargin, iy + 2, specCol1);
+            graphics.fill(ix + rimMargin + 2, iy + 2, ix + iw - rimMargin - 2, iy + 3, specCol2);
+            int dimSpec = ((specAlpha1 / 4) << 24) | 0x00FFFFFF;
+            graphics.fill(ix + rimMargin - 3, iy + 1, ix + rimMargin, iy + 2, dimSpec);
+            graphics.fill(ix + iw - rimMargin, iy + 1, ix + iw - rimMargin + 3, iy + 2, dimSpec);
         }
 
-        // 6. Dynamic Glossy Light Sweep
-        if (drawSheen && hoverAnim > 0.05f) {
-            float cycle = (this.totalElapsedTime * 1.5f) % 2.8f;
+        // 7. Dolny odblask podłoża (ground bounce light)
+        int botBounceCol = (((int) (Mth.lerp(hoverAnim, 30.0f, 70.0f))) << 24) | 0x00FFFFFF;
+        if (iw > rimMargin * 2) {
+            graphics.fill(ix + rimMargin + 4, iy + ih - 2, ix + iw - rimMargin - 4, iy + ih - 1, botBounceCol);
+        }
+
+        // 8. Dynamic Glossy Light Sweep (Zarówno na hoverze jak i w tle w trybie idle)
+        if (drawSheen) {
+            float sweepSpeed = (hoverAnim > 0.1f) ? 1.6f : 0.6f;
+            float cycle = (this.totalElapsedTime * sweepSpeed) % 3.6f;
             if (cycle < 1.4f) {
                 float sweepNorm = cycle / 1.4f;
-                int sheenW = 28;
+                int sheenW = 34;
                 int sheenX = (int) (ix - sheenW + sweepNorm * (iw + sheenW * 2));
                 int clampLeft = Math.max(ix + 2, sheenX);
                 int clampRight = Math.min(ix + iw - 2, sheenX + sheenW);
                 if (clampRight > clampLeft) {
-                    int sheenAlpha = (int) (hoverAnim * 0x30);
+                    int sheenAlpha = (int) (Mth.lerp(hoverAnim, 35.0f, 100.0f));
                     int sheenColor = (sheenAlpha << 24) | 0x00E0F2FE;
                     for (int row = 2; row < ih - 2; row++) {
                         int rowShift = (int) ((row - ih * 0.5f) * 0.45f);
@@ -838,9 +864,9 @@ public class ModernAestheticTitleScreen extends Screen {
             if (this.spHoverAnim > 0.01f) {
                 float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
                 float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
-                pose.translate(cx, cy, 18.0f * this.spHoverAnim);
-                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 9.5f * this.spHoverAnim));
-                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 7.5f * this.spHoverAnim));
+                pose.translate(cx, cy, 22.0f * this.spHoverAnim);
+                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 11.0f * this.spHoverAnim));
+                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 8.5f * this.spHoverAnim));
                 pose.translate(-cx, -cy, 0.0f);
             }
 
@@ -876,9 +902,9 @@ public class ModernAestheticTitleScreen extends Screen {
             if (this.mpHoverAnim > 0.01f) {
                 float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
                 float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
-                pose.translate(cx, cy, 18.0f * this.mpHoverAnim);
-                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 9.5f * this.mpHoverAnim));
-                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 7.5f * this.mpHoverAnim));
+                pose.translate(cx, cy, 22.0f * this.mpHoverAnim);
+                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 11.0f * this.mpHoverAnim));
+                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 8.5f * this.mpHoverAnim));
                 pose.translate(-cx, -cy, 0.0f);
             }
 
@@ -921,9 +947,9 @@ public class ModernAestheticTitleScreen extends Screen {
             if (this.continueHoverAnim > 0.01f) {
                 float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
                 float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
-                pose.translate(midX, midY, 15.0f * this.continueHoverAnim);
-                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 8.0f * this.continueHoverAnim));
-                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 6.0f * this.continueHoverAnim));
+                pose.translate(midX, midY, 18.0f * this.continueHoverAnim);
+                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 9.5f * this.continueHoverAnim));
+                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 7.5f * this.continueHoverAnim));
                 pose.translate(-midX, -midY, 0.0f);
             }
 
@@ -1132,9 +1158,9 @@ public class ModernAestheticTitleScreen extends Screen {
             if (this.profileHoverAnim > 0.01f) {
                 float nx = Mth.clamp(this.normMouseX, -1.0f, 1.0f);
                 float ny = Mth.clamp(this.normMouseY, -1.0f, 1.0f);
-                pose.translate(midX, midY, 12.0f * this.profileHoverAnim);
-                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 7.5f * this.profileHoverAnim));
-                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 5.5f * this.profileHoverAnim));
+                pose.translate(midX, midY, 16.0f * this.profileHoverAnim);
+                pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(nx * 8.5f * this.profileHoverAnim));
+                pose.mulPose(com.mojang.math.Axis.XP.rotationDegrees(-ny * 6.5f * this.profileHoverAnim));
                 pose.translate(-midX, -midY, 0.0f);
             }
 
