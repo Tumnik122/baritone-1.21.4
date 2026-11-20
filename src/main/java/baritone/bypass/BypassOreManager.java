@@ -2,6 +2,7 @@ package baritone.bypass;
 
 import baritone.Baritone;
 import baritone.api.pathing.goals.GoalOreMining;
+import baritone.process.OreMiningHelper;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.api.utils.Rotation;
@@ -449,10 +450,10 @@ public final class BypassOreManager {
             for (BlockPos vp : proc.getVeinQueue()) {
                 cluster.add(vp.asLong());
             }
-            return new PathingCommand(new GoalOreMining(cluster), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+            return new PathingCommand(new GoalOreMining(cluster, OreMiningHelper.createOracle(proc.getBaritone())), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
         }
 
-        return new PathingCommand(new GoalOreMining(proc.getActiveOreTarget()), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+        return new PathingCommand(new GoalOreMining(proc.getActiveOreTarget(), OreMiningHelper.createOracle(proc.getBaritone())), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
     }
 
     public static void moveSafelyTowardsDirection(BypassProcess proc, LocalPlayer player, Direction stepDir) {

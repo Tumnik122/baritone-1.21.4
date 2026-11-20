@@ -231,35 +231,46 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
                 || baritone.api.BaritoneAPI.getSettings().grimCompat.value
                 || baritone.api.BaritoneAPI.getSettings().antiCheatCompat.value;
 
-        // KRYTYCZNA OCHRONA ANTY-FASTBREAK 0ms (Argon 4 & dj):
-        // Na serwerach z GrimAC żaden pień drzewa, liść ani blok o twardości > 0 nie może być natychmiast
-        // zniszczony w ticku 0 przez waniliowe startDestroyBlock (np. przy siekierze Efficiency 10).
-        // Wymuszamy wysłanie START_DESTROY_BLOCK i wejście w kontrolowany cykl continueDestroyBlock.
-        if (isGrim && currentState != null && currentState.getDestroySpeed(mc.level, pos) > 0.0f) {
-            if (currentState.getDestroyProgress(mc.player, mc.level, pos) >= 1.0f) {
-                BlockPos cur = this.getCurrentBlock();
-                if (cur != null && this.isHittingBlock() && !cur.equals(pos)) {
-                    if (mc.getConnection() != null) {
-                        mc.getConnection().send(new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
-                                net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK,
-                                cur,
-                                direction
-                        ));
-                    }
+        // KRYTYCZNA OBSŁUGA INSTAMINE / INSTABREAK (GrimAC 1.21.4):
+        // W MC 1.21.4 i GrimAC, gdy blok ulega natychmiastowemu zniszczeniu (hardness == 0.0f LUB progress >= 1.0f
+        // z wyłączeniem pni drzew LOGS), wysyłamy WYŁĄCZNIE pakiet START_DESTROY_BLOCK!
+        // Serwer niszczy blok od razu w odpowiedzi na START_DESTROY_BLOCK. Wysłanie późniejszego
+        // STOP_DESTROY_BLOCK z continueDestroyBlock trafia w blok powietrza i wywołuje flagę AirLiquidBreak FINISHED_DIGGING!
+        boolean isTrueInsta = currentState != null && (currentState.getDestroySpeed(mc.level, pos) == 0.0f
+                || (currentState.getDestroyProgress(mc.player, mc.level, pos) >= 1.0f && !currentState.is(net.minecraft.tags.BlockTags.LOGS)));
+
+        if (isTrueInsta) {
+            BlockPos cur = this.getCurrentBlock();
+            if (cur != null && this.isHittingBlock() && !cur.equals(pos)) {
+                if (mc.getConnection() != null) {
+                    mc.getConnection().send(new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
+                            net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK,
+                            cur,
+                            direction
+                    ));
                 }
-                this.callStartPrediction(mc.level, seq -> new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
+            }
+            this.argon$targetBlockPosLong = posLong;
+            this.argon$targetBlockState = currentState;
+            this.argon$recentDestroyedBlocks.put(posLong, now + 3000L);
+            this.argon$lastDestroyedPosLong = posLong;
+            this.argon$diggingActiveOnServer = false;
+            this.argon$miningTicks = 0;
+            this.setIsHittingBlock(false);
+            this.destroyDelay = 0;
+            baritone.utils.GrimBreakValidator.onFinishBreak(pos, mc.player.tickCount, true);
+
+            this.callStartPrediction(mc.level, seq -> {
+                this.destroyBlock(pos);
+                return new net.minecraft.network.protocol.game.ServerboundPlayerActionPacket(
                         net.minecraft.network.protocol.game.ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK,
                         pos,
                         direction,
                         seq
-                ));
-                this.setCurrentBlock(pos);
-                this.setIsHittingBlock(true);
-                this.setDestroyProgress(0.0f);
-                this.destroyDelay = 0;
-                cir.setReturnValue(true);
-                return;
-            }
+                );
+            });
+            cir.setReturnValue(true);
+            return;
         }
 
         if (!isGrim && baritone.utils.FastBreakHelper.canInstaBreak(pos)) {
@@ -293,7 +304,19 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             this.setIsHittingBlock(false);
             this.argon$diggingActiveOnServer = false;
             this.argon$targetBlockPosLong = Long.MIN_VALUE;
-            cir.setReturnValue(true);
+            baritone.utils.GrimBreakValidator.reset();
+            cir.setReturnValue(false);
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long posLong = pos.asLong();
+        if (posLong == this.argon$lastDestroyedPosLong || argon$isRecentlyDestroyed(posLong, now)) {
+            this.setIsHittingBlock(false);
+            this.argon$diggingActiveOnServer = false;
+            this.argon$targetBlockPosLong = Long.MIN_VALUE;
+            baritone.utils.GrimBreakValidator.reset();
+            cir.setReturnValue(false);
             return;
         }
 
@@ -394,7 +417,11 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             }
 
             // Gwarantujemy dokładnie 1 pakiet STOP_DESTROY_BLOCK i weryfikujemy stan bloku
-            if (!baritone.utils.GrimBreakValidator.consumeServerDigForFinish(pos) || mc.level.getBlockState(pos).isAir()) {
+            long finishNow = System.currentTimeMillis();
+            if (mc.level.getBlockState(pos).isAir()
+                    || this.argon$lastDestroyedPosLong == pos.asLong()
+                    || argon$isRecentlyDestroyed(pos.asLong(), finishNow)
+                    || !baritone.utils.GrimBreakValidator.consumeServerDigForFinish(pos)) {
                 this.setIsHittingBlock(false);
                 this.setDestroyProgress(0.0f);
                 baritone.utils.GrimBreakValidator.reset();
@@ -403,12 +430,14 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             }
 
             // Wymagany czas i delta GrimAC minęły w 100%!
-            boolean isInsta = baritone.utils.GrimBreakValidator.getGrimDestroyProgress(mc.player, mc.level, pos, state) >= 1.0f
-                    && state.getDestroySpeed(mc.level, pos) == 0.0f;
-            baritone.utils.GrimBreakValidator.onFinishBreak(pos, currentTick, isInsta);
+            baritone.utils.GrimBreakValidator.onFinishBreak(pos, currentTick, false);
 
-            this.argon$recentDestroyedBlocks.put(pos.asLong(), System.currentTimeMillis() + 3000L);
+            this.argon$recentDestroyedBlocks.put(pos.asLong(), finishNow + 3000L);
             this.argon$lastDestroyedPosLong = pos.asLong();
+            this.argon$diggingActiveOnServer = false;
+            this.argon$targetBlockPosLong = Long.MIN_VALUE;
+            this.argon$targetBlockState = null;
+            this.setIsHittingBlock(false);
 
             this.callStartPrediction(mc.level, seq -> {
                 this.destroyBlock(pos);
@@ -421,13 +450,9 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
             });
 
             this.setDestroyProgress(0.0f);
-            this.destroyDelay = isInsta ? 0 : 5; // Waniliowe 5 ticków (250ms) dla kłód/bloków nie-instabreak!
+            this.destroyDelay = 5; // Waniliowe 5 ticków (250ms) dla bloków nie-instabreak!
             mc.level.destroyBlockProgress(mc.player.getId(), pos, -1);
             this.argon$miningTicks = 0;
-            this.argon$diggingActiveOnServer = false;
-            this.argon$targetBlockPosLong = Long.MIN_VALUE;
-            this.argon$targetBlockState = null;
-            this.setIsHittingBlock(false);
             cir.setReturnValue(true);
             return;
         } else if (baritone.utils.FastBreakHelper.canInstaBreak(pos)) {

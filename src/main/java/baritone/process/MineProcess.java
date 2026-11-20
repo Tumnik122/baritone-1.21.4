@@ -36,7 +36,9 @@ import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
 import baritone.utils.ContinuousBreakController;
+import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Vec3i;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -95,6 +97,19 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private Goal currentGoal;
     private BlockPos currentPrimaryTarget;
     private final Set<BlockPos> activeVeinBlocks = new LinkedHashSet<>();
+
+    // Deadlock Watchdog (15 ticków bezruchu -> Tier 1: przebicie; 35 ticków -> Tier 2: blacklista + replan)
+    private int stalledTicks = 0;
+    private double lastPlayerX = Double.NaN;
+    private double lastPlayerZ = Double.NaN;
+    private BlockPos activeBreakTarget = null;
+
+    // Tymczasowa blacklista nieosiągalnych rud: BlockPos.asLong() -> expireTimestampMs
+    private final Long2LongOpenHashMap tempBlacklist = new Long2LongOpenHashMap();
+    private static final long BLACKLIST_TTL_MS = 20_000L;
+    private static final int WATCHDOG_PIERCE_TICKS = 15;
+    private static final int WATCHDOG_REPLAN_TICKS = 35;
+    private static final double STALL_SPEED_SQ_PER_TICK = (0.02D / 20.0D) * (0.02D / 20.0D); // < 0.02 bps
 
     /**
      * Sprawdza i aktualizuje aktywne złoże (Vein Lock).
@@ -204,14 +219,31 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             this.breakTarget = breakTarget;
             this.rotation = rotation;
         }
+
+        public BlockPos orePos() { return orePos; }
+        public BlockPos breakTarget() { return breakTarget; }
+        public Rotation rotation() { return rotation; }
     }
 
+    /**
+     * 1. Direct Reach: jeśli ruda jest bezpośrednio widoczna, celuj z kwantyzacją GCD.
+     * 2. Obstruction Piercer: jeśli ruda jest za zniszczalną ścianą w zasięgu reach,
+     *    celuj w centroid rudy (GCD), wykonaj re-raycast i natychmiast wyznacz trafiony blok ściany jako breakTarget.
+     */
     private Optional<MiningAction> findMiningAction(double reach, List<BlockPos> candidates) {
         if (candidates == null || candidates.isEmpty()) {
             return Optional.empty();
         }
 
-        Vec3 eyes = ctx.player().getEyePosition(1.0F);
+        LocalPlayer player = ctx.player();
+        if (player == null || ctx.world() == null) {
+            return Optional.empty();
+        }
+
+        Vec3 eyes = player.getEyePosition(1.0F);
+        Rotation currentRot = ctx.playerRotations();
+        long nowMs = System.currentTimeMillis();
+        double reachSq = reach * reach;
 
         List<BlockPos> orderedCandidates = candidates;
         if (isCuttingLogs()) {
@@ -221,59 +253,55 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             orderedCandidates.sort((a, b) -> Integer.compare(b.getY(), a.getY()));
         }
 
-        // 1. Sprawdz, czy ktorakolwiek docelowa ruda jest bezposrednio osiagalna (widoczna)
+        // 1. Bezpośredni zasięg do rudy
         for (BlockPos pos : orderedCandidates) {
-            if (BlockStateInterface.get(ctx, pos).getBlock() instanceof AirBlock) continue;
-            if (MovementHelper.avoidBreaking(baritone.bsi, pos.getX(), pos.getY(), pos.getZ(), baritone.bsi.get0(pos))) continue;
+            if (tempBlacklist.getOrDefault(pos.asLong(), 0L) > nowMs) continue;
 
-            Optional<Rotation> rot = RotationUtils.reachable(ctx, pos, reach);
-            if (rot.isPresent()) {
-                HitResult trace = RayTraceUtils.rayTraceTowards(ctx.player(), rot.get(), reach, false);
-                BlockPos hit = (trace instanceof BlockHitResult bhr && trace.getType() == HitResult.Type.BLOCK) ? bhr.getBlockPos() : pos;
-                return Optional.of(new MiningAction(pos, hit, rot.get()));
+            BlockState oreState = baritone.bsi.get0(pos);
+            if (!OreMiningHelper.isBreakableSafe(baritone, ctx, pos, oreState)) continue;
+            if (GoalOreMining.distanceSqToBlock(eyes.x, eyes.y, eyes.z, pos.getX(), pos.getY(), pos.getZ()) > reachSq) {
+                continue;
+            }
+
+            Optional<Rotation> rawRot = RotationUtils.reachable(ctx, pos, reach);
+            if (rawRot.isPresent()) {
+                Rotation qRot = OreMiningHelper.quantizeGcd(ctx, rawRot.get(), currentRot);
+                BlockHitResult hit = OreMiningHelper.raycastWithRotation(ctx, eyes, qRot, reach);
+                if (hit.getType() == HitResult.Type.BLOCK) {
+                    BlockPos hitPos = hit.getBlockPos();
+                    BlockState hitState = ctx.world().getBlockState(hitPos);
+                    if (hitPos.equals(pos) || OreMiningHelper.isBreakableSafe(baritone, ctx, hitPos, hitState)) {
+                        return Optional.of(new MiningAction(pos, hitPos, qRot));
+                    }
+                }
             }
         }
 
-        // 2. Jesli zadna ruda nie jest bezposrednio widoczna, sprawdz rudy znajdujace sie w zasiegu (<= 3.8 kratek),
-        // ktore sa zasloniete przez mozliwy do rozbicia blok sciany (np. Deepslate, Stone, Tuff itp.).
-        // Umozliwia to botowi wykopanie sciany ze stabilnego podloza bez zapetlania skakania!
+        // 2. Obstruction Piercing: ruda za ścianą w promieniu reach (do 3.85m)
         for (BlockPos pos : orderedCandidates) {
-            if (BlockStateInterface.get(ctx, pos).getBlock() instanceof AirBlock) continue;
-            if (MovementHelper.avoidBreaking(baritone.bsi, pos.getX(), pos.getY(), pos.getZ(), baritone.bsi.get0(pos))) continue;
+            if (tempBlacklist.getOrDefault(pos.asLong(), 0L) > nowMs) continue;
 
-            double dist = GoalOreMining.distanceToBlock(eyes.x, eyes.y, eyes.z, pos.getX(), pos.getY(), pos.getZ());
-            if (dist > reach - 0.1) continue;
+            BlockState oreState = baritone.bsi.get0(pos);
+            if (oreState.isAir() || oreState.getDestroySpeed(ctx.world(), pos) < 0.0F) continue;
+            if (MovementHelper.avoidBreaking(baritone.bsi, pos.getX(), pos.getY(), pos.getZ(), oreState)) continue;
 
-            Vec3 center = VecUtils.calculateBlockCenter(ctx.world(), pos);
-            Vec3[] targets = new Vec3[]{
-                    center,
-                    new Vec3(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5), // dol
-                    new Vec3(pos.getX() + 0.5, pos.getY() + 1.0, pos.getZ() + 0.5), // gora
-                    new Vec3(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ()), // polnoc
-                    new Vec3(pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 1.0), // poludnie
-                    new Vec3(pos.getX(), pos.getY() + 0.5, pos.getZ() + 0.5), // zachod
-                    new Vec3(pos.getX() + 1.0, pos.getY() + 0.5, pos.getZ() + 0.5)  // wschod
-            };
+            if (GoalOreMining.distanceSqToBlock(eyes.x, eyes.y, eyes.z, pos.getX(), pos.getY(), pos.getZ()) > reachSq) {
+                continue;
+            }
 
-            for (Vec3 t : targets) {
-                if (eyes.distanceTo(t) > reach) continue;
-                Rotation rot = RotationUtils.calcRotationFromVec3d(eyes, t, ctx.playerRotations());
-                HitResult trace = RayTraceUtils.rayTraceTowards(ctx.player(), rot, reach, false);
-                if (trace instanceof BlockHitResult bhr && trace.getType() == HitResult.Type.BLOCK) {
-                    BlockPos hitBlock = bhr.getBlockPos();
-                    if (hitBlock.equals(pos)) {
-                        return Optional.of(new MiningAction(pos, pos, rot));
-                    }
-                    BlockState hitState = ctx.world().getBlockState(hitBlock);
-                    if (!hitState.isAir() && hitState.getDestroySpeed(ctx.world(), hitBlock) >= 0) {
-                        if (!MovementHelper.avoidBreaking(baritone.bsi, hitBlock.getX(), hitBlock.getY(), hitBlock.getZ(), hitState)) {
-                            boolean farmOrTill = (baritone.getFarmProcess() != null && baritone.getFarmProcess().isActive())
-                                    || (baritone instanceof Baritone b && b.getTillProcess() != null && b.getTillProcess().isActive());
-                            if (!farmOrTill) {
-                                return Optional.of(new MiningAction(pos, hitBlock, rot));
-                            }
-                        }
-                    }
+            // Celowanie w środek ukrytej rudy + natychmiastowa kwantyzacja GCD
+            Vec3 targetCenter = VecUtils.calculateBlockCenter(ctx.world(), pos);
+            Rotation rawToCenter = RotationUtils.calcRotationFromVec3d(eyes, targetCenter, currentRot);
+            Rotation qRot = OreMiningHelper.quantizeGcd(ctx, rawToCenter, currentRot);
+
+            // Re-raycast dokładnie wzdłuż skwantyzowanego wektora (100% zgodność z GrimAC)
+            BlockHitResult hit = OreMiningHelper.raycastWithRotation(ctx, eyes, qRot, reach);
+            if (hit.getType() == HitResult.Type.BLOCK) {
+                BlockPos hitBlock = hit.getBlockPos();
+                BlockState hitState = ctx.world().getBlockState(hitBlock);
+
+                if (OreMiningHelper.isBreakableSafe(baritone, ctx, hitBlock, hitState)) {
+                    return Optional.of(new MiningAction(pos, hitBlock, qRot));
                 }
             }
         }
@@ -350,7 +378,14 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 return null;
             }
         }
-        double reach = Math.min(3.9, ctx.playerController().getBlockReachDistance());
+        double reach = Math.min(3.85, ctx.playerController().getBlockReachDistance());
+
+        // === Ochrona GrimAC: natychmiast zwolnij CLICK_LEFT jeśli poprzedni cel zamienił się w powietrze ===
+        if (activeBreakTarget != null && ctx.world().getBlockState(activeBreakTarget).isAir()) {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            activeBreakTarget = null;
+        }
+
         Optional<BlockPos> shaft = curr.stream()
                 .filter(pos -> pos.getX() == ctx.playerFeet().getX() && pos.getZ() == ctx.playerFeet().getZ())
                 .filter(pos -> pos.getY() >= ctx.playerFeet().getY())
@@ -367,15 +402,6 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                     baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
                     baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
                     baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-                    if (ctx.player() != null && ctx.player().isSprinting()) {
-                        ctx.player().setSprinting(false);
-                    }
-                    if (ctx.player() != null && ctx.player().input != null && ctx.player().input.keyPresses != null) {
-                        var kp = ctx.player().input.keyPresses;
-                        ctx.player().input.keyPresses = new net.minecraft.world.entity.player.Input(
-                                false, false, false, false, kp.jump(), kp.shift(), false
-                        );
-                    }
                     baritone.getLookBehavior().updateTarget(rot.get(), true);
 
                     HitResult trace = RayTraceUtils.rayTraceTowards(ctx.player(), ctx.playerRotations(), reach, false);
@@ -396,6 +422,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                             || ContinuousBreakController.shouldHoldThrough(ctx, new BetterBlockPos(breakTarget), rot.get())) {
                         baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
                         ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(breakTarget));
+                        activeBreakTarget = breakTarget;
                     }
                     return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
@@ -404,7 +431,6 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
         // Vein Lock & Direct Reach: Jeśli jakakolwiek docelowa ruda (zwłaszcza z aktywnego złoża)
         // jest w bezpośrednim zasięgu gracza (bez ruszania się), wykop ją natychmiast!
-        // Używamy bezpiecznego reach 3.9, aby bot nie próbował celować w rudę poza faktycznym zasięgiem.
         Optional<MiningAction> miningAction = Optional.empty();
 
         if (!activeVeinBlocks.isEmpty()) {
@@ -423,44 +449,103 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
 
                 MiningAction action = miningAction.get();
-                BlockPos pos = action.orePos;
-                BlockPos breakTarget = action.breakTarget;
-                Rotation rot = action.rotation;
+                BlockPos pos = action.orePos();
+                BlockPos breakPos = action.breakTarget(); // ZAWSZE narzędzie pod blok faktycznie kopany!
+                BlockState breakState = ctx.world().getBlockState(breakPos);
 
-                if (activeVeinBlocks.isEmpty()) {
-                    lockVeinCluster(pos, curr, scanContext, filter);
+                if (!breakState.isAir()) {
+                    stalledTicks = 0; // Bot aktywnie kopie — reset watchdoga
+
+                    if (activeVeinBlocks.isEmpty()) {
+                        lockVeinCluster(pos, curr, scanContext, filter);
+                    }
+
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+
+                    // Wybierz najlepsze narzędzie dla ściany (np. łopata na Dirt/Gravel, kilof na Stone/Deepslate)
+                    int prevSlot = ctx.player().getInventory().selected;
+                    MovementHelper.switchToBestToolFor(ctx, breakState);
+                    boolean switchedSlot = (ctx.player().getInventory().selected != prevSlot);
+
+                    baritone.getLookBehavior().updateTarget(action.rotation(), true);
+
+                    // Po zmianie slota odczekaj 1 tick przed kliknięciem (zapobiega desyncowi PacketOrder na GrimAC)
+                    if (!switchedSlot) {
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+                        ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(breakPos));
+                        activeBreakTarget = breakPos;
+                    } else {
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+                    }
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
+            }
+        } else {
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            ContinuousBreakController.reset();
+        }
 
-                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
-                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
-                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
-                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
-                baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-                if (ctx.player() != null && ctx.player().isSprinting()) {
-                    ctx.player().setSprinting(false);
+        // === Pomiar bezruchu dla Deadlock Watchdoga ===
+        double px = ctx.player().getX();
+        double pz = ctx.player().getZ();
+        if (!Double.isNaN(lastPlayerX)) {
+            double moveDx = px - lastPlayerX;
+            double moveDz = pz - lastPlayerZ;
+            boolean isStalled = (moveDx * moveDx + moveDz * moveDz) < STALL_SPEED_SQ_PER_TICK;
+            boolean isBreakingNow = activeBreakTarget != null && !ctx.world().getBlockState(activeBreakTarget).isAir();
+
+            if (isStalled && !isBreakingNow) {
+                stalledTicks++;
+            } else {
+                stalledTicks = 0;
+            }
+        }
+        lastPlayerX = px;
+        lastPlayerZ = pz;
+
+        // === Deadlock Watchdog (Tier 1: 15-34 ticki -> przebij blok przed twarzą; Tier 2: >=35 -> blacklista + replan) ===
+        if (stalledTicks >= WATCHDOG_REPLAN_TICKS) {
+            // Tier 2: cel jest fizycznie zablokowany (np. za bedrockiem/lawą) — wrzuć najbliższą rudę na blacklistę TTL
+            if (!curr.isEmpty()) {
+                BlockPos nearest = curr.get(0);
+                tempBlacklist.put(nearest.asLong(), System.currentTimeMillis() + BLACKLIST_TTL_MS);
+            }
+            stalledTicks = 0;
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+            activeBreakTarget = null;
+            return new PathingCommand(null, PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH);
+        }
+
+        if (stalledTicks >= WATCHDOG_PIERCE_TICKS && !baritone.getPathingBehavior().isPathing()) {
+            // Tier 1: przebicie bezpiecznego bloku przed celownikiem
+            HitResult crosshair = ctx.minecraft().hitResult;
+            if (crosshair instanceof BlockHitResult bhr && crosshair.getType() == HitResult.Type.BLOCK) {
+                BlockPos facingBlock = bhr.getBlockPos();
+                BlockState facingState = ctx.world().getBlockState(facingBlock);
+                double distSq = GoalOreMining.distanceSqToBlock(
+                        ctx.player().getEyePosition(1.0F).x,
+                        ctx.player().getEyePosition(1.0F).y,
+                        ctx.player().getEyePosition(1.0F).z,
+                        facingBlock.getX(), facingBlock.getY(), facingBlock.getZ()
+                );
+
+                if (distSq <= reach * reach
+                        && ObstructionHelper.isClearableObstruction(facingState)
+                        && OreMiningHelper.isBreakableSafe(baritone, ctx, facingBlock, facingState)) {
+
+                    int prevSlot = ctx.player().getInventory().selected;
+                    MovementHelper.switchToBestToolFor(ctx, facingState);
+                    if (ctx.player().getInventory().selected == prevSlot) {
+                        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+                        ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(facingBlock));
+                        activeBreakTarget = facingBlock;
+                    }
+                    return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
                 }
-                if (ctx.player() != null && ctx.player().input != null && ctx.player().input.keyPresses != null) {
-                    var kp = ctx.player().input.keyPresses;
-                    ctx.player().input.keyPresses = new net.minecraft.world.entity.player.Input(
-                            false, false, false, false, kp.jump(), kp.shift(), false
-                    );
-                }
-                baritone.getLookBehavior().updateTarget(rot, true);
-
-                MovementHelper.switchToBestToolFor(ctx, ctx.world().getBlockState(breakTarget));
-
-                HitResult trace = RayTraceUtils.rayTraceTowards(ctx.player(), ctx.playerRotations(), reach, false);
-                BlockPos hitBlock = (trace instanceof BlockHitResult bhr && trace.getType() == HitResult.Type.BLOCK) ? bhr.getBlockPos() : null;
-
-                boolean hitsTarget = hitBlock != null && (hitBlock.equals(pos) || hitBlock.equals(breakTarget));
-                boolean lookingAtTarget = ctx.isLookingAt(pos) || ctx.isLookingAt(breakTarget);
-
-                if (lookingAtTarget || hitsTarget || ctx.playerRotations().isReallyCloseTo(rot)
-                        || ContinuousBreakController.shouldHoldThrough(ctx, new BetterBlockPos(breakTarget), rot)) {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
-                    ContinuousBreakController.notifyBreaking(ctx, new BetterBlockPos(breakTarget));
-                }
-                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
         }
         PathingCommand command = updateGoal();
@@ -494,6 +579,14 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     @Override
     public void onLostControl() {
         activeVeinBlocks.clear();
+        stalledTicks = 0;
+        lastPlayerX = Double.NaN;
+        lastPlayerZ = Double.NaN;
+        activeBreakTarget = null;
+        lastFoundOresCount = -1;
+        tempBlacklist.clear();
+        baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, false);
+        ContinuousBreakController.reset();
         mine(0, (BlockOptionalMetaLookup) null);
     }
 
@@ -655,10 +748,22 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         // stanął na najbliższym legalnym punkcie w zasięgu <= 3.85D bez zbędnego wbijania się w ścianę.
         if (!activeVeinBlocks.isEmpty()) {
             List<BlockPos> veinList = new ArrayList<>(activeVeinBlocks);
-            Goal goal = new GoalOreMining(veinList);
-            currentGoal = goal;
-            currentPrimaryTarget = veinList.get(0);
-            return new PathingCommand(goal, legit ? PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH : PathingCommandType.SET_GOAL_AND_PATH);
+            long nowMs = System.currentTimeMillis();
+            List<BlockPos> validCluster = new ArrayList<>(veinList.size());
+            for (BlockPos p : veinList) {
+                long expire = tempBlacklist.getOrDefault(p.asLong(), 0L);
+                if (expire == 0L || nowMs >= expire) {
+                    validCluster.add(p);
+                }
+            }
+            if (validCluster.isEmpty()) {
+                activeVeinBlocks.clear();
+            } else {
+                Goal goal = new GoalOreMining(validCluster, OreMiningHelper.createOracle(baritone));
+                currentGoal = goal;
+                currentPrimaryTarget = validCluster.get(0);
+                return new PathingCommand(goal, legit ? PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH : PathingCommandType.SET_GOAL_AND_PATH);
+            }
         }
 
         // Blokada pętli ciągłego replanowania (Anti-Replan Loop):
@@ -683,9 +788,20 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 // Zastosowanie GoalBiasedComposite z karą +18.0 na indeks gwarantuje, że A* bezwzględnie
                 // respektuje optymalną trasę wyznaczoną przez TSP 2-Opt z OreRouteOptimizer!
                 List<BlockPos> activeWindow = getActiveGoalWindow(locs2, 4);
-                Goal goal = new GoalOreMining(activeWindow);
+                long nowMs = System.currentTimeMillis();
+                List<BlockPos> validWindow = new ArrayList<>(activeWindow.size());
+                for (BlockPos p : activeWindow) {
+                    long expire = tempBlacklist.getOrDefault(p.asLong(), 0L);
+                    if (expire == 0L || nowMs >= expire) {
+                        validWindow.add(p);
+                    }
+                }
+                if (validWindow.isEmpty()) {
+                    validWindow = activeWindow;
+                }
+                Goal goal = new GoalOreMining(validWindow, OreMiningHelper.createOracle(baritone));
                 currentGoal = goal;
-                currentPrimaryTarget = locs2.get(0);
+                currentPrimaryTarget = validWindow.get(0);
                 knownOreLocations = locs2;
 
                 return new PathingCommand(goal, legit ? PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH : PathingCommandType.SET_GOAL_AND_PATH);
@@ -765,10 +881,17 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             }
         } else {
             long now = System.currentTimeMillis();
-            if (now - lastFoundOresLogTime > 4000L || Math.abs(locs.size() - lastFoundOresCount) > 10) {
-                logDirect(String.format("§a[Wykrywanie] Znaleziono §f%d §azłóż w załadowanych chunkach! Obliczam optymalną trasę...", locs.size()));
+            int currentCount = locs.size();
+            boolean firstLog = (lastFoundOresCount < 0);
+            boolean significantChange = lastFoundOresCount > 0
+                    && Math.abs(currentCount - lastFoundOresCount) >= Math.max(1, (int) (lastFoundOresCount * 0.20D));
+            boolean cooldownExpired = (now - lastFoundOresLogTime) >= 10_000L && currentCount != lastFoundOresCount;
+            boolean debounceOk = (now - lastFoundOresLogTime) >= 2_000L;
+
+            if (firstLog || (significantChange && debounceOk) || cooldownExpired) {
+                logDirect(String.format("§a[Wykrywanie] Znaleziono §f%d §azłóż w załadowanych chunkach! Obliczam optymalną trasę...", currentCount));
                 lastFoundOresLogTime = now;
-                lastFoundOresCount = locs.size();
+                lastFoundOresCount = currentCount;
             }
         }
         knownOreLocations = new ArrayList<>(locs);
@@ -793,7 +916,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         if (!Baritone.settings().forceInternalMining.value) {
             // GoalOreMining pozwala na kopanie rudy z sąsiadującej stabilnej powierzchni (podłogi)
             // w zasięgu 3.9 bez konieczności wskakiwania w ścianę lub stawiania pod sobą klocków (eliminacja pętli skakania).
-            return new GoalOreMining(loc);
+            return new GoalOreMining(loc, OreMiningHelper.createOracle(baritone));
         }
         boolean assumeVerticalShaftMine = !(baritone.bsi.get0(loc.above()).getBlock() instanceof FallingBlock);
         boolean upwardGoal = internalMiningGoal(loc.above(), context, locs);

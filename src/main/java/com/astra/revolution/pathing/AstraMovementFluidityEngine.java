@@ -190,7 +190,7 @@ public final class AstraMovementFluidityEngine {
         if (preserveNativeBackOrSneak) {
             if (!ioh.isInputForcedDown(Input.MOVE_FORWARD)) {
                 ioh.setInputForceState(Input.SPRINT, false);
-                if (player != null && player.isSprinting()) {
+                if (player != null && player.isSprinting() && (player.onGround() || player.isInWater())) {
                     player.setSprinting(false);
                 }
             }
@@ -202,33 +202,14 @@ public final class AstraMovementFluidityEngine {
                 || ioh.isInputForcedDown(Input.MOVE_RIGHT);
         if (!wantsMove) return;
 
-        float delta = Mth.wrapDegrees(desiredMoveYaw - actualCameraYaw);
-
-        // Jeśli kąt kamery jest zbliżony do osi trasy (<= 50°):
-        // Czysty bieg naprzód (W) z pełnym pędem sprintu (zero mikro-szarpnięć i rozjazdów wektorowych)
-        if (Math.abs(delta) <= 50.0f) {
-            ioh.setInputForceState(Input.MOVE_FORWARD, true);
-            ioh.setInputForceState(Input.MOVE_BACK, false);
-            ioh.setInputForceState(Input.MOVE_LEFT, false);
-            ioh.setInputForceState(Input.MOVE_RIGHT, false);
-            return;
-        }
-
-        boolean w = delta >= -67.5f && delta <= 67.5f;
-        boolean a = delta >= -157.5f && delta <= -22.5f;
-        boolean d = delta >= 22.5f && delta <= 157.5f;
-
-        ioh.setInputForceState(Input.MOVE_FORWARD, w);
-        ioh.setInputForceState(Input.MOVE_BACK, false); // Nigdy nie cofaj podczas ruchu w przód
-        ioh.setInputForceState(Input.MOVE_LEFT, a);
-        ioh.setInputForceState(Input.MOVE_RIGHT, d);
-
-        if (!w) {
-            ioh.setInputForceState(Input.SPRINT, false);
-            if (player != null && player.isSprinting() && player.onGround()) {
-                player.setSprinting(false);
-            }
-        }
+        // Czysty, kolinearny bieg naprzód (W) wzdłuż bieżącej osi kamery gracza.
+        // W GrimAC 1.21.4 rotacja kamery z LookBehavior obraca wektor prędkości w 100% naturalnie
+        // i bezbłędnie (offset = 0.000000). Sztuczne wymuszanie strafe A/D lub odcinanie pędu sprintu
+        // wywoływało rozjazd wektorów i flagi Simulation (0.074..0.087) oraz GroundSpoof!
+        ioh.setInputForceState(Input.MOVE_FORWARD, true);
+        ioh.setInputForceState(Input.MOVE_BACK, false);
+        ioh.setInputForceState(Input.MOVE_LEFT, false);
+        ioh.setInputForceState(Input.MOVE_RIGHT, false);
     }
 
     private void suppressFarmlandMicroJump(IBaritone baritone, LocalPlayer player) {

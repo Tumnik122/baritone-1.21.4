@@ -82,14 +82,8 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     public final void clearAllKeys() {
         this.inputForceStateMap.clear();
         if (ctx != null && ctx.player() != null) {
-            if (ctx.player().isSprinting()) {
+            if (ctx.player().isSprinting() && (ctx.player().onGround() || ctx.player().isInWater())) {
                 ctx.player().setSprinting(false);
-            }
-            if (ctx.player().input != null && ctx.player().input.keyPresses != null) {
-                var kp = ctx.player().input.keyPresses;
-                ctx.player().input.keyPresses = new net.minecraft.world.entity.player.Input(
-                        false, false, false, false, kp.jump(), kp.shift(), false
-                );
             }
         }
     }

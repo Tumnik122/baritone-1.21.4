@@ -85,37 +85,9 @@ public final class GrimSyncController {
                 && !player.horizontalCollision
                 && player.getFoodData().getFoodLevel() > 6;
 
-        if (player.isSprinting() != legalSprint) {
+        if (player.isSprinting() != legalSprint && (player.onGround() || player.isInWater())) {
             player.setSprinting(legalSprint);
         }
-
-        // Wymuszenie czystego pakietu STOP_SPRINTING przy przejściu w kopanie z miejsca / micro-strafe
-        if (lastSprintState && !legalSprint && player.connection != null) {
-            player.connection.send(new ServerboundPlayerCommandPacket(
-                    player, ServerboundPlayerCommandPacket.Action.STOP_SPRINTING
-            ));
-        } else if (!lastSprintState && legalSprint && player.connection != null) {
-            player.connection.send(new ServerboundPlayerCommandPacket(
-                    player, ServerboundPlayerCommandPacket.Action.START_SPRINTING
-            ));
-        }
-
-        // Synchronizacja rekordu Input (1.21.4) przed wysłaniem ServerboundPlayerInputPacket
-        if (player.input != null && player.input.keyPresses != null) {
-            Input prev = player.input.keyPresses;
-            if (prev.sprint() != legalSprint) {
-                player.input.keyPresses = new Input(
-                        prev.forward(),
-                        prev.backward(),
-                        prev.left(),
-                        prev.right(),
-                        prev.jump(),
-                        prev.shift(),
-                        legalSprint
-                );
-            }
-        }
-
         lastSprintState = legalSprint;
     }
 

@@ -104,10 +104,12 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
             baritone.getGameEventHandler().onPathEvent(event);
             switch (event) {
                 case CALC_STARTED -> AiActionLogger.log("A*", "Rozpoczęto obliczanie nowej ścieżki do celu");
-                case CALC_FINISHED_NOW_EXECUTING -> AiActionLogger.log("PATH", "Obliczono ścieżkę (" + (current != null ? current.getPath().length() + " kroków" : "") + "), rozpoczynam ruch");
+                case CALC_FINISHED_NOW_EXECUTING -> AiActionLogger.log("PATH", "Obliczono ścieżkę ("
+                        + (current != null ? current.getPath().length() + " kroków" : "") + "), rozpoczynam ruch");
                 case CALC_FAILED -> AiActionLogger.log("A*", "Nie udało się znaleźć bezpiecznej ścieżki (CALC_FAILED)");
                 case AT_GOAL -> AiActionLogger.log("GOAL", "Dotarto do celu!");
-                default -> {}
+                default -> {
+                }
             }
         }
     }
@@ -132,7 +134,8 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     public void onPlayerSprintState(SprintStateEvent event) {
         if (isPathing() && current != null) {
             boolean sprint = current.isSprinting();
-            if (baritone.getFarmProcess().isActive() || (baritone instanceof Baritone b && b.getTillProcess() != null && b.getTillProcess().isActive())) {
+            if (baritone.getFarmProcess().isActive() || (baritone instanceof Baritone b && b.getTillProcess() != null
+                    && b.getTillProcess().isActive())) {
                 if (!Baritone.settings().farmFastMode.value) {
                     sprint = false;
                 }
@@ -198,15 +201,6 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
                 baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
                 baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
-                if (ctx.player() != null && ctx.player().isSprinting()) {
-                    ctx.player().setSprinting(false);
-                }
-                if (ctx.player() != null && ctx.player().input != null && ctx.player().input.keyPresses != null) {
-                    var kp = ctx.player().input.keyPresses;
-                    ctx.player().input.keyPresses = new net.minecraft.world.entity.player.Input(
-                            false, false, false, false, kp.jump(), kp.shift(), false
-                    );
-                }
                 if (!wasBreaking) {
                     baritone.getInputOverrideHandler().getBlockBreakHelper().stopBreakingBlock();
                 }
@@ -374,7 +368,8 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     }
 
     public boolean isSafeToCancel() {
-        if (ctx.player() != null && !ctx.player().onGround() && !ctx.player().isInWater() && !ctx.player().isFallFlying()) {
+        if (ctx.player() != null && !ctx.player().onGround() && !ctx.player().isInWater()
+                && !ctx.player().isFallFlying()) {
             return false;
         }
         if (current == null) {
@@ -626,10 +621,12 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
             if (Baritone.settings().calcFailedRetryLadder.value) {
                 CalcRetryLadder.Attempt next = calcRetry.nextAttempt();
                 if (next != null) {
-                    logDebug("CALC_FAILED — drabina retry, próba " + next.index() + "/3 (primary=" + next.primaryMs() + "ms, failure=" + next.failureMs() + "ms)");
+                    logDebug("CALC_FAILED — drabina retry, próba " + next.index() + "/3 (primary=" + next.primaryMs()
+                            + "ms, failure=" + next.failureMs() + "ms)");
                     synchronized (pathCalcLock) {
                         if (inProgress == null && goal != null) {
-                            findPathInNewThreadWithTimeouts(expectedSegmentStart, true, context, next.primaryMs(), next.failureMs());
+                            findPathInNewThreadWithTimeouts(expectedSegmentStart, true, context, next.primaryMs(),
+                                    next.failureMs());
                             return;
                         }
                     }

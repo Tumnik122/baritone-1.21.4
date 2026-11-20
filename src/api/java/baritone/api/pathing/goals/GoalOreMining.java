@@ -17,8 +17,6 @@
 
 package baritone.api.pathing.goals;
 
-import baritone.api.BaritoneAPI;
-import baritone.api.IBaritone;
 import baritone.api.utils.BetterBlockPos;
 import baritone.api.utils.SettingsUtil;
 import baritone.api.utils.interfaces.IGoalRenderPos;
@@ -28,21 +26,34 @@ import net.minecraft.core.BlockPos;
 import java.util.List;
 
 /**
- * Stand-Off Goal tailored for mining ores without forcing the player to climb into the wall
- * or pillar under themselves. The goal is satisfied from any adjacent standing position
- * on solid ground within safe mining reach (<= 3.85D) of any ore block in the cluster.
+ * Zsynchronizowany, bezalokacyjny i bezpieczny wątkowo cel Stand-Off dla rud (Baritone 1.21.4).
+ * Wykorzystuje 3D Amanatides-Woo DDA na VoxelOracle (BlockStateInterface), dzięki czemu
+ * A* i MineProcess dzielą dokładnie ten sam kontrakt zasięgu, kolizji i bezpieczeństwa.
  */
 public class GoalOreMining implements Goal, IGoalRenderPos {
 
-    public static final double STAND_OFF_REACH = 3.85D;
-    public static final double STAND_OFF_REACH_SQ = STAND_OFF_REACH * STAND_OFF_REACH;
-    private static final double PLAYER_EYE_OFFSET = 1.62D;
+    public static final double SAFE_STANDOFF_REACH = 3.65D;
+    public static final double SAFE_STANDOFF_REACH_SQ = SAFE_STANDOFF_REACH * SAFE_STANDOFF_REACH;
+    public static final double PLAYER_EYE_OFFSET = 1.62D;
+    private static final int MAX_DDA_STEPS = 16;
 
-    // Minimalny czas pokonania 1 bloku w prostym tunelu (3.564 * 0.85 = 3.0294)
-    private static final double MIN_TICK_PER_BLOCK = 3.564D * 0.85D;
-    private static final double SPRINT_ONE_BLOCK_TICKS = 3.564D;
-    private static final double JUMP_UP_PENALTY_TICKS = 2.5D;
-    private static final double STEP_DOWN_PENALTY_TICKS = 0.8D;
+    /**
+     * Mostek między warstwą API a main (BlockStateInterface + MovementHelper).
+     * Musi być bezpieczny dla wątku A* i bezalokacyjny.
+     */
+    public interface VoxelOracle {
+        /** Czy gracz może stabilnie stać w (x, y, z) na bloku (x, y - 1, z). */
+        boolean canStandAt(int x, int y, int z);
+
+        /** Czy promień przechodzi swobodnie przez woksel (powietrze, niepełne/przelotowe). */
+        boolean isRayPassable(int x, int y, int z);
+
+        /**
+         * Czy blok przeszkody (x, y, z) może zostać bezpiecznie wykopany
+         * (destroySpeed >= 0, !avoidBreaking, nie podkopuje gracza w przepaść/lawę).
+         */
+        boolean canSafelyPierce(int bx, int by, int bz, int playerX, int playerY, int playerZ);
+    }
 
     protected final int x;
     protected final int y;
@@ -52,12 +63,29 @@ public class GoalOreMining implements Goal, IGoalRenderPos {
     private final int[] targetY;
     private final int[] targetZ;
     private final int count;
+    private final VoxelOracle oracle;
 
     public GoalOreMining(BlockPos pos) {
-        this(pos.getX(), pos.getY(), pos.getZ());
+        this(pos, null);
     }
 
     public GoalOreMining(int x, int y, int z) {
+        this(x, y, z, null);
+    }
+
+    public GoalOreMining(List<BlockPos> clusterBlocks) {
+        this(clusterBlocks, null);
+    }
+
+    public GoalOreMining(LongArrayList clusterBlocks) {
+        this(clusterBlocks, null);
+    }
+
+    public GoalOreMining(BlockPos pos, VoxelOracle oracle) {
+        this(pos.getX(), pos.getY(), pos.getZ(), oracle);
+    }
+
+    public GoalOreMining(int x, int y, int z, VoxelOracle oracle) {
         this.x = x;
         this.y = y;
         this.z = z;
@@ -65,9 +93,11 @@ public class GoalOreMining implements Goal, IGoalRenderPos {
         this.targetX = new int[]{x};
         this.targetY = new int[]{y};
         this.targetZ = new int[]{z};
+        this.oracle = oracle;
     }
 
-    public GoalOreMining(LongArrayList clusterBlocks) {
+    public GoalOreMining(LongArrayList clusterBlocks, VoxelOracle oracle) {
+        this.oracle = oracle;
         this.count = clusterBlocks != null ? clusterBlocks.size() : 0;
         if (this.count == 0) {
             this.x = 0;
@@ -94,7 +124,8 @@ public class GoalOreMining implements Goal, IGoalRenderPos {
         }
     }
 
-    public GoalOreMining(List<BlockPos> clusterBlocks) {
+    public GoalOreMining(List<BlockPos> clusterBlocks, VoxelOracle oracle) {
+        this.oracle = oracle;
         this.count = clusterBlocks != null ? clusterBlocks.size() : 0;
         if (this.count == 0) {
             this.x = 0;
@@ -121,66 +152,143 @@ public class GoalOreMining implements Goal, IGoalRenderPos {
         }
     }
 
-    /**
-     * Calculates the minimum Euclidean distance between a 3D point (e.g. player eyes)
-     * and the axis-aligned bounding box of a 1x1x1 block at (bx, by, bz).
-     */
-    public static double distanceToBlock(double px, double py, double pz, int bx, int by, int bz) {
-        double clampX = Math.max(bx, Math.min(px, bx + 1.0));
-        double clampY = Math.max(by, Math.min(py, by + 1.0));
-        double clampZ = Math.max(bz, Math.min(pz, bz + 1.0));
+    /** Kwadrat dystansu od punktu (px, py, pz) do AABB bloku [bx..bx+1, by..by+1, bz..bz+1]. Zero alokacji. */
+    public static double distanceSqToBlock(double px, double py, double pz, int bx, int by, int bz) {
+        double clampX = Math.max(bx, Math.min(px, bx + 1.0D));
+        double clampY = Math.max(by, Math.min(py, by + 1.0D));
+        double clampZ = Math.max(bz, Math.min(pz, bz + 1.0D));
         double dx = px - clampX;
         double dy = py - clampY;
         double dz = pz - clampZ;
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    public static double distanceToBlock(double px, double py, double pz, int bx, int by, int bz) {
+        return Math.sqrt(distanceSqToBlock(px, py, pz, bx, by, bz));
     }
 
     @Override
     public boolean isInGoal(int x, int y, int z) {
-        if (count == 0) return false;
-
-        // Cel nie może być zaliczony, jeśli gracz nie stoi na stabilnym podłożu (anty-GroundSpoof / air-cut)
-        IBaritone ibaritone = BaritoneAPI.getProvider().getPrimaryBaritone();
-        if (ibaritone != null && ibaritone.getPlayerContext() != null) {
-            net.minecraft.client.player.LocalPlayer p = ibaritone.getPlayerContext().player();
-            if (p != null && !p.onGround() && !p.isInWater()) {
-                return false;
-            }
-            net.minecraft.world.level.Level world = ibaritone.getPlayerContext().world();
-            if (world != null) {
-                BlockPos standPos = new BlockPos(x, y - 1, z);
-                net.minecraft.world.level.block.state.BlockState floor = world.getBlockState(standPos);
-                if (floor.getCollisionShape(world, standPos).isEmpty()) {
-                    return false;
-                }
-            }
+        if (count == 0) {
+            return false;
         }
 
         double eyeX = x + 0.5D;
         double eyeY = y + PLAYER_EYE_OFFSET;
         double eyeZ = z + 0.5D;
 
-        if (count == 1) {
-            double dist = distanceToBlock(eyeX, eyeY, eyeZ, this.x, this.y, this.z);
-            if (dist <= STAND_OFF_REACH) {
-                int dy = y - this.y;
-                int dx = x - this.x;
-                int dz = z - this.z;
-                if (dy >= -5 && dy <= 2 && Math.abs(dx) <= 3 && Math.abs(dz) <= 3) {
-                    return true;
-                }
-            }
-            return false;
-        }
+        boolean checkedFloor = false;
 
         for (int i = 0; i < count; i++) {
-            double dist = distanceToBlock(eyeX, eyeY, eyeZ, targetX[i], targetY[i], targetZ[i]);
-            if (dist <= STAND_OFF_REACH) {
-                int dy = y - targetY[i];
-                int dx = x - targetX[i];
-                int dz = z - targetZ[i];
-                if (dy >= -5 && dy <= 2 && Math.abs(dx) <= 3 && Math.abs(dz) <= 3) {
-                    return true;
+            int tx = targetX[i];
+            int ty = targetY[i];
+            int tz = targetZ[i];
+
+            // Szybkie odrzucenie w osi pionowej przed obliczeniami geometrii
+            int dy = y - ty;
+            if (dy < -4 || dy > 2) {
+                continue;
+            }
+
+            // Szybki test kwadratu dystansu bez Math.sqrt()
+            if (distanceSqToBlock(eyeX, eyeY, eyeZ, tx, ty, tz) > SAFE_STANDOFF_REACH_SQ) {
+                continue;
+            }
+
+            if (oracle == null) {
+                return true;
+            }
+
+            // Leniwe sprawdzenie podłoża (tylko dla węzłów w sferze zasięgu!)
+            if (!checkedFloor) {
+                if (!oracle.canStandAt(x, y, z)) {
+                    return false;
+                }
+                checkedFloor = true;
+            }
+
+            // Sprawdzenie korytarza 3D DDA: bezpośrednia widoczność LUB bezpieczny korytarz do przebicia
+            if (hasClearOrPierceableCorridor(eyeX, eyeY, eyeZ, tx, ty, tz, x, y, z)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Bezalokacyjny 3D Amanatides-Woo DDA.
+     * Zwraca true WYŁĄCZNIE gdy docelowa ruda jest widoczna lub KAŻDY blok zasłaniający
+     * wzdłuż linii wzroku znajduje się w bezpiecznym zasięgu i spełnia canSafelyPierce().
+     */
+    private boolean hasClearOrPierceableCorridor(
+            double sx, double sy, double sz,
+            int tx, int ty, int tz,
+            int playerX, int playerY, int playerZ
+    ) {
+        double ex = tx + 0.5D;
+        double ey = ty + 0.5D;
+        double ez = tz + 0.5D;
+
+        double dx = ex - sx;
+        double dy = ey - sy;
+        double dz = ez - sz;
+        double lenSq = dx * dx + dy * dy + dz * dz;
+        if (lenSq < 1.0E-8D) {
+            return true;
+        }
+        double len = Math.sqrt(lenSq);
+
+        int vx = (int) Math.floor(sx);
+        int vy = (int) Math.floor(sy);
+        int vz = (int) Math.floor(sz);
+
+        int stepX = dx > 0.0D ? 1 : (dx < 0.0D ? -1 : 0);
+        int stepY = dy > 0.0D ? 1 : (dy < 0.0D ? -1 : 0);
+        int stepZ = dz > 0.0D ? 1 : (dz < 0.0D ? -1 : 0);
+
+        double tDeltaX = stepX != 0 ? Math.abs(1.0D / dx) : Double.POSITIVE_INFINITY;
+        double tDeltaY = stepY != 0 ? Math.abs(1.0D / dy) : Double.POSITIVE_INFINITY;
+        double tDeltaZ = stepZ != 0 ? Math.abs(1.0D / dz) : Double.POSITIVE_INFINITY;
+
+        double tMaxX = stepX > 0 ? ((vx + 1.0D) - sx) / dx : (stepX < 0 ? (vx - sx) / dx : Double.POSITIVE_INFINITY);
+        double tMaxY = stepY > 0 ? ((vy + 1.0D) - sy) / dy : (stepY < 0 ? (vy - sy) / dy : Double.POSITIVE_INFINITY);
+        double tMaxZ = stepZ > 0 ? ((vz + 1.0D) - sz) / dz : (stepZ < 0 ? (vz - sz) / dz : Double.POSITIVE_INFINITY);
+
+        for (int step = 0; step < MAX_DDA_STEPS; step++) {
+            if (vx == tx && vy == ty && vz == tz) {
+                return true;
+            }
+
+            double hitT;
+            if (tMaxX <= tMaxY && tMaxX <= tMaxZ) {
+                hitT = tMaxX;
+                vx += stepX;
+                tMaxX += tDeltaX;
+            } else if (tMaxY <= tMaxZ) {
+                hitT = tMaxY;
+                vy += stepY;
+                tMaxY += tDeltaY;
+            } else {
+                hitT = tMaxZ;
+                vz += stepZ;
+                tMaxZ += tDeltaZ;
+            }
+
+            if (hitT > 1.0D) {
+                return true;
+            }
+
+            if (vx == tx && vy == ty && vz == tz) {
+                return true;
+            }
+
+            if (!oracle.isRayPassable(vx, vy, vz)) {
+                double hitDist = hitT * len;
+                if (hitDist > SAFE_STANDOFF_REACH) {
+                    return false;
+                }
+                if (!oracle.canSafelyPierce(vx, vy, vz, playerX, playerY, playerZ)) {
+                    return false;
                 }
             }
         }
@@ -189,38 +297,22 @@ public class GoalOreMining implements Goal, IGoalRenderPos {
 
     @Override
     public double heuristic(int x, int y, int z) {
-        if (count == 0) return 0.0D;
-
-        if (count == 1) {
-            int dx = x - this.x;
-            int dy = y - this.y;
-            int dz = z - this.z;
-            int adjustedDy = (dy < -2) ? dy + 2 : (dy > 0 ? dy - 1 : 0);
-            return GoalBlock.calculate(dx, adjustedDy, dz);
+        if (count == 0) {
+            return 0.0D;
         }
-
-        double bestH = Double.MAX_VALUE;
+        double minH = Double.MAX_VALUE;
         for (int i = 0; i < count; i++) {
-            double dx = Math.abs(targetX[i] - x);
-            double dz = Math.abs(targetZ[i] - z);
-            double dy = targetY[i] - y;
-
-            double minXZ = Math.min(dx, dz);
-            double maxXZ = Math.max(dx, dz);
-            double horizBlocks = Math.max(0.0D, (maxXZ + (Math.sqrt(2.0D) - 1.0D) * minXZ) - (STAND_OFF_REACH - 0.5D));
-            double hTicks = horizBlocks * MIN_TICK_PER_BLOCK;
-
-            if (dy > 1.0D) {
-                hTicks += (dy - 1.0D) * (SPRINT_ONE_BLOCK_TICKS + JUMP_UP_PENALTY_TICKS);
-            } else if (dy < -2.0D) {
-                hTicks += (-dy - 2.0D) * (SPRINT_ONE_BLOCK_TICKS + STEP_DOWN_PENALTY_TICKS);
-            }
-
-            if (hTicks < bestH) {
-                bestH = hTicks;
+            int dx = x - targetX[i];
+            int dy = y - targetY[i];
+            int dz = z - targetZ[i];
+            // Dopasowanie do zakresu pionowego [-4, +2] w isInGoal
+            int adjustedDy = (dy < -3) ? (dy + 3) : (dy > 1 ? (dy - 1) : 0);
+            double h = GoalBlock.calculate(dx, adjustedDy, dz);
+            if (h < minH) {
+                minH = h;
             }
         }
-        return bestH == Double.MAX_VALUE ? 0.0D : bestH;
+        return minH;
     }
 
     @Override

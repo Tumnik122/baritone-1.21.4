@@ -38,10 +38,13 @@ public class PlayerMovementInput extends ClientInput {
             ScreenInputGate.tickDown();
         }
 
-        // (2) Screen otwarty lub czyszczenie ekwipunku AutoDrop: zawsze zero input (GrimAC MultiActions safe)
+        // (2) Screen otwarty lub czyszczenie ekwipunku AutoDrop: zawsze zero input
+        // (GrimAC MultiActions safe)
         boolean screenOpen = Minecraft.getInstance().screen != null;
-        boolean isContainerScreen = screenOpen && Minecraft.getInstance().screen instanceof net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-        boolean strictAntiCheat = Baritone.settings().antiCheatCompat.value || Baritone.settings().antiCheatCompatibility.value;
+        boolean isContainerScreen = screenOpen && Minecraft
+                .getInstance().screen instanceof net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+        boolean strictAntiCheat = Baritone.settings().antiCheatCompat.value
+                || Baritone.settings().antiCheatCompatibility.value;
         boolean autoDropCleaning = handler != null && handler.baritone != null
                 && handler.baritone.getAutoDropProcess() != null
                 && handler.baritone.getAutoDropProcess().isCleaning();
@@ -57,13 +60,16 @@ public class PlayerMovementInput extends ClientInput {
                 && handler.baritone.getInventoryBehavior().swapController.isBusy();
 
         boolean isSecondaryBot = com.astra.revolution.perf.AstraPerformanceConfig.getBotNum() > 1;
-        boolean shouldBlockScreen = screenOpen && (!Baritone.settings().inputWhileScreenOpen.value || (strictAntiCheat && isContainerScreen));
+        boolean shouldBlockScreen = screenOpen
+                && (!Baritone.settings().inputWhileScreenOpen.value || (strictAntiCheat && isContainerScreen));
         if (isSecondaryBot && !isContainerScreen) {
-            // Drugi bot i kolejne boty pracujące w tle nie mogą być blokowane przez ekrany informacyjne lub czat
+            // Drugi bot i kolejne boty pracujące w tle nie mogą być blokowane przez ekrany
+            // informacyjne lub czat
             shouldBlockScreen = false;
         }
 
-        if (chatSuppressed || autoDropCleaning || homeTeleporting || autoEatSuppress || safeInventorySwapping || shouldBlockScreen) {
+        if (chatSuppressed || autoDropCleaning || homeTeleporting || autoEatSuppress || safeInventorySwapping
+                || shouldBlockScreen) {
             this.keyPresses = new net.minecraft.world.entity.player.Input(
                     false, false, false, false, false, false, false);
             this.forwardImpulse = 0.0F;
@@ -72,23 +78,23 @@ public class PlayerMovementInput extends ClientInput {
         }
 
         net.minecraft.client.Options opts = Minecraft.getInstance().options;
-        boolean keyUp    = opts != null && opts.keyUp.isDown();
-        boolean keyDown  = opts != null && opts.keyDown.isDown();
-        boolean keyLeft  = opts != null && opts.keyLeft.isDown();
+        boolean keyUp = opts != null && opts.keyUp.isDown();
+        boolean keyDown = opts != null && opts.keyDown.isDown();
+        boolean keyLeft = opts != null && opts.keyLeft.isDown();
         boolean rightKey = opts != null && opts.keyRight.isDown();
-        boolean jumpKey  = opts != null && opts.keyJump.isDown();
+        boolean jumpKey = opts != null && opts.keyJump.isDown();
         boolean sneakKey = opts != null && opts.keyShift.isDown();
         boolean sprintKey = opts != null && opts.keySprint.isDown();
 
         // (3) JEDYNY zapis inputu w ticku — kolejność vanilla:
-        //     input.tick() → aiStep/fizyka → sendInput → pakiety
-        //     Łączymy stan wymuszony przez Baritone z fizycznymi klawiszami gracza
-        boolean forward   = (handler != null && handler.isInputForcedDown(Input.MOVE_FORWARD)) || keyUp;
-        boolean backward  = (handler != null && handler.isInputForcedDown(Input.MOVE_BACK)) || keyDown;
-        boolean left      = (handler != null && handler.isInputForcedDown(Input.MOVE_LEFT)) || keyLeft;
-        boolean right     = (handler != null && handler.isInputForcedDown(Input.MOVE_RIGHT)) || rightKey;
-        boolean jump      = (handler != null && handler.isInputForcedDown(Input.JUMP)) || jumpKey;
-        boolean sneak     = (handler != null && handler.isInputForcedDown(Input.SNEAK)) || sneakKey;
+        // input.tick() → aiStep/fizyka → sendInput → pakiety
+        // Łączymy stan wymuszony przez Baritone z fizycznymi klawiszami gracza
+        boolean forward = (handler != null && handler.isInputForcedDown(Input.MOVE_FORWARD)) || keyUp;
+        boolean backward = (handler != null && handler.isInputForcedDown(Input.MOVE_BACK)) || keyDown;
+        boolean left = (handler != null && handler.isInputForcedDown(Input.MOVE_LEFT)) || keyLeft;
+        boolean right = (handler != null && handler.isInputForcedDown(Input.MOVE_RIGHT)) || rightKey;
+        boolean jump = (handler != null && handler.isInputForcedDown(Input.JUMP)) || jumpKey;
+        boolean sneak = (handler != null && handler.isInputForcedDown(Input.SNEAK)) || sneakKey;
         boolean rawSprint = (handler != null && handler.isInputForcedDown(Input.SPRINT)) || sprintKey;
 
         boolean isBreaking = handler != null && handler.isInputForcedDown(Input.CLICK_LEFT);
@@ -96,10 +102,14 @@ public class PlayerMovementInput extends ClientInput {
         net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
 
         // GrimAC 1.21.4 Simulation Fix:
-        // Klawisz sprintu (keyPresses.sprint) w ServerboundPlayerInputPacket musi ściśle
-        // odpowiadać stanowi klawisza/żądania sprintu (rawSprint) i prawom fizyki vanilla.
-        // Bezwzględny zakaz sztucznego wymuszania sprintu na bazie 'botMoving && allowSprint',
-        // co powodowało desynchronizację prędkości (0.049923) i flagi GrimAC Simulation!
+        // Klawisz sprintu (keyPresses.sprint) w ServerboundPlayerInputPacket musi
+        // ściśle
+        // odpowiadać stanowi klawisza/żądania sprintu (rawSprint) i prawom fizyki
+        // vanilla.
+        // Bezwzględny zakaz sztucznego wymuszania sprintu na bazie 'botMoving &&
+        // allowSprint',
+        // co powodowało desynchronizację prędkości (0.049923) i flagi GrimAC
+        // Simulation!
         boolean sprint = rawSprint;
         if (sprint) {
             boolean canSprintVanilla = forward && !backward && !sneak;
@@ -116,13 +126,12 @@ public class PlayerMovementInput extends ClientInput {
             }
         }
 
-        // Gdy Baritone kontroluje ruch i nie chce sprintować, natychmiast wyzeruj stan encji gracza,
-        // zapobiegając zacięciu w waniliowym zatrzasku sprintu (sprint latch), ale NIGDY w powietrzu!
-        if (!sprint && player != null && player.isSprinting() && handler != null
-                && !handler.isInputForcedDown(Input.SPRINT)
-                && (player.onGround() || player.isInWater())
-                && handler.baritone != null && handler.baritone.getPathingBehavior() != null
-                && handler.baritone.getPathingBehavior().isPathing()) {
+        // Gdy Baritone lub gracz nie chce sprintować, natychmiast wyzeruj stan
+        // encji gracza na początku ticku (przed fizyką travel()),
+        // zapobiegając zacięciu w waniliowym zatrzasku sprintu (sprint latch), ale
+        // NIGDY w powietrzu!
+        if (!sprint && player != null && player.isSprinting()
+                && (player.onGround() || player.isInWater())) {
             player.setSprinting(false);
         }
 
@@ -130,8 +139,10 @@ public class PlayerMovementInput extends ClientInput {
                 forward, backward, left, right, jump, sneak, sprint);
 
         this.forwardImpulse = (forward == backward) ? 0.0F : (forward ? 1.0F : -1.0F);
-        this.leftImpulse    = (left == right)       ? 0.0F : (left ? 1.0F : -1.0F);
-        // W MC 1.21.4 redukcja prędkości ze sneak (0.3) jest aplikowana automatycznie w fizyce LivingEntity.travel()
-        // na podstawie keyPresses.sneak(). Podwójne mnożenie tutaj powodowało błąd GrimAC Simulation 0.005279!
+        this.leftImpulse = (left == right) ? 0.0F : (left ? 1.0F : -1.0F);
+        // W MC 1.21.4 redukcja prędkości ze sneak (0.3) jest aplikowana automatycznie w
+        // fizyce LivingEntity.travel()
+        // na podstawie keyPresses.sneak(). Podwójne mnożenie tutaj powodowało błąd
+        // GrimAC Simulation 0.005279!
     }
 }
