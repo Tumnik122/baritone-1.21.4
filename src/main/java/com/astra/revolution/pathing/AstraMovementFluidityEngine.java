@@ -9,7 +9,10 @@ import baritone.api.utils.IInputOverrideHandler;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.api.utils.input.Input;
+import baritone.pathing.movement.movements.MovementDiagonal;
 import baritone.pathing.movement.movements.MovementTraverse;
+import com.astra.revolution.pathing.aquatic.AstraAquaticLocomotionEngine;
+import com.astra.revolution.pathing.kinetic.AstraKineticWalkingEngine;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.AABB;
@@ -48,6 +51,14 @@ public final class AstraMovementFluidityEngine {
     private int externalAimLockTicks = 0;
     private Rotation lastExternalRotation = null;
 
+    private enum LocomotionMode {
+        NONE,
+        AQUATIC,
+        TERRESTRIAL
+    }
+
+    private LocomotionMode activeMode = LocomotionMode.NONE;
+
     private AstraMovementFluidityEngine() {}
 
     /**
@@ -61,6 +72,26 @@ public final class AstraMovementFluidityEngine {
 
     public boolean isAimLockedByProcess() {
         return this.externalAimLockTicks > 0;
+    }
+
+    public void resetState() {
+        resetState(null);
+    }
+
+    public void resetState(IBaritone baritone) {
+        IInputOverrideHandler ioh = (baritone != null) ? baritone.getInputOverrideHandler() : null;
+        if (activeMode == LocomotionMode.AQUATIC) {
+            AstraAquaticLocomotionEngine.INSTANCE.reset(ioh);
+        } else if (activeMode == LocomotionMode.TERRESTRIAL) {
+            AstraKineticWalkingEngine.INSTANCE.reset(ioh);
+        }
+        activeMode = LocomotionMode.NONE;
+        stallTicks = 0;
+        unstuckPulseRemaining = 0;
+        lastPos = Vec3.ZERO;
+        lastValidWorldYaw = Float.NaN;
+        externalAimLockTicks = 0;
+        lastExternalRotation = null;
     }
 
     /**
@@ -79,67 +110,60 @@ public final class AstraMovementFluidityEngine {
 
         IPathExecutor exec = baritone.getPathingBehavior() != null ? baritone.getPathingBehavior().getCurrent() : null;
         if (exec == null || exec.getPath() == null) {
-            resetState();
+            resetState(baritone);
             return;
         }
 
         IPath path = exec.getPath();
         List<IMovement> movements = path.movements();
         int pathPos = exec.getPosition();
-        if (pathPos < 0 || pathPos >= movements.size()) return;
+        if (pathPos < 0 || pathPos >= movements.size()) {
+            resetState(baritone);
+            return;
+        }
 
         IMovement currentMovement = movements.get(pathPos);
-        IInputOverrideHandler ioh = baritone.getInputOverrideHandler();
+        BetterBlockPos curDest = currentMovement.getDest();
+        BetterBlockPos nextDest = (pathPos + 1 < movements.size()) ? movements.get(pathPos + 1).getDest() : null;
 
-        // 1. Ruchy precyzyjne (schody, skoki, diagonale, cofanie na krawędzi)
-        // Dla nich NIGDY nie używamy lookahead N+1/N+2 ani feelerów -38°!
-        boolean isFlatTraverse = (currentMovement instanceof MovementTraverse)
-                && currentMovement.getSrc().y == currentMovement.getDest().y;
-        boolean baritoneWantsBackOrSneak = ioh.isInputForcedDown(Input.MOVE_BACK)
-                || ioh.isInputForcedDown(Input.SNEAK);
-        boolean allowLookaheadSmoothing = isFlatTraverse && !baritoneWantsBackOrSneak && !player.isInWater() && !player.isInLava();
+        // 1. Tryb wodny (Dolphin Sprint & 3D Swim) — priorytet przed kinetyką lądową
+        if (AstraAquaticLocomotionEngine.INSTANCE.isInWaterEnvironment(player, ctx.world())) {
+            if (activeMode == LocomotionMode.TERRESTRIAL) {
+                AstraKineticWalkingEngine.INSTANCE.reset(baritone.getInputOverrideHandler());
+            }
+            if (!isActivelyMiningOrPlacing && this.externalAimLockTicks <= 0) {
+                boolean handled = AstraAquaticLocomotionEngine.INSTANCE.handleAquaticMovement(
+                        baritone, player, currentMovement, curDest, nextDest
+                );
+                if (handled) {
+                    activeMode = LocomotionMode.AQUATIC;
+                    return;
+                }
+            }
+        } else if (activeMode == LocomotionMode.AQUATIC) {
+            // Atomowe wyczyszczenie SNEAK/JUMP w ticku wyjścia z wody na brzeg
+            AstraAquaticLocomotionEngine.INSTANCE.reset(baritone.getInputOverrideHandler());
+            activeMode = LocomotionMode.NONE;
+        }
 
-        // Wyzeruj sztuczny impuls -38° podczas aktywnej ścieżki A*, aby nie zrzucać bota z bloków
-        this.unstuckPulseRemaining = 0;
-
-        // 2. Oblicz docelowy kąt ścieżki (pathYaw):
-        float desiredPathYaw = computeBaseMovementYaw(player, currentMovement);
-        if (allowLookaheadSmoothing && pathPos + 1 < movements.size()) {
-            IMovement nextMovement = movements.get(pathPos + 1);
-            if (nextMovement instanceof MovementTraverse && nextMovement.getSrc().y == nextMovement.getDest().y) {
-                desiredPathYaw = blendLookaheadYaw(player, currentMovement, nextMovement, 0.25f);
+        // 2. Tryb lądowy (Bunnyhop 7.12 m/s & Centripetal Catmull-Rom)
+        if (!isActivelyMiningOrPlacing && this.externalAimLockTicks <= 0) {
+            boolean isFlatLandMove = (currentMovement instanceof MovementTraverse || currentMovement instanceof MovementDiagonal)
+                    && currentMovement.getSrc().y == currentMovement.getDest().y;
+            if (isFlatLandMove) {
+                AstraKineticWalkingEngine.INSTANCE.optimizeTerrestrialLocomotion(
+                        baritone, player, path, pathPos
+                );
+                activeMode = LocomotionMode.TERRESTRIAL;
+                return;
             }
         }
 
-        boolean holdExternalAim = isActivelyMiningOrPlacing || this.externalAimLockTicks > 0;
-
-        // 3. Aktualizuj kamerę TYLKO gdy proces (np. FarmProcess) nie celuje w blok
-        // i gdy ruch to płaski traverse (dla MovementAscend/Descend/Diagonal Baritone sam ustawia optymalną rotację!)
-        if (!holdExternalAim && baritone.getLookBehavior() != null) {
-            if (allowLookaheadSmoothing) {
-                BetterBlockPos dest = currentMovement.getDest();
-                double dy = (dest.y + 0.5) - player.getEyeY();
-                double dx = (dest.x + 0.5) - player.getX();
-                double dz = (dest.z + 0.5) - player.getZ();
-                double hDist = Math.max(Math.hypot(dx, dz), 0.4);
-                float pitchToNode = (float) -Math.toDegrees(Math.atan2(dy, hDist));
-                float targetPitch = Mth.clamp(pitchToNode, -22.0f, 22.0f);
-                baritone.getLookBehavior().updateTarget(new Rotation(desiredPathYaw, targetPitch), true);
-            }
-        } else if (this.externalAimLockTicks > 0 && this.lastExternalRotation != null && baritone.getLookBehavior() != null) {
-            baritone.getLookBehavior().updateTarget(this.lastExternalRotation, true);
+        // Jeżeli aktualny ruch to wspinaczka/kopanie/budowanie — wyłącz nadpisanie skoku z bunnyhopa
+        if (activeMode == LocomotionMode.TERRESTRIAL) {
+            AstraKineticWalkingEngine.INSTANCE.reset(baritone.getInputOverrideHandler());
+            activeMode = LocomotionMode.NONE;
         }
-
-        // 4. GrimAC 8-Octant MoveFix: przelicz wektor ruchu względem serwerowego Yaw kamery na bieżący tick.
-        // Stosowane WYŁĄCZNIE przy płaskim ruchu (allowLookaheadSmoothing), aby nie psuć skoków na schodkach
-        // (MovementAscend / MovementDescend / MovementDiagonal) przez przypadkowe obcinanie pędu w przód!
-        if (allowLookaheadSmoothing && !player.isInWater() && !player.isInLava()) {
-            float effectiveTickYaw = getEffectiveCurrentTickYaw(baritone, player);
-            applyGrimCompliantMoveFix(ioh, desiredPathYaw, effectiveTickYaw, baritoneWantsBackOrSneak, player);
-        }
-
-        // KRYTYCZNE DLA GRIMAC (Argon 4): Całkowicie wyłączono suppressFarmlandMicroJump!
-        // GrimAC wymaga, aby przejście 0.9375 (Farmland) <-> 1.000 (Dirt) odbywało się wyłącznie przez Vanilla Entity.collide()
     }
 
     private float getEffectiveCurrentTickYaw(IBaritone baritone, LocalPlayer player) {
@@ -316,15 +340,6 @@ public final class AstraMovementFluidityEngine {
             return unstuckStrafeDir;
         }
         return (player.getId() % 2 == 0) ? 1 : -1;
-    }
-
-    public void resetState() {
-        stallTicks = 0;
-        unstuckPulseRemaining = 0;
-        lastPos = Vec3.ZERO;
-        lastValidWorldYaw = Float.NaN;
-        externalAimLockTicks = 0;
-        lastExternalRotation = null;
     }
 
     /**
