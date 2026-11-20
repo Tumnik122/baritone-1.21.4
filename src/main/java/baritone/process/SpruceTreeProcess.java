@@ -715,13 +715,14 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
                 totalChoppedLeaves++;
             }
             recentlyBrokenBlocks.put(lastBreakingPos.asLong(), System.currentTimeMillis() + 3000L);
+            GrimBreakValidator.onFinishBreak(lastBreakingPos, player.tickCount, !wasLog);
             lastBreakingPos = null;
             lastBreakingType = TargetType.NONE;
             currentBlockBreakProgress = 0.0f;
             currentBlockDamageTicks = 0;
             interBlockReleaseTicks = 0;
             ctx.playerController().resetBlockRemoving();
-            // Brak return - natychmiastowe przejście do niszczenia kolejnego celu w tym samym ticku!
+            return; // KRYTYCZNE: Odczekaj tick na synchronizację GrimAC, zero natychmiastowego klikania w kolejny blok!
         }
 
         BlockState targetState = level.getBlockState(pos);
@@ -743,15 +744,15 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
         Direction safeSide = side != null ? side : Direction.UP;
 
         // 1. ZMIANA BLOKU (z pnia 1 na pień 2 lub z liścia na liść):
-        // Błyskawiczny reset poprzedniego bloku bez sztucznego opóźnienia
         if (lastBreakingPos != null && !lastBreakingPos.equals(pos)) {
             ctx.playerController().resetBlockRemoving();
+            GrimBreakValidator.reset();
             lastBreakingPos = null;
             lastBreakingType = TargetType.NONE;
             currentBlockDamageTicks = 0;
             currentBlockBreakProgress = 0.0f;
             interBlockReleaseTicks = 0;
-            // Brak return - kliknięcie w nowy blok po odczekaniu cooldownu
+            return;
         }
 
         // Synchronizacja trzymanego narzędzia (eliminacja rozbieżności prędkości w GrimAC)
@@ -803,12 +804,16 @@ public final class SpruceTreeProcess extends BaritoneProcessHelper implements IB
 
     private void stopDigging() {
         if (lastBreakingPos != null && ctx.world() != null && ctx.world().getBlockState(lastBreakingPos).isAir()) {
-            if (lastBreakingType == TargetType.LOG) {
+            boolean wasLog = (lastBreakingType == TargetType.LOG);
+            if (wasLog) {
                 totalChoppedLogs++;
             } else if (lastBreakingType == TargetType.LEAF) {
                 totalChoppedLeaves++;
             }
             recentlyBrokenBlocks.put(lastBreakingPos.asLong(), System.currentTimeMillis() + 3000L);
+            if (ctx.player() != null) {
+                GrimBreakValidator.onFinishBreak(lastBreakingPos, ctx.player().tickCount, !wasLog);
+            }
         }
         boolean wasLog = (lastBreakingType == TargetType.LOG);
         this.currentTargetPos = null;

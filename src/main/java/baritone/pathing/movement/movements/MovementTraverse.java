@@ -320,7 +320,7 @@ public class MovementTraverse extends Movement {
                 }
                 logDebug("In movement traverse");
                 MovementHelper.moveTowards(ctx, state, dest);
-                if (MovementHelper.canWalkThrough(ctx, feet.above(2))) {
+                if (MovementHelper.canWalkThrough(ctx, feet.above(2)) && ctx.player().onGround()) {
                     state.setInput(Input.JUMP, true);
                 }
                 return state;

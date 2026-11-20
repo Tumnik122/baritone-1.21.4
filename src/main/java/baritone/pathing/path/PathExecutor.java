@@ -292,6 +292,11 @@ public class PathExecutor implements IPathExecutor, Helper {
         } else {
             sprintNextTick = shouldSprintNextTick();
             behavior.baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, sprintNextTick);
+            if (!sprintNextTick && ctx.player() != null && ctx.player().isSprinting()) {
+                if (ctx.player().onGround() || ctx.player().isInWater()) {
+                    ctx.player().setSprinting(false);
+                }
+            }
 
             // GrimAC Movement Fluidity & Predictive Anti-Stall Engine
             boolean isMiningOrPlacing = behavior.baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT)

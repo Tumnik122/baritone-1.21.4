@@ -290,7 +290,11 @@ public final class GrimBreakValidator {
         extraTicksRemaining = 0;
         lastDamagePlayerTick = -1;
 
-        if (initialDelta >= 1.0f) {
+        boolean isHardBlock = (state.getBlock() instanceof net.minecraft.world.level.block.RotatedPillarBlock)
+                || state.is(net.minecraft.tags.BlockTags.LOGS)
+                || state.getDestroySpeed(level, pos) >= 1.0f;
+
+        if (initialDelta >= 1.0f && !isHardBlock) {
             // Instabreak (liście motyką, miękkie bloki): nie blokuj canFinishBreak
             isInstabreak = true;
             hasActiveServerDig = true;
@@ -332,7 +336,11 @@ public final class GrimBreakValidator {
         BlockState state = level.getBlockState(pos);
         float delta = getGrimDestroyProgress(player, level, pos, state);
         if (delta <= 0.0f) return;
-        if (delta >= 1.0f) {
+        boolean isHardBlock = (state.getBlock() instanceof net.minecraft.world.level.block.RotatedPillarBlock)
+                || state.is(net.minecraft.tags.BlockTags.LOGS)
+                || state.getDestroySpeed(level, pos) >= 1.0f;
+
+        if (delta >= 1.0f && !isHardBlock) {
             isInstabreak = true;
             grimAccumulatedDamage = delta;
             return;
@@ -355,13 +363,20 @@ public final class GrimBreakValidator {
         if (player == null || level == null || pos == null) return false;
 
         BlockState state = level.getBlockState(pos);
-        if (state.isAir() || state.getDestroyProgress(player, level, pos) >= 1.0f) {
+        boolean isHardBlock = (state.getBlock() instanceof net.minecraft.world.level.block.RotatedPillarBlock)
+                || state.is(net.minecraft.tags.BlockTags.LOGS)
+                || state.getDestroySpeed(level, pos) >= 1.0f;
+
+        if (state.isAir()) {
+            return true;
+        }
+        if (!isHardBlock && state.getDestroyProgress(player, level, pos) >= 1.0f) {
             return true;
         }
         if (!hasActiveServerDig || activeBreakPos == null || !activeBreakPos.equals(pos)) {
             return false;
         }
-        if (isInstabreak) {
+        if (isInstabreak && !isHardBlock) {
             return true;
         }
 

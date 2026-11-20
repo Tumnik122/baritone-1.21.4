@@ -95,23 +95,35 @@ public class PlayerMovementInput extends ClientInput {
 
         net.minecraft.client.player.LocalPlayer player = Minecraft.getInstance().player;
 
-        // GrimAC 1.21.4 Simulation Fix: Sprint jest fizycznie legalny TYLKO przy ruchu w przód,
-        // bez wciskania w tył, bez skradania i przy głodzie > 6 (w MC kopanie bloków nie wyłącza sprintu)
-        boolean canSprintVanilla = forward && !backward && !sneak;
-        boolean sprint = false;
-
-        boolean botMoving = handler != null && (handler.isInputForcedDown(Input.MOVE_FORWARD) || handler.isInputForcedDown(Input.SPRINT));
-        boolean sprintDesired = rawSprint || (player != null && player.isSprinting()) || (botMoving && Baritone.settings().allowSprint.value);
-
-        if (canSprintVanilla && sprintDesired) {
-            if (player != null && player.getFoodData().getFoodLevel() > 6
-                    && !player.hasEffect(net.minecraft.world.effect.MobEffects.BLINDNESS)
-                    && (!player.horizontalCollision || player.minorHorizontalCollision)) {
-                boolean inWater = player.isInWater() && !player.isUnderWater();
-                if (!inWater || Baritone.settings().sprintInWater.value) {
-                    sprint = true;
+        // GrimAC 1.21.4 Simulation Fix:
+        // Klawisz sprintu (keyPresses.sprint) w ServerboundPlayerInputPacket musi ściśle
+        // odpowiadać stanowi klawisza/żądania sprintu (rawSprint) i prawom fizyki vanilla.
+        // Bezwzględny zakaz sztucznego wymuszania sprintu na bazie 'botMoving && allowSprint',
+        // co powodowało desynchronizację prędkości (0.049923) i flagi GrimAC Simulation!
+        boolean sprint = rawSprint;
+        if (sprint) {
+            boolean canSprintVanilla = forward && !backward && !sneak;
+            if (!canSprintVanilla) {
+                sprint = false;
+            } else if (player != null) {
+                if (player.getFoodData().getFoodLevel() <= 6
+                        || player.hasEffect(net.minecraft.world.effect.MobEffects.BLINDNESS)
+                        || (player.horizontalCollision && !player.minorHorizontalCollision)) {
+                    sprint = false;
+                } else if (player.isInWater() && !player.isUnderWater() && !Baritone.settings().sprintInWater.value) {
+                    sprint = false;
                 }
             }
+        }
+
+        // Gdy Baritone kontroluje ruch i nie chce sprintować, natychmiast wyzeruj stan encji gracza,
+        // zapobiegając zacięciu w waniliowym zatrzasku sprintu (sprint latch), ale NIGDY w powietrzu!
+        if (!sprint && player != null && player.isSprinting() && handler != null
+                && !handler.isInputForcedDown(Input.SPRINT)
+                && (player.onGround() || player.isInWater())
+                && handler.baritone != null && handler.baritone.getPathingBehavior() != null
+                && handler.baritone.getPathingBehavior().isPathing()) {
+            player.setSprinting(false);
         }
 
         this.keyPresses = new net.minecraft.world.entity.player.Input(

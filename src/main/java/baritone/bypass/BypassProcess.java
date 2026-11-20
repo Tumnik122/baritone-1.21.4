@@ -286,6 +286,10 @@ public final class BypassProcess extends BaritoneProcessHelper implements IBarit
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
         baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
+        baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+        if (ctx.player() != null && ctx.player().isSprinting()) {
+            ctx.player().setSprinting(false);
+        }
     }
 
     public void resetDropCollectionState() {

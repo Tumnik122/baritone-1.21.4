@@ -362,7 +362,20 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             if (!MovementHelper.avoidBreaking(baritone.bsi, pos.getX(), pos.getY(), pos.getZ(), state)) {
                 Optional<Rotation> rot = RotationUtils.reachable(ctx, pos, reach);
                 if (rot.isPresent() && isSafeToCancel) {
-                    baritone.getInputOverrideHandler().clearAllKeys();
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
+                    baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+                    if (ctx.player() != null && ctx.player().isSprinting()) {
+                        ctx.player().setSprinting(false);
+                    }
+                    if (ctx.player() != null && ctx.player().input != null && ctx.player().input.keyPresses != null) {
+                        var kp = ctx.player().input.keyPresses;
+                        ctx.player().input.keyPresses = new net.minecraft.world.entity.player.Input(
+                                false, false, false, false, kp.jump(), kp.shift(), false
+                        );
+                    }
                     baritone.getLookBehavior().updateTarget(rot.get(), true);
 
                     HitResult trace = RayTraceUtils.rayTraceTowards(ctx.player(), ctx.playerRotations(), reach, false);
@@ -403,12 +416,12 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         }
 
         if (miningAction.isPresent()) {
-            // Natychmiast zwalniamy klawisz skoku — cel jest w zasięgu ze stabilnego podłoża!
-            baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
-
             boolean isGroundedOrLiquid = ctx.player().onGround() || ctx.player().isInWater()
                     || MovementHelper.isClimbable(BlockStateInterface.getBlock(ctx, ctx.playerFeet()));
             if (isGroundedOrLiquid) {
+                // Zwalniamy klawisz skoku DOPIERO po stabilnym wylądowaniu na podłożu!
+                baritone.getInputOverrideHandler().setInputForceState(Input.JUMP, false);
+
                 MiningAction action = miningAction.get();
                 BlockPos pos = action.orePos;
                 BlockPos breakTarget = action.breakTarget;
@@ -418,7 +431,20 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                     lockVeinCluster(pos, curr, scanContext, filter);
                 }
 
-                baritone.getInputOverrideHandler().clearAllKeys();
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+                if (ctx.player() != null && ctx.player().isSprinting()) {
+                    ctx.player().setSprinting(false);
+                }
+                if (ctx.player() != null && ctx.player().input != null && ctx.player().input.keyPresses != null) {
+                    var kp = ctx.player().input.keyPresses;
+                    ctx.player().input.keyPresses = new net.minecraft.world.entity.player.Input(
+                            false, false, false, false, kp.jump(), kp.shift(), false
+                    );
+                }
                 baritone.getLookBehavior().updateTarget(rot, true);
 
                 MovementHelper.switchToBestToolFor(ctx, ctx.world().getBlockState(breakTarget));
@@ -625,13 +651,11 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
         // CAŁKOWITY VEIN LOCK (Dokończ całe złoże przed przejściem do innego):
         // Jeśli bot posiada aktywne złoże (activeVeinBlocks), cel ścieżki i planowanie ograniczamy
-        // W 100% wyłącznie do bloków tego złoża! Używamy GoalBiasedComposite, aby A*
-        // bezwzględnie kopał bloki w wyznaczonej płynnej kolejności wejście -> wyjście.
+        // W 100% wyłącznie do bloków tego złoża! Używamy Stand-Off GoalOreMining dla klastra, aby A*
+        // stanął na najbliższym legalnym punkcie w zasięgu <= 3.85D bez zbędnego wbijania się w ścianę.
         if (!activeVeinBlocks.isEmpty()) {
-            CalculationContext context = new CalculationContext(baritone);
             List<BlockPos> veinList = new ArrayList<>(activeVeinBlocks);
-            Goal[] veinGoals = veinList.stream().map(loc -> coalesce(loc, veinList, context)).toArray(Goal[]::new);
-            Goal goal = (veinGoals.length == 1) ? veinGoals[0] : new GoalBiasedComposite(14.0, veinGoals);
+            Goal goal = new GoalOreMining(veinList);
             currentGoal = goal;
             currentPrimaryTarget = veinList.get(0);
             return new PathingCommand(goal, legit ? PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH : PathingCommandType.SET_GOAL_AND_PATH);
@@ -659,8 +683,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 // Zastosowanie GoalBiasedComposite z karą +18.0 na indeks gwarantuje, że A* bezwzględnie
                 // respektuje optymalną trasę wyznaczoną przez TSP 2-Opt z OreRouteOptimizer!
                 List<BlockPos> activeWindow = getActiveGoalWindow(locs2, 4);
-                Goal[] windowGoals = activeWindow.stream().map(loc -> coalesce(loc, locs2, context)).toArray(Goal[]::new);
-                Goal goal = (windowGoals.length == 1) ? windowGoals[0] : new GoalBiasedComposite(18.0, windowGoals);
+                Goal goal = new GoalOreMining(activeWindow);
                 currentGoal = goal;
                 currentPrimaryTarget = locs2.get(0);
                 knownOreLocations = locs2;

@@ -139,6 +139,9 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
             }
             event.setSprinting(sprint);
             baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, sprint);
+            if (!sprint && ctx.player() != null && ctx.player().isSprinting()) {
+                ctx.player().setSprinting(false);
+            }
         } else if (baritone.getInputOverrideHandler().isInputForcedDown(Input.SPRINT)) {
             event.setSprinting(true);
         }
@@ -185,14 +188,26 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     }
 
     private boolean handlePauseRequest() {
-        if (pauseRequestedLastTick && (safeToCancel || ctx.player().onGround())) {
+        boolean groundedOrLiquid = ctx.player() != null && (ctx.player().onGround() || ctx.player().isInWater());
+        if (pauseRequestedLastTick && (safeToCancel && groundedOrLiquid)) {
             pauseRequestedLastTick = false;
             if (unpausedLastTick) {
                 boolean wasBreaking = baritone.getInputOverrideHandler().isInputForcedDown(Input.CLICK_LEFT);
-                baritone.getInputOverrideHandler().clearAllKeys();
-                if (wasBreaking) {
-                    baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
-                } else {
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_BACK, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_LEFT, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_RIGHT, false);
+                baritone.getInputOverrideHandler().setInputForceState(Input.SPRINT, false);
+                if (ctx.player() != null && ctx.player().isSprinting()) {
+                    ctx.player().setSprinting(false);
+                }
+                if (ctx.player() != null && ctx.player().input != null && ctx.player().input.keyPresses != null) {
+                    var kp = ctx.player().input.keyPresses;
+                    ctx.player().input.keyPresses = new net.minecraft.world.entity.player.Input(
+                            false, false, false, false, kp.jump(), kp.shift(), false
+                    );
+                }
+                if (!wasBreaking) {
                     baritone.getInputOverrideHandler().getBlockBreakHelper().stopBreakingBlock();
                 }
             }
@@ -359,6 +374,9 @@ public final class PathingBehavior extends Behavior implements IPathingBehavior,
     }
 
     public boolean isSafeToCancel() {
+        if (ctx.player() != null && !ctx.player().onGround() && !ctx.player().isInWater() && !ctx.player().isFallFlying()) {
+            return false;
+        }
         if (current == null) {
             return !baritone.getElytraProcess().isActive() || baritone.getElytraProcess().isSafeToCancel();
         }

@@ -135,7 +135,7 @@ public final class AstraMovementFluidityEngine {
         // (MovementAscend / MovementDescend / MovementDiagonal) przez przypadkowe obcinanie pędu w przód!
         if (allowLookaheadSmoothing && !player.isInWater() && !player.isInLava()) {
             float effectiveTickYaw = getEffectiveCurrentTickYaw(baritone, player);
-            applyGrimCompliantMoveFix(ioh, desiredPathYaw, effectiveTickYaw, baritoneWantsBackOrSneak);
+            applyGrimCompliantMoveFix(ioh, desiredPathYaw, effectiveTickYaw, baritoneWantsBackOrSneak, player);
         }
 
         // KRYTYCZNE DLA GRIMAC (Argon 4): Całkowicie wyłączono suppressFarmlandMicroJump!
@@ -145,9 +145,6 @@ public final class AstraMovementFluidityEngine {
     private float getEffectiveCurrentTickYaw(IBaritone baritone, LocalPlayer player) {
         if (this.lastExternalRotation != null && this.externalAimLockTicks > 0) {
             return this.lastExternalRotation.getYaw();
-        }
-        if (baritone.getLookBehavior() != null && baritone.getLookBehavior().getServerRotation() != null) {
-            return baritone.getLookBehavior().getServerRotation().getYaw();
         }
         return player.getYRot();
     }
@@ -187,11 +184,15 @@ public final class AstraMovementFluidityEngine {
             IInputOverrideHandler ioh,
             float desiredMoveYaw,
             float actualCameraYaw,
-            boolean preserveNativeBackOrSneak) {
+            boolean preserveNativeBackOrSneak,
+            LocalPlayer player) {
 
         if (preserveNativeBackOrSneak) {
             if (!ioh.isInputForcedDown(Input.MOVE_FORWARD)) {
                 ioh.setInputForceState(Input.SPRINT, false);
+                if (player != null && player.isSprinting()) {
+                    player.setSprinting(false);
+                }
             }
             return;
         }
@@ -203,18 +204,30 @@ public final class AstraMovementFluidityEngine {
 
         float delta = Mth.wrapDegrees(desiredMoveYaw - actualCameraYaw);
 
+        // Jeśli kąt kamery jest zbliżony do osi trasy (<= 50°):
+        // Czysty bieg naprzód (W) z pełnym pędem sprintu (zero mikro-szarpnięć i rozjazdów wektorowych)
+        if (Math.abs(delta) <= 50.0f) {
+            ioh.setInputForceState(Input.MOVE_FORWARD, true);
+            ioh.setInputForceState(Input.MOVE_BACK, false);
+            ioh.setInputForceState(Input.MOVE_LEFT, false);
+            ioh.setInputForceState(Input.MOVE_RIGHT, false);
+            return;
+        }
+
         boolean w = delta >= -67.5f && delta <= 67.5f;
-        boolean s = delta > 112.5f || delta < -112.5f;
         boolean a = delta >= -157.5f && delta <= -22.5f;
         boolean d = delta >= 22.5f && delta <= 157.5f;
 
         ioh.setInputForceState(Input.MOVE_FORWARD, w);
-        ioh.setInputForceState(Input.MOVE_BACK, s);
+        ioh.setInputForceState(Input.MOVE_BACK, false); // Nigdy nie cofaj podczas ruchu w przód
         ioh.setInputForceState(Input.MOVE_LEFT, a);
         ioh.setInputForceState(Input.MOVE_RIGHT, d);
 
         if (!w) {
             ioh.setInputForceState(Input.SPRINT, false);
+            if (player != null && player.isSprinting() && player.onGround()) {
+                player.setSprinting(false);
+            }
         }
     }
 

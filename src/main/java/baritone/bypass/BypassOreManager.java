@@ -442,6 +442,16 @@ public final class BypassOreManager {
         Baritone.settings().autoTool.value = true;
         Baritone.settings().walkWhileBreaking.value = false;
 
+        // Stand-Off Hull: Zamiast podchodzić pod każdy pojedynczy blok, łączymy żyłę w jeden Stand-Off cel
+        if (!proc.getVeinQueue().isEmpty()) {
+            it.unimi.dsi.fastutil.longs.LongArrayList cluster = new it.unimi.dsi.fastutil.longs.LongArrayList(proc.getVeinQueue().size() + 1);
+            cluster.add(proc.getActiveOreTarget().asLong());
+            for (BlockPos vp : proc.getVeinQueue()) {
+                cluster.add(vp.asLong());
+            }
+            return new PathingCommand(new GoalOreMining(cluster), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+        }
+
         return new PathingCommand(new GoalOreMining(proc.getActiveOreTarget()), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
     }
 

@@ -25,6 +25,7 @@ import baritone.api.event.events.ChatEvent;
 import baritone.api.event.events.ChunkEvent;
 import baritone.api.event.events.type.EventState;
 import baritone.api.utils.Pair;
+import baritone.bypass.AstraBypassRegistry;
 import baritone.cache.CachedChunk;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl;
@@ -161,6 +162,9 @@ public abstract class MixinClientPlayNetHandler extends ClientCommonPacketListen
             at = @At("RETURN")
     )
     private void postHandleBlockChange(ClientboundBlockUpdatePacket packetIn, CallbackInfo ci) {
+        if (packetIn.getBlockState().isAir()) {
+            AstraBypassRegistry.onServerBlockConfirmedAir(packetIn.getPos().asLong());
+        }
         for (IBaritone ibaritone : BaritoneAPI.getProvider().getAllBaritones()) {
             LocalPlayer player = ibaritone.getPlayerContext().player();
             if (player != null && player.connection == (ClientPacketListener) (Object) this) {
@@ -201,6 +205,9 @@ public abstract class MixinClientPlayNetHandler extends ClientCommonPacketListen
 
         List<Pair<BlockPos, BlockState>> changes = new ArrayList<>();
         packetIn.runUpdates((mutPos, state) -> {
+            if (state.isAir()) {
+                AstraBypassRegistry.onServerBlockConfirmedAir(mutPos.asLong());
+            }
             changes.add(new Pair<>(mutPos.immutable(), state));
         });
         if (changes.isEmpty()) {

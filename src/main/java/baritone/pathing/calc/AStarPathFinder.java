@@ -29,6 +29,7 @@ import baritone.pathing.movement.Moves;
 import baritone.utils.pathing.BetterWorldBorder;
 import baritone.utils.pathing.Favoring;
 import baritone.utils.pathing.MutableMoveResult;
+import net.minecraft.core.BlockPos;
 
 import java.util.Optional;
 
@@ -75,6 +76,20 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         }
         long effectivePrimary = Math.max(primaryTimeout, 1500L);
         long effectiveFailure = Math.max(failureTimeout, 3500L);
+
+        // Subterranean A* Optimizer: kalibracja Directed Tunnel Spear
+        SubterraneanPathHeuristic subterraneanHeuristic = new SubterraneanPathHeuristic();
+        int targetGoalX = startX, targetGoalY = startY, targetGoalZ = startZ;
+        if (goal instanceof baritone.api.utils.interfaces.IGoalRenderPos grp && grp.getGoalPos() != null) {
+            BlockPos gp = grp.getGoalPos();
+            targetGoalX = gp.getX();
+            targetGoalY = gp.getY();
+            targetGoalZ = gp.getZ();
+        }
+        subterraneanHeuristic.calibrateForSearch(calcContext, startX, startY, startZ, targetGoalX, targetGoalY, targetGoalZ);
+        if (subterraneanHeuristic.getSolidDensityRatio() > 0.50D) {
+            effectivePrimary = Math.min(effectivePrimary, baritone.bypass.routing.DirectBoreCorridorPlanner.ASTAR_FALLBACK_TIMEOUT_MS);
+        }
         long primaryTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : effectivePrimary);
         long failureTimeoutTime = startTime + (slowPath ? Baritone.settings().slowPathTimeoutMS.value : effectiveFailure);
         boolean failing = true;
@@ -175,7 +190,7 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                     actionCost *= favoring.calculate(hashCode);
                 }
                 // AI Route Smoothing: Momentum / Straight Line Favoring
-                // Niewielki bonus (0.004 ticka) za kontynuację ruchu w tym samym wektorze.
+                // Zastosowanie MineCostHeuristic: premia 0.85x za prosty tunel oraz kary za zakręty 45/90/180 stopni.
                 // Eliminuje brzydkie zygzaki i generuje proste, naturalne tunele oraz korytarze.
                 if (currentNode.previous != null) {
                     int prevDx = currentNode.x - currentNode.previous.x;
@@ -185,9 +200,16 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                     int currDy = res.y - currentNode.y;
                     int currDz = res.z - currentNode.z;
                     if (prevDx == currDx && prevDy == currDy && prevDz == currDz) {
-                        actionCost = Math.max(0.1, actionCost - 0.004);
+                        actionCost = Math.max(0.1, actionCost * MineCostHeuristic.STRAIGHT_TUNNEL_MULTIPLIER);
                     } else {
-                        actionCost += 0.004;
+                        int dot = prevDx * currDx + prevDz * currDz;
+                        if (dot > 0) {
+                            actionCost += MineCostHeuristic.TURN_45_PENALTY_TICKS * 0.1;
+                        } else if (dot == 0) {
+                            actionCost += MineCostHeuristic.TURN_90_PENALTY_TICKS * 0.1;
+                        } else {
+                            actionCost += MineCostHeuristic.TURN_180_PENALTY_TICKS * 0.1;
+                        }
                     }
                 }
                 PathNode neighbor = getNodeAtPosition(res.x, res.y, res.z, hashCode);

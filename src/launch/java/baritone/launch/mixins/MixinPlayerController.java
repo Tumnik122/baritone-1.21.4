@@ -96,18 +96,7 @@ public abstract class MixinPlayerController implements IPlayerControllerMP {
 
     @org.spongepowered.asm.mixin.Unique
     private static boolean argon$isBaritoneActive() {
-        baritone.api.IBaritone primary = baritone.api.BaritoneAPI.getProvider().getPrimaryBaritone();
-        if (primary == null) return false;
-        if (primary.getPathingBehavior().isPathing()) return true;
-        if (primary.getPathingControlManager() != null
-                && primary.getPathingControlManager().mostRecentInControl().map(baritone.api.process.IBaritoneProcess::isActive).orElse(false)) {
-            return true;
-        }
-        if (primary.getMineProcess() != null && primary.getMineProcess().isActive()) return true;
-        if (primary.getCustomGoalProcess() != null && primary.getCustomGoalProcess().isActive()) return true;
-        if (primary.getFollowProcess() != null && primary.getFollowProcess().isActive()) return true;
-        if (primary.getBuilderProcess() != null && primary.getBuilderProcess().isActive()) return true;
-        return false;
+        return baritone.Baritone.isPrimaryActive();
     }
 
     /**

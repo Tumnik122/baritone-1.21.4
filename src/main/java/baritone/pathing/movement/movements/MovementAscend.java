@@ -238,7 +238,7 @@ public class MovementAscend extends Movement {
             return state;
         }
 
-        if (headBonkClear() || inLiquid) {
+        if (inLiquid) {
             return state.setInput(Input.JUMP, true);
         }
 
@@ -248,15 +248,13 @@ public class MovementAscend extends Movement {
             return state;
         }
 
-        // Natychmiastowy skok przy kontakcie ze ścianą bloku docelowego (eliminuje klinowanie o krawędź)
-        if (ctx.player().horizontalCollision && flatDistToNext <= 1.35) {
-            return state.setInput(Input.JUMP, true);
+        // Skacz TYLKO ze stabilnego podłoża (GrimAC onGround sync)
+        if (ctx.player().onGround()) {
+            if (headBonkClear() || flatDistToNext <= 1.15 || ctx.player().horizontalCollision) {
+                return state.setInput(Input.JUMP, true);
+            }
         }
-
-        // Once we are pointing the right way and moving, start jumping
-        // This is slightly more efficient because otherwise we might start jumping before moving, and fall down without moving onto the block we want to jump onto
-        // Also wait until we are close enough, because we might jump and hit our head on an adjacent block
-        return state.setInput(Input.JUMP, true);
+        return state;
     }
 
     public boolean headBonkClear() {
